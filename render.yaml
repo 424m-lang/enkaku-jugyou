@@ -1,0 +1,27 @@
+# Render Blueprint（https://render.com/docs/blueprint-spec）
+# GitHubリポジトリを接続し「New > Blueprint」で読み込む。
+# DATABASE_URL は Neon 等の外部PostgreSQLを推奨（Render Postgres でも可）。
+services:
+  - type: web
+    name: enkaku-jugyou
+    runtime: docker
+    plan: starter # 永続ディスクとWebSocketのため（freeはディスク不可）
+    healthCheckPath: /api/health
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 10
+    envVars:
+      - key: DATA_DIR
+        value: /data
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false # ダッシュボードで設定
+      - key: TRANSCRIBE_PROVIDER
+        value: mock
+      - key: SUMMARY_PROVIDER
+        value: mock
+      # 実プロバイダを使う場合はダッシュボードで設定:
+      # ANTHROPIC_API_KEY / SUMMARY_PROVIDER=anthropic
+      # OPENAI_API_KEY / TRANSCRIBE_PROVIDER=openai
