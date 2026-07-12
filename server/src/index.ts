@@ -8,6 +8,10 @@ import { Server } from 'socket.io';
 import type { ClientToServerEvents, ServerToClientEvents } from '@shared';
 import { config } from './config';
 import { initDb } from './db';
+import { authRoutes } from './routes/auth';
+import { joinRoutes } from './routes/join';
+import { lessonRoutes } from './routes/lessons';
+import { setupRealtime, type TypedServer } from './realtime';
 
 async function main() {
   await initDb();
@@ -22,6 +26,10 @@ async function main() {
 
   app.get('/api/health', async () => ({ ok: true, time: new Date().toISOString() }));
 
+  await app.register(authRoutes);
+  await app.register(joinRoutes);
+  await app.register(lessonRoutes);
+
   // 本番: ビルド済みクライアントを配信（SPAフォールバック付き）
   const clientDist = path.join(import.meta.dirname, '..', '..', 'client', 'dist');
   if (fs.existsSync(clientDist)) {
@@ -35,15 +43,12 @@ async function main() {
     });
   }
 
-  const io = new Server<ClientToServerEvents, ServerToClientEvents>(app.server, {
+  const io: TypedServer = new Server<ClientToServerEvents, ServerToClientEvents>(app.server, {
     maxHttpBufferSize: 5 * 1024 * 1024,
-    cors: config.isProd ? undefined : { origin: true },
+    cors: config.isProd ? undefined : { origin: true, credentials: true },
   });
 
-  io.on('connection', (socket) => {
-    app.log.info({ id: socket.id }, 'socket connected');
-    socket.on('disconnect', () => app.log.info({ id: socket.id }, 'socket disconnected'));
-  });
+  setupRealtime(app, io);
 
   await app.listen({ port: config.port, host: config.host });
   console.log(`[server] http://localhost:${config.port} で起動しました`);

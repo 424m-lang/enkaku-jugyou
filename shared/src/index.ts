@@ -45,6 +45,9 @@ export type PointerPayload = {
 export type SlideChangePayload = { slideId: string };
 export type ClearSlidePayload = { slideId: string; strokeIds?: string[] }; // strokeIds指定時は部分削除
 export type ReflectionPayload = { reason?: string };
+// 録音は通常1レッスン=1ファイルだが、先生の画面リロード等で録音が再開された場合は
+// 新しいパートファイルに切り替わる。その境界もタイムラインイベントとして記録する
+export type AudioPartPayload = { file: string };
 
 export type TimelineEventType =
   | 'slide_change'
@@ -52,7 +55,8 @@ export type TimelineEventType =
   | 'pointer'
   | 'clear_slide'
   | 'reflection_start'
-  | 'reflection_end';
+  | 'reflection_end'
+  | 'audio_part';
 
 export type TimelineEvent = {
   id: string;
@@ -63,7 +67,8 @@ export type TimelineEvent = {
     | StrokePayload
     | PointerPayload
     | ClearSlidePayload
-    | ReflectionPayload;
+    | ReflectionPayload
+    | AudioPartPayload;
 };
 
 // ---- レッスン ----
@@ -86,7 +91,12 @@ export type LessonSummary = {
 export type ReactionInput = {
   kind: string; // ボタンのkey、コメントは 'comment'
   comment?: string;
-  clientTs: number; // 生徒端末での送信時刻(epoch ms)。オフライン再送時に元の時刻を保持
+  /**
+   * ボタンを押してから送信されるまでの経過ミリ秒。
+   * オフラインキューからの再送時に、元の押下時刻をタイムライン上で復元するために使う
+   * （端末の時計ズレの影響を受けない相対値）
+   */
+  delayMs: number;
 };
 
 export type ReactionFeedItem = {
@@ -133,6 +143,7 @@ export interface ServerToClientEvents {
   // タイムライン系のブロードキャスト
   slide_change: (p: SlideChangePayload & { tMs: number }) => void;
   stroke: (p: StrokePayload & { tMs: number }) => void;
+  stroke_progress: (p: StrokePayload) => void; // 描画途中のプレビュー（記録されない）
   pointer: (p: PointerPayload) => void;
   clear_slide: (p: ClearSlidePayload & { tMs: number }) => void;
 
@@ -158,6 +169,7 @@ export interface ClientToServerEvents {
   audio_chunk: (chunk: ArrayBuffer) => void;
   slide_change: (p: SlideChangePayload) => void;
   stroke: (p: StrokePayload) => void;
+  stroke_progress: (p: StrokePayload) => void;
   pointer: (p: PointerPayload) => void;
   clear_slide: (p: ClearSlidePayload) => void;
   insert_blank_slide: (
