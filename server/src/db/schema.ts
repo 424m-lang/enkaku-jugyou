@@ -1,0 +1,131 @@
+import {
+  pgTable,
+  text,
+  timestamp,
+  integer,
+  boolean,
+  jsonb,
+  doublePrecision,
+  index,
+} from 'drizzle-orm/pg-core';
+import type { ReactionButtonDef } from '@shared';
+
+export const teachers = pgTable('teachers', {
+  id: text('id').primaryKey(),
+  email: text('email').notNull().unique(),
+  passwordHash: text('password_hash').notNull(),
+  name: text('name').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const lessons = pgTable('lessons', {
+  id: text('id').primaryKey(),
+  teacherId: text('teacher_id')
+    .notNull()
+    .references(() => teachers.id),
+  title: text('title').notNull(),
+  joinCode: text('join_code').notNull().unique(),
+  status: text('status', { enum: ['draft', 'live', 'ended'] })
+    .notNull()
+    .default('draft'),
+  reactionButtons: jsonb('reaction_buttons').$type<ReactionButtonDef[]>().notNull(),
+  // Phase 2（同意管理・匿名化）用のプレースホルダ
+  anonymizeMode: boolean('anonymize_mode').notNull().default(false),
+  pdfPath: text('pdf_path'),
+  pdfPageCount: integer('pdf_page_count'),
+  audioPath: text('audio_path'),
+  audioDurationMs: integer('audio_duration_ms'),
+  startedAt: timestamp('started_at', { withTimezone: true }),
+  endedAt: timestamp('ended_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+// 授業内のスライド並び。白紙挿入は kind='blank' の行を追加するだけで、元PDFは不変
+export const lessonSlides = pgTable(
+  'lesson_slides',
+  {
+    id: text('id').primaryKey(),
+    lessonId: text('lesson_id')
+      .notNull()
+      .references(() => lessons.id),
+    kind: text('kind', { enum: ['pdf_page', 'blank'] }).notNull(),
+    pdfPageIndex: integer('pdf_page_index'),
+    position: doublePrecision('position').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('lesson_slides_lesson_idx').on(t.lessonId, t.position)]
+);
+
+export const participants = pgTable(
+  'participants',
+  {
+    id: text('id').primaryKey(),
+    lessonId: text('lesson_id')
+      .notNull()
+      .references(() => lessons.id),
+    displayName: text('display_name').notNull(),
+    tokenHash: text('token_hash').notNull(),
+    // Phase 2（同意管理）用のプレースホルダ
+    consentStatus: text('consent_status').notNull().default('unknown'),
+    joinedAt: timestamp('joined_at', { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('participants_lesson_idx').on(t.lessonId)]
+);
+
+// 単一タイムライン: 授業開始からの経過ミリ秒 t_ms を基準に全イベントを記録
+export const timelineEvents = pgTable(
+  'timeline_events',
+  {
+    id: text('id').primaryKey(),
+    lessonId: text('lesson_id')
+      .notNull()
+      .references(() => lessons.id),
+    tMs: integer('t_ms').notNull(),
+    type: text('type').notNull(),
+    actor: text('actor').notNull().default('teacher'),
+    payload: jsonb('payload').notNull(),
+  },
+  (t) => [index('timeline_events_lesson_t_idx').on(t.lessonId, t.tMs)]
+);
+
+// リアクション = 連続音声ファイルへの軽量なタイムスタンプ参照（音声はコピーしない）
+export const reactions = pgTable(
+  'reactions',
+  {
+    id: text('id').primaryKey(),
+    lessonId: text('lesson_id')
+      .notNull()
+      .references(() => lessons.id),
+    participantId: text('participant_id')
+      .notNull()
+      .references(() => participants.id),
+    tMs: integer('t_ms').notNull(),
+    kind: text('kind').notNull(),
+    comment: text('comment'),
+    clipStartMs: integer('clip_start_ms').notNull(),
+    clipEndMs: integer('clip_end_ms').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('reactions_lesson_t_idx').on(t.lessonId, t.tMs)]
+);
+
+// 文字起こし・要約（授業中のクリップ範囲 / 授業後の全体 の両方を同じ仕組みで保存）
+export const transcripts = pgTable(
+  'transcripts',
+  {
+    id: text('id').primaryKey(),
+    lessonId: text('lesson_id')
+      .notNull()
+      .references(() => lessons.id),
+    scope: text('scope', { enum: ['clip', 'full'] }).notNull(),
+    rangeStartMs: integer('range_start_ms').notNull(),
+    rangeEndMs: integer('range_end_ms').notNull(),
+    text: text('text').notNull(),
+    summary: text('summary'),
+    provider: text('provider').notNull(),
+    model: text('model'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('transcripts_lesson_idx').on(t.lessonId)]
+);
