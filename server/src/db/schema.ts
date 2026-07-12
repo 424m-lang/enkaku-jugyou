@@ -123,6 +123,8 @@ export const transcripts = pgTable(
     rangeEndMs: integer('range_end_ms').notNull(),
     text: text('text').notNull(),
     summary: text('summary'),
+    /** 文字起こしのセグメント [{startMs,endMs,text}]（話速計測に使用） */
+    segments: jsonb('segments'),
     provider: text('provider').notNull(),
     model: text('model'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

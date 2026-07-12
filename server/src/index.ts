@@ -11,6 +11,7 @@ import { initDb } from './db';
 import { authRoutes } from './routes/auth';
 import { joinRoutes } from './routes/join';
 import { lessonRoutes } from './routes/lessons';
+import { reviewRoutes } from './routes/review';
 import { setupRealtime, type TypedServer } from './realtime';
 
 async function main() {
@@ -29,6 +30,7 @@ async function main() {
   await app.register(authRoutes);
   await app.register(joinRoutes);
   await app.register(lessonRoutes);
+  await app.register(reviewRoutes);
 
   // 本番: ビルド済みクライアントを配信（SPAフォールバック付き）
   const clientDist = path.join(import.meta.dirname, '..', '..', 'client', 'dist');

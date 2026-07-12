@@ -200,6 +200,18 @@ export type LiveLessonState = {
   counts: ReactionCounts;
 };
 
+// ---- 文字起こし ----
+export type TranscriptSegment = { startMs: number; endMs: number; text: string };
+
+export type FullTranscriptSummary = {
+  text: string;
+  summary: string | null;
+  segments: TranscriptSegment[] | null;
+  provider: string;
+  model: string | null;
+  createdAt: string;
+};
+
 // ---- 統計 ----
 export type LessonStats = {
   totalParticipants: number;
