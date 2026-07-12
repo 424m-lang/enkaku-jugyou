@@ -10,6 +10,7 @@ export default defineConfig({
     },
   },
   server: {
+    host: true, // 同じWi-Fi内の他端末（スマホ等）からのアクセスを許可
     port: 5173,
     strictPort: true,
     fs: { allow: ['..'] },
