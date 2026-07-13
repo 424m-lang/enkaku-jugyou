@@ -31,7 +31,8 @@ shared/  クライアント・サーバ共有の型定義
 - **スライド**: PDFを参加時に一括ダウンロードし全ページを事前レンダリング（授業中のページ切替は通信ゼロ）
 - **AI**: プロバイダ差し替え式。キー無しでも `mock` で全フローが動作します
   - 文字起こし: `TRANSCRIBE_PROVIDER=mock | openai`（OpenAI Whisper）
-  - 要約・提案: `SUMMARY_PROVIDER=mock | anthropic`（Claude API、既定モデル `claude-opus-4-8`）
+  - 要約・提案: `SUMMARY_PROVIDER=mock | anthropic | openai`（Claude API 既定 `claude-opus-4-8` / OpenAI 既定 `gpt-4o-mini`）
+  - **OpenAIキー1つだけで文字起こし＋要約の両方を動かせます**（`TRANSCRIBE_PROVIDER=openai` と `SUMMARY_PROVIDER=openai`）
 
 ## セットアップ（ローカル）
 
@@ -51,18 +52,22 @@ npm run dev
 
 ### AIを実プロバイダで使う
 
-```env
-# 要約・振り返り提案（Anthropic）
-SUMMARY_PROVIDER=anthropic
-ANTHROPIC_API_KEY=sk-ant-...
-# ANTHROPIC_MODEL=claude-opus-4-8
+**OpenAIキー1つで全部**（いちばん簡単）:
 
-# 文字起こし（OpenAI Whisper）
+```env
 TRANSCRIBE_PROVIDER=openai
+SUMMARY_PROVIDER=openai
 OPENAI_API_KEY=sk-...
 ```
 
-※ Claude APIは音声入力に対応していないため、文字起こしのみOpenAI Whisperを使用します。キーが無い間は `mock` のままで動作確認できます。
+要約だけAnthropic（Claude）にする場合:
+
+```env
+SUMMARY_PROVIDER=anthropic
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+※ Claude APIは音声入力に対応していないため、文字起こしは常にOpenAI Whisperを使用します。キーが無い間は `mock` のままで動作確認できます。
 
 ### 動作確認ツール
 
