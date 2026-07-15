@@ -15,6 +15,7 @@ import { loadLessonPdf, type PdfCache } from '../../lib/pdf';
 import { startAudioBroadcast } from '../../lib/audio';
 import { rebuildStrokes, applyDrawingEvent, type StrokesBySlide } from '../../lib/strokes';
 import SlideCanvas, { type DrawingTool } from '../../components/SlideCanvas';
+import JoinQrModal from '../../components/JoinQrModal';
 
 const TOOLS: { key: DrawingTool; label: string }[] = [
   { key: 'none', label: '選択' },
@@ -59,6 +60,7 @@ export default function Teach() {
   const [audioState, setAudioState] = useState<'off' | 'on' | 'error'>('off');
   const [pdf, setPdf] = useState<PdfCache | null>(null);
   const [loadError, setLoadError] = useState('');
+  const [showQr, setShowQr] = useState(false);
 
   const [tool, setTool] = useState<DrawingTool>('none');
   const [color, setColor] = useState(COLORS[1]);
@@ -285,6 +287,9 @@ export default function Teach() {
           <span className="muted">
             参加コード: <strong className="inline-code">{joinCode}</strong>
           </span>
+          <button className="btn" onClick={() => setShowQr(true)} disabled={!joinCode}>
+            参加用QR
+          </button>
           <span className="muted">生徒 {participantCount}人</span>
           {status === 'live' && (
             <span className={audioState === 'on' ? 'rec-on' : 'rec-off'}>
@@ -318,6 +323,8 @@ export default function Teach() {
           )}
         </div>
       </header>
+
+      {showQr && <JoinQrModal joinCode={joinCode} onClose={() => setShowQr(false)} />}
 
       {/* 振り返りタイム通知（対応するまで消えない） */}
       {alerts.length > 0 && !reflectionActive && (
