@@ -80,6 +80,18 @@ node scripts/student-sim.mjs AB3K7X 生徒A confused 3000
 
 3端末分を同時に走らせて「わからない」を送ると、振り返りタイム通知（閾値既定3人）の動作を確認できます。
 
+## ローカル運用（デプロイせずに授業で使う）
+
+クラウドに出さなくても、このPC1台をサーバにして同じWi-Fi内で授業を実施できます。
+
+1. **`授業サーバを起動.cmd` をダブルクリック**（このフォルダ直下にあります）
+2. 黒いウィンドウに2つのURLが表示されます:
+   - 先生用: `http://localhost:3000` — **必ずサーバを動かしているこのPCのブラウザで開く**（マイクはlocalhostまたはHTTPSでのみ使えるため）
+   - 生徒用: `http://<このPCのIP>:3000/join` — 同じWi-Fiのスマホ・PCから開く（IPは起動のたびに自動検出して表示されます）
+3. 授業が終わったら黒いウィンドウを閉じるだけ
+
+データ（授業・録音・PDF）は `server/data/` に保存されます。PCの入れ替え時はこのフォルダをコピーすれば引き継げます。
+
 ## デプロイ（クラウド）
 
 単一のNodeサーバがAPI・Socket.IO・ビルド済みクライアントを全て配信します。`Dockerfile` を同梱しているので、Docker対応のPaaS（Render / Railway / Fly.io 等）にそのままデプロイできます。
@@ -90,12 +102,16 @@ node scripts/student-sim.mjs AB3K7X 生徒A confused 3000
 2. **永続ディスク**（PDF・録音ファイル用）→ マウント先を `DATA_DIR` に設定（例 `/data`）
 3. 環境変数: `SESSION_SECRET`（長いランダム文字列）、AIプロバイダ設定（上記）
 
-Render の例（Blueprint `render.yaml` 同梱）:
+Render の手順（Blueprint `render.yaml` 同梱。コードはGitHubにpush済みなので、いつでも以下だけで移行できます）:
 
-```bash
-# GitHubにpush後、RenderでBlueprintとして読み込むだけ
-# DATABASE_URL と ANTHROPIC_API_KEY 等はダッシュボードで設定
-```
+1. https://render.com/ にGitHubアカウントでログイン（支払い情報の登録が必要。Starterプラン 約$7/月）
+2. New + → **Blueprint** → リポジトリ `enkaku-jugyou` を選択（見えなければ Configure GitHub App で許可）
+3. 環境変数を入力して Apply:
+   - `DATABASE_URL` = Neonの接続文字列
+   - `OPENAI_API_KEY` = OpenAIのキー、`SUMMARY_PROVIDER` = `openai`、`TRANSCRIBE_PROVIDER` = `openai`
+4. 発行された `https://～.onrender.com` で先生アカウントを登録し直して利用開始
+
+※ ローカル運用時のデータ（`server/data/` と PGlite 内の授業記録）はクラウドには引き継がれません。移行後は新しい環境として始まります。ローカル運用はいつでも併用できます（単に開くURLが違うだけ）。
 
 注意点:
 
