@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- 遠隔授業フィードバック アプリアイコン -->
+  <rect width="512" height="512" rx="96" fill="#2563eb"/>
+  <!-- スライド -->
+  <rect x="88" y="104" width="336" height="224" rx="24" fill="#ffffff"/>
+  <!-- スライド上の赤ペン書き込み -->
+  <path d="M134 278 Q210 160 262 226 Q312 290 380 172" fill="none" stroke="#dc2626" stroke-width="20" stroke-linecap="round"/>
+  <!-- リアクション: わかった（緑・チェック） -->
+  <circle cx="184" cy="404" r="40" fill="#22c55e"/>
+  <path d="M164 404 L178 419 L206 387" fill="none" stroke="#ffffff" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- リアクション: わからない（赤・?） -->
+  <circle cx="328" cy="404" r="40" fill="#ef4444"/>
+  <text x="328" y="407" font-family="Arial, sans-serif" font-size="56" font-weight="bold" fill="#ffffff" text-anchor="middle" dominant-baseline="central">?</text>
+</svg>
