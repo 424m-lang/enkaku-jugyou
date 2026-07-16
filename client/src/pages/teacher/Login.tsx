@@ -4,7 +4,7 @@ import { api } from '../../lib/api';
 
 export default function Login() {
   const navigate = useNavigate();
-  const [email, setEmail] = useState('');
+  const [loginId, setLoginId] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -16,7 +16,7 @@ export default function Login() {
     try {
       await api('/api/auth/login', {
         method: 'POST',
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ loginId, password }),
       });
       navigate('/dashboard');
     } catch (err) {
@@ -32,13 +32,13 @@ export default function Login() {
         <h1>先生ログイン</h1>
         <form onSubmit={onSubmit} className="form">
           <label>
-            メールアドレス
+            ログインID
             <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              value={loginId}
+              onChange={(e) => setLoginId(e.target.value)}
               required
-              autoComplete="email"
+              autoComplete="username"
+              placeholder="例: tanaka-suugaku"
             />
           </label>
           <label>

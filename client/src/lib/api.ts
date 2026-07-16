@@ -26,4 +26,4 @@ export async function api<T>(path: string, opts: RequestInit = {}): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export type Teacher = { id: string; email: string; name: string };
+export type Teacher = { id: string; loginId: string; name: string };

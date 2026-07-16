@@ -12,9 +12,10 @@ import type { ReactionButtonDef } from '@shared';
 
 export const teachers = pgTable('teachers', {
   id: text('id').primaryKey(),
-  email: text('email').notNull().unique(),
+  // 個人情報を集めない方針のため、メールアドレスではなく任意のログインIDを使う
+  loginId: text('login_id').notNull().unique(),
   passwordHash: text('password_hash').notNull(),
-  name: text('name').notNull(),
+  name: text('name').notNull(), // 表示名（ニックネーム可）
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 

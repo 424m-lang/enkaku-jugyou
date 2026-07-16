@@ -15,6 +15,13 @@
       "when": 1783852312777,
       "tag": "0001_workable_tyger_tiger",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1784168411371,
+      "tag": "0002_teacher_login_id",
+      "breakpoints": true
     }
   ]
 }

@@ -5,7 +5,7 @@ import { api } from '../../lib/api';
 export default function Register() {
   const navigate = useNavigate();
   const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
+  const [loginId, setLoginId] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -17,7 +17,7 @@ export default function Register() {
     try {
       await api('/api/auth/register', {
         method: 'POST',
-        body: JSON.stringify({ name, email, password }),
+        body: JSON.stringify({ name, loginId, password }),
       });
       navigate('/dashboard');
     } catch (err) {
@@ -31,19 +31,31 @@ export default function Register() {
     <div className="page-center">
       <div className="card auth-card">
         <h1>先生アカウント登録</h1>
+        <p className="muted">
+          メールアドレス等の個人情報は不要です。ログインIDと表示名は自由に決められます。
+        </p>
         <form onSubmit={onSubmit} className="form">
           <label>
-            名前
-            <input value={name} onChange={(e) => setName(e.target.value)} required maxLength={50} />
+            表示名（ニックネーム可）
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              required
+              maxLength={50}
+              placeholder="例: 田中先生"
+            />
           </label>
           <label>
-            メールアドレス
+            ログインID（半角英数字 3〜30文字）
             <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              value={loginId}
+              onChange={(e) => setLoginId(e.target.value)}
               required
-              autoComplete="email"
+              minLength={3}
+              maxLength={30}
+              pattern="[a-zA-Z0-9_\-]+"
+              autoComplete="username"
+              placeholder="例: tanaka-suugaku"
             />
           </label>
           <label>
@@ -57,6 +69,9 @@ export default function Register() {
               autoComplete="new-password"
             />
           </label>
+          <p className="muted">
+            ※ パスワードを忘れた場合の再設定はできません。忘れないよう控えてください。
+          </p>
           {error && <p className="error">{error}</p>}
           <button type="submit" className="btn primary" disabled={busy}>
             {busy ? '登録中...' : '登録する'}
