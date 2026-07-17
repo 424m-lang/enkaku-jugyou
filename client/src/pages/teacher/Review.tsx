@@ -13,6 +13,8 @@ import type {
 import { api, ApiError } from '../../lib/api';
 import { loadLessonPdf, type PdfCache } from '../../lib/pdf';
 import { applyDrawingEvent, type StrokesBySlide } from '../../lib/strokes';
+import { fmtClock } from '../../lib/format';
+import { makeReactionMeta } from '../../lib/reactionMeta';
 import SlideCanvas from '../../components/SlideCanvas';
 
 type LessonDetail = {
@@ -24,11 +26,6 @@ type LessonDetail = {
 };
 
 type AudioPart = { file: string; startMs: number };
-
-function fmt(tMs: number): string {
-  const s = Math.max(0, Math.floor(tMs / 1000));
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-}
 
 export default function Review() {
   const { id: lessonId } = useParams<{ id: string }>();
@@ -246,16 +243,9 @@ export default function Review() {
     [lessonId]
   );
 
-  const kindLabel = useCallback(
-    (kind: string) =>
-      kind === 'comment' ? 'コメント' : (lesson?.reactionButtons.find((b) => b.key === kind)?.label ?? kind),
-    [lesson]
-  );
-  const kindColor = useCallback(
-    (kind: string) =>
-      kind === 'comment' ? '#6b7280' : (lesson?.reactionButtons.find((b) => b.key === kind)?.color ?? '#6b7280'),
-    [lesson]
-  );
+  const reactionMeta = useMemo(() => makeReactionMeta(lesson?.reactionButtons ?? []), [lesson]);
+  const kindLabel = reactionMeta.label;
+  const kindColor = reactionMeta.color;
 
   if (!lesson) {
     return (
@@ -297,7 +287,7 @@ export default function Review() {
               {playing ? '⏸ 一時停止' : '▶ 再生'}
             </button>
             <span className="player-time">
-              {fmt(playhead)} / {fmt(durationMs)}
+              {fmtClock(playhead)} / {fmtClock(durationMs)}
             </span>
             <div className="scrubber">
               <input
@@ -316,7 +306,7 @@ export default function Review() {
                       left: `${(c.centerMs / Math.max(durationMs, 1)) * 100}%`,
                       background: kindColor(Object.keys(c.kinds)[0] ?? 'comment'),
                     }}
-                    title={`${fmt(c.centerMs)} — ${c.participantCount}人が反応`}
+                    title={`${fmtClock(c.centerMs)} — ${c.participantCount}人が反応`}
                     onClick={() => playClip(c)}
                   />
                 ))}
@@ -350,7 +340,7 @@ export default function Review() {
                 <div key={c.id} className="card clip-card">
                   <div className="clip-head">
                     <button className="btn primary" onClick={() => playClip(c)}>
-                      ▶ {fmt(c.startMs)}〜{fmt(c.endMs)}
+                      ▶ {fmtClock(c.startMs)}〜{fmtClock(c.endMs)}
                     </button>
                     <strong>{c.participantCount}人が反応</strong>
                   </div>
@@ -491,7 +481,7 @@ export default function Review() {
                     </summary>
                     {p.reactions.map((r, i) => (
                       <p key={i} className="muted student-reaction" onClick={() => seek(r.tMs, false)}>
-                        {fmt(r.tMs)} {kindLabel(r.kind)}
+                        {fmtClock(r.tMs)} {kindLabel(r.kind)}
                         {r.comment ? `「${r.comment}」` : ''}
                       </p>
                     ))}

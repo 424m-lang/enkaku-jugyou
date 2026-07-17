@@ -1,119 +1,63 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import type {
-  LessonStatus,
-  PointerPayload,
-  ReactionButtonDef,
-  SlideInfo,
-  StrokePayload,
-} from '@shared';
-import { connectLessonSocket, type AppSocket } from '../../lib/socket';
-import { loadLessonPdf, type PdfCache } from '../../lib/pdf';
+import type { PointerPayload } from '@shared';
 import { LiveAudioPlayer } from '../../lib/audio';
 import { ReactionQueue } from '../../lib/reactionQueue';
-import { rebuildStrokes, applyDrawingEvent, type StrokesBySlide } from '../../lib/strokes';
+import { useLessonLive } from '../../lib/useLessonLive';
 import SlideCanvas from '../../components/SlideCanvas';
 
 export default function Class() {
   const navigate = useNavigate();
   const lessonId = sessionStorage.getItem('lessonId');
+  const hasToken = !!sessionStorage.getItem('participantToken');
 
-  const [title, setTitle] = useState('');
-  const [status, setStatus] = useState<LessonStatus>('draft');
-  const [buttons, setButtons] = useState<ReactionButtonDef[]>([]);
-  const [slides, setSlides] = useState<SlideInfo[]>([]);
-  const [currentSlideId, setCurrentSlideId] = useState<string | null>(null);
-  const [strokes, setStrokes] = useState<StrokesBySlide>({});
-  const [remoteProgress, setRemoteProgress] = useState<Record<string, StrokePayload>>({});
   const [pointer, setPointer] = useState<PointerPayload | null>(null);
-  const [reflectionActive, setReflectionActive] = useState(false);
-  const [connected, setConnected] = useState(false);
-  const [pdf, setPdf] = useState<PdfCache | null>(null);
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [comment, setComment] = useState('');
   const [queuedCount, setQueuedCount] = useState(0);
   const [flash, setFlash] = useState<string | null>(null);
 
-  const socketRef = useRef<AppSocket | null>(null);
   const audioElRef = useRef<HTMLAudioElement>(null);
   const playerRef = useRef<LiveAudioPlayer | null>(null);
   const queueRef = useRef<ReactionQueue | null>(null);
 
-  const sortedSlides = useMemo(
-    () => [...slides].sort((a, b) => a.position - b.position),
-    [slides]
-  );
-  const currentSlide = sortedSlides.find((s) => s.id === currentSlideId) ?? null;
+  useEffect(() => {
+    if (!lessonId || !hasToken) navigate('/join');
+  }, [lessonId, hasToken, navigate]);
+
+  const {
+    connected,
+    title,
+    status,
+    buttons,
+    currentSlideId,
+    currentSlide,
+    strokes,
+    currentProgress,
+    reflectionActive,
+    pdf,
+  } = useLessonLive(lessonId && hasToken ? lessonId : null, {
+    setup: (socket) => {
+      // 生徒画面だけが受け取るイベント
+      queueRef.current = new ReactionQueue(lessonId!, socket);
+      setQueuedCount(queueRef.current.pendingCount);
+      if (audioElRef.current) {
+        playerRef.current = new LiveAudioPlayer(audioElRef.current);
+      }
+      socket.on('connect_error', (err) => {
+        // トークン失効などで認証できない場合は参加画面へ
+        if (String(err.message).includes('認証')) navigate('/join');
+      });
+      socket.on('pointer', (p) => setPointer(p));
+      socket.on('slide_change', () => setPointer(null));
+      socket.on('audio_init', (chunk) => playerRef.current?.reset(chunk));
+      socket.on('audio_chunk', (chunk) => playerRef.current?.push(chunk));
+    },
+  });
 
   useEffect(() => {
-    if (!lessonId || !sessionStorage.getItem('participantToken')) {
-      navigate('/join');
-      return;
-    }
-    let disposed = false;
-
-    void loadLessonPdf(lessonId).then((cache) => {
-      if (!disposed) setPdf(cache);
-    });
-
-    const socket = connectLessonSocket(lessonId);
-    socketRef.current = socket;
-    queueRef.current = new ReactionQueue(lessonId, socket);
-    setQueuedCount(queueRef.current.pendingCount);
-
-    if (audioElRef.current) {
-      playerRef.current = new LiveAudioPlayer(audioElRef.current);
-    }
-
-    socket.on('connect', () => setConnected(true));
-    socket.on('disconnect', () => setConnected(false));
-    socket.on('connect_error', (err) => {
-      setConnected(false);
-      // トークン失効などで認証できない場合は参加画面へ
-      if (String(err.message).includes('認証')) navigate('/join');
-    });
-
-    socket.on('lesson_state', (st) => {
-      setTitle(st.title);
-      setStatus(st.status);
-      setButtons(st.reactionButtons);
-      setSlides(st.slides);
-      setCurrentSlideId(st.currentSlideId ?? st.slides[0]?.id ?? null);
-      setStrokes(rebuildStrokes(st.drawingEvents));
-      setReflectionActive(st.reflectionActive);
-    });
-    socket.on('slides_updated', (sl) => setSlides(sl));
-    socket.on('slide_change', (p) => {
-      setCurrentSlideId(p.slideId);
-      setPointer(null);
-    });
-    socket.on('stroke', (p) => {
-      setStrokes((prev) => applyDrawingEvent({ ...prev }, 'stroke', p));
-      setRemoteProgress((prev) => {
-        const { [p.strokeId]: _, ...rest } = prev;
-        return rest;
-      });
-    });
-    socket.on('stroke_progress', (p) =>
-      setRemoteProgress((prev) => ({ ...prev, [p.strokeId]: p }))
-    );
-    socket.on('clear_slide', (p) =>
-      setStrokes((prev) => applyDrawingEvent({ ...prev }, 'clear_slide', p))
-    );
-    socket.on('pointer', (p) => setPointer(p));
-    socket.on('audio_init', (chunk) => playerRef.current?.reset(chunk));
-    socket.on('audio_chunk', (chunk) => playerRef.current?.push(chunk));
-    socket.on('reflection_started', () => setReflectionActive(true));
-    socket.on('reflection_ended', () => setReflectionActive(false));
-    socket.on('lesson_started', () => setStatus('live'));
-    socket.on('lesson_ended', () => setStatus('ended'));
-
-    return () => {
-      disposed = true;
-      socket.disconnect();
-      playerRef.current?.dispose();
-    };
-  }, [lessonId, navigate]);
+    return () => playerRef.current?.dispose();
+  }, []);
 
   const enableAudio = useCallback(() => {
     playerRef.current?.enable();
@@ -137,10 +81,6 @@ export default function Class() {
   }, [comment, sendReaction]);
 
   if (!lessonId) return null;
-
-  const currentProgress = Object.values(remoteProgress).filter(
-    (p) => p.slideId === currentSlideId
-  );
 
   return (
     <div className="class-page">

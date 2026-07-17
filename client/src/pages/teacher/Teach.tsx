@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import type {
   LessonStatus,
@@ -6,14 +6,14 @@ import type {
   ReactionCounts,
   ReactionFeedItem,
   ReflectionAlert,
-  SlideInfo,
   StrokePayload,
 } from '@shared';
 import { api, ApiError } from '../../lib/api';
-import { connectLessonSocket, type AppSocket } from '../../lib/socket';
-import { loadLessonPdf, type PdfCache } from '../../lib/pdf';
 import { startAudioBroadcast } from '../../lib/audio';
-import { rebuildStrokes, applyDrawingEvent, type StrokesBySlide } from '../../lib/strokes';
+import { applyDrawingEvent } from '../../lib/strokes';
+import { useLessonLive } from '../../lib/useLessonLive';
+import { fmtClock } from '../../lib/format';
+import { makeReactionMeta } from '../../lib/reactionMeta';
 import SlideCanvas, { type DrawingTool } from '../../components/SlideCanvas';
 import JoinQrModal from '../../components/JoinQrModal';
 
@@ -34,31 +34,16 @@ const WIDTHS: { label: string; value: number }[] = [
   { label: '太', value: 0.008 },
 ];
 
-function fmtTMs(tMs: number): string {
-  const s = Math.floor(tMs / 1000);
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-}
-
 export default function Teach() {
   const { id: lessonId } = useParams<{ id: string }>();
   const navigate = useNavigate();
 
-  const [title, setTitle] = useState('');
   const [joinCode, setJoinCode] = useState('');
-  const [status, setStatus] = useState<LessonStatus>('draft');
-  const [buttons, setButtons] = useState<ReactionButtonDef[]>([]);
-  const [slides, setSlides] = useState<SlideInfo[]>([]);
-  const [currentSlideId, setCurrentSlideId] = useState<string | null>(null);
-  const [strokes, setStrokes] = useState<StrokesBySlide>({});
-  const [remoteProgress, setRemoteProgress] = useState<Record<string, StrokePayload>>({});
   const [counts, setCounts] = useState<ReactionCounts>({});
   const [feed, setFeed] = useState<ReactionFeedItem[]>([]);
   const [participantCount, setParticipantCount] = useState(0);
   const [alerts, setAlerts] = useState<ReflectionAlert[]>([]);
-  const [reflectionActive, setReflectionActive] = useState(false);
-  const [connected, setConnected] = useState(false);
   const [audioState, setAudioState] = useState<'off' | 'on' | 'error'>('off');
-  const [pdf, setPdf] = useState<PdfCache | null>(null);
   const [loadError, setLoadError] = useState('');
   const [showQr, setShowQr] = useState(false);
 
@@ -66,22 +51,52 @@ export default function Teach() {
   const [color, setColor] = useState(COLORS[1]);
   const [lineWidth, setLineWidth] = useState(WIDTHS[1].value);
 
-  const socketRef = useRef<AppSocket | null>(null);
   const audioStopRef = useRef<{ stop: () => void } | null>(null);
-  const startedAtRef = useRef<number | null>(null);
 
-  const sortedSlides = useMemo(
-    () => [...slides].sort((a, b) => a.position - b.position),
-    [slides]
-  );
-  const currentSlide = sortedSlides.find((s) => s.id === currentSlideId) ?? null;
+  const {
+    socketRef,
+    connected,
+    title,
+    setTitle,
+    status,
+    setStatus,
+    buttons,
+    setButtons,
+    setSlides,
+    sortedSlides,
+    currentSlideId,
+    currentSlide,
+    setCurrentSlideId,
+    strokes,
+    setStrokes,
+    currentProgress,
+    reflectionActive,
+    pdf,
+  } = useLessonLive(lessonId, {
+    onLessonState: (st) => setCounts(st.counts),
+    setup: (socket) => {
+      // 先生画面だけが受け取るイベント
+      socket.on('participant_count', (n) => setParticipantCount(n));
+      socket.on('reaction_feed', (item, c) => {
+        setFeed((prev) => [item, ...prev].slice(0, 100));
+        setCounts({ ...c });
+      });
+      socket.on('reflection_alert', (alert) => {
+        setAlerts((prev) => [...prev.filter((a) => a.alertId !== alert.alertId), alert]);
+      });
+      socket.on('reflection_suggestion', (alertId, suggestion) => {
+        setAlerts((prev) => prev.map((a) => (a.alertId === alertId ? { ...a, suggestion } : a)));
+      });
+      socket.on('reflection_started', () => setAlerts([]));
+    },
+  });
+
   const currentIndex = currentSlide ? sortedSlides.indexOf(currentSlide) : -1;
 
-  // ---- 初期ロード & ソケット接続 ----
+  // ---- 授業情報のロード（参加コードはlesson_stateに含まれないためRESTで取得） ----
   useEffect(() => {
     if (!lessonId) return;
     let disposed = false;
-
     (async () => {
       try {
         const detail = await api<{
@@ -95,71 +110,23 @@ export default function Teach() {
         setJoinCode(detail.joinCode);
         setButtons(detail.reactionButtons);
         setStatus(detail.status);
-        const cache = await loadLessonPdf(lessonId);
-        if (!disposed) setPdf(cache);
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) navigate('/login');
         else setLoadError('授業の読み込みに失敗しました');
-        return;
       }
     })();
-
-    const socket = connectLessonSocket(lessonId);
-    socketRef.current = socket;
-
-    socket.on('connect', () => setConnected(true));
-    socket.on('disconnect', () => setConnected(false));
-    socket.on('connect_error', () => setConnected(false));
-
-    socket.on('lesson_state', (st) => {
-      setStatus(st.status);
-      setButtons(st.reactionButtons);
-      setSlides(st.slides);
-      setCurrentSlideId((cur) => st.currentSlideId ?? cur ?? st.slides[0]?.id ?? null);
-      setStrokes(rebuildStrokes(st.drawingEvents));
-      setReflectionActive(st.reflectionActive);
-      setCounts(st.counts);
-      startedAtRef.current = st.startedAtEpochMs;
-    });
-    socket.on('slides_updated', (sl) => setSlides(sl));
-    socket.on('slide_change', (p) => setCurrentSlideId(p.slideId));
-    socket.on('stroke', (p) => {
-      setStrokes((prev) => applyDrawingEvent({ ...prev }, 'stroke', p));
-      setRemoteProgress((prev) => {
-        const { [p.strokeId]: _, ...rest } = prev;
-        return rest;
-      });
-    });
-    socket.on('stroke_progress', (p) => setRemoteProgress((prev) => ({ ...prev, [p.strokeId]: p })));
-    socket.on('clear_slide', (p) => setStrokes((prev) => applyDrawingEvent({ ...prev }, 'clear_slide', p)));
-    socket.on('participant_count', (n) => setParticipantCount(n));
-    socket.on('reaction_feed', (item, c) => {
-      setFeed((prev) => [item, ...prev].slice(0, 100));
-      setCounts({ ...c });
-    });
-    socket.on('reflection_alert', (alert) => {
-      setAlerts((prev) => {
-        const others = prev.filter((a) => a.alertId !== alert.alertId);
-        return [...others, alert];
-      });
-    });
-    socket.on('reflection_suggestion', (alertId, suggestion) => {
-      setAlerts((prev) => prev.map((a) => (a.alertId === alertId ? { ...a, suggestion } : a)));
-    });
-    socket.on('reflection_started', () => {
-      setReflectionActive(true);
-      setAlerts([]);
-    });
-    socket.on('reflection_ended', () => setReflectionActive(false));
-    socket.on('lesson_ended', () => setStatus('ended'));
-
     return () => {
       disposed = true;
-      socket.disconnect();
+    };
+  }, [lessonId, navigate, setTitle, setButtons, setStatus]);
+
+  // 画面を離れるときはマイクを止める
+  useEffect(() => {
+    return () => {
       audioStopRef.current?.stop();
       audioStopRef.current = null;
     };
-  }, [lessonId, navigate]);
+  }, []);
 
   // ---- 操作 ----
   const startAudio = useCallback(async () => {
@@ -172,7 +139,7 @@ export default function Teach() {
     } catch {
       setAudioState('error');
     }
-  }, []);
+  }, [socketRef]);
 
   const startLesson = useCallback(() => {
     socketRef.current?.emit('start_lesson', (res) => {
@@ -183,7 +150,7 @@ export default function Teach() {
         alert(res.error ?? '開始できませんでした');
       }
     });
-  }, [startAudio]);
+  }, [socketRef, setStatus, startAudio]);
 
   const endLesson = useCallback(() => {
     if (!window.confirm('授業を終了しますか？（録音も停止します）')) return;
@@ -197,12 +164,15 @@ export default function Teach() {
         alert(res.error ?? '終了できませんでした');
       }
     });
-  }, [lessonId, navigate]);
+  }, [socketRef, lessonId, navigate]);
 
-  const changeSlideTo = useCallback((slideId: string) => {
-    setCurrentSlideId(slideId);
-    socketRef.current?.emit('slide_change', { slideId });
-  }, []);
+  const changeSlideTo = useCallback(
+    (slideId: string) => {
+      setCurrentSlideId(slideId);
+      socketRef.current?.emit('slide_change', { slideId });
+    },
+    [socketRef, setCurrentSlideId]
+  );
 
   const moveSlide = useCallback(
     (delta: number) => {
@@ -221,23 +191,29 @@ export default function Teach() {
         changeSlideTo(res.newSlideId);
       }
     });
-  }, [currentSlide, changeSlideTo]);
+  }, [socketRef, currentSlide, setSlides, changeSlideTo]);
 
-  const onStroke = useCallback((p: StrokePayload) => {
-    setStrokes((prev) => applyDrawingEvent({ ...prev }, 'stroke', p));
-    socketRef.current?.emit('stroke', p);
-  }, []);
+  const onStroke = useCallback(
+    (p: StrokePayload) => {
+      setStrokes((prev) => applyDrawingEvent({ ...prev }, 'stroke', p));
+      socketRef.current?.emit('stroke', p);
+    },
+    [socketRef, setStrokes]
+  );
 
-  const onProgress = useCallback((p: StrokePayload) => {
-    socketRef.current?.emit('stroke_progress', p);
-  }, []);
+  const onProgress = useCallback(
+    (p: StrokePayload) => {
+      socketRef.current?.emit('stroke_progress', p);
+    },
+    [socketRef]
+  );
 
   const onPointer = useCallback(
     (x: number, y: number, visible: boolean) => {
       if (!currentSlide) return;
       socketRef.current?.emit('pointer', { slideId: currentSlide.id, x, y, visible });
     },
-    [currentSlide]
+    [socketRef, currentSlide]
   );
 
   const clearCurrentSlide = useCallback(() => {
@@ -246,20 +222,14 @@ export default function Teach() {
     const p = { slideId: currentSlide.id };
     setStrokes((prev) => applyDrawingEvent({ ...prev }, 'clear_slide', p));
     socketRef.current?.emit('clear_slide', p);
-  }, [currentSlide]);
+  }, [socketRef, currentSlide, setStrokes]);
 
   const toggleReflection = useCallback(() => {
     if (reflectionActive) socketRef.current?.emit('reflection_end');
     else socketRef.current?.emit('reflection_start');
-  }, [reflectionActive]);
+  }, [socketRef, reflectionActive]);
 
-  const kindLabel = useCallback(
-    (kind: string) => {
-      if (kind === 'comment') return 'コメント';
-      return buttons.find((b) => b.key === kind)?.label ?? kind;
-    },
-    [buttons]
-  );
+  const reactionMeta = makeReactionMeta(buttons);
 
   if (loadError) {
     return (
@@ -268,10 +238,6 @@ export default function Teach() {
       </div>
     );
   }
-
-  const currentProgress = Object.values(remoteProgress).filter(
-    (p) => p.slideId === currentSlideId
-  );
 
   return (
     <div className="teach">
@@ -335,7 +301,7 @@ export default function Teach() {
                 <strong>
                   振り返りタイムです
                   {a.cluster
-                    ? `（${fmtTMs(a.cluster.centerMs)}頃に${a.cluster.participantCount}人が反応）`
+                    ? `（${fmtClock(a.cluster.centerMs)}頃に${a.cluster.participantCount}人が反応）`
                     : `（定期のお知らせ）`}
                 </strong>
                 <button className="btn primary" onClick={toggleReflection}>
@@ -346,7 +312,7 @@ export default function Teach() {
                 <p className="muted">
                   内訳:{' '}
                   {Object.entries(a.cluster.kinds)
-                    .map(([k, n]) => `${kindLabel(k)}×${n}`)
+                    .map(([k, n]) => `${reactionMeta.label(k)}×${n}`)
                     .join(' / ')}
                 </p>
               )}
@@ -451,10 +417,10 @@ export default function Teach() {
               {feed.length === 0 && <p className="muted">まだ反応はありません</p>}
               {feed.map((f) => (
                 <div key={f.id} className={`feed-item ${f.kind === 'comment' ? 'feed-comment' : ''}`}>
-                  <span className="feed-time">{fmtTMs(f.tMs)}</span>
+                  <span className="feed-time">{fmtClock(f.tMs)}</span>
                   <span className="feed-name">{f.participantName}</span>
                   <span className="feed-body">
-                    {f.kind === 'comment' ? f.comment : kindLabel(f.kind)}
+                    {f.kind === 'comment' ? f.comment : reactionMeta.label(f.kind)}
                   </span>
                 </div>
               ))}

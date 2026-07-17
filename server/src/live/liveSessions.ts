@@ -171,6 +171,7 @@ export function applyEventToState(s: LiveSession, ev: TimelineEvent): void {
       s.drawingEvents.push(ev);
       break;
     case 'clear_slide': {
+      // 消されたストロークをスナップショットから除外する（clear自体は保持不要）
       const p = ev.payload as { slideId: string; strokeIds?: string[] };
       s.drawingEvents = s.drawingEvents.filter((e) => {
         if (e.type !== 'stroke') return true;
@@ -179,7 +180,6 @@ export function applyEventToState(s: LiveSession, ev: TimelineEvent): void {
         if (p.strokeIds && p.strokeIds.length > 0) return !p.strokeIds.includes(sp.strokeId);
         return false;
       });
-      s.drawingEvents.push(ev);
       break;
     }
     case 'reflection_start':

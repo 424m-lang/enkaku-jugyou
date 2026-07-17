@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import type { ReactionCluster, ReactionFeedItem, ReactionInput } from '@shared';
 import { config } from '../config';
 import { db, schema } from '../db';
-import { tMs, type LiveSession } from './liveSessions';
+import { tMs, type LiveSession, type RecentReaction } from './liveSessions';
 
 export type ReactionRow = {
   id: string;
@@ -76,6 +76,18 @@ export async function recordReaction(
     comment: input.comment ?? null,
     participantName: participant.displayName,
   };
+}
+
+/** インメモリの直近リアクションを clusterReactions の入力形式に変換する */
+export function recentToClusterRows(recent: RecentReaction[]) {
+  return recent.map((r, i) => ({
+    id: `recent-${i}`,
+    tMs: r.tMs,
+    kind: r.kind,
+    comment: r.comment,
+    participantId: r.participantId,
+    participantName: r.participantName,
+  }));
 }
 
 /**

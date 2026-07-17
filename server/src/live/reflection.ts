@@ -3,7 +3,7 @@ import type { Server } from 'socket.io';
 import type { ReflectionAlert } from '@shared';
 import { config } from '../config';
 import { tMs, type LiveSession } from './liveSessions';
-import { clusterReactions } from './reactions';
+import { clusterReactions, recentToClusterRows } from './reactions';
 import { generateSuggestionForAlert } from '../ai/suggest';
 
 type AnyServer = Server<any, any>;
@@ -42,16 +42,7 @@ export function checkThresholdAlert(io: AnyServer, s: LiveSession): void {
   const now = tMs(s);
   if (now - s.lastAlertAtMs < ALERT_COOLDOWN_MS) return;
 
-  const clusters = clusterReactions(
-    s.recentReactions.map((r, i) => ({
-      id: `recent-${i}`,
-      tMs: r.tMs,
-      kind: r.kind,
-      comment: r.comment,
-      participantId: r.participantId,
-      participantName: r.participantName,
-    }))
-  );
+  const clusters = clusterReactions(recentToClusterRows(s.recentReactions));
   const top = clusters[0];
   if (!top || top.participantCount < config.reflectionThreshold) return;
 
@@ -80,16 +71,7 @@ export function startIntervalAlerts(io: AnyServer, s: LiveSession): void {
     // 直近インターバル内の反応から最大クラスタを添える（なければクラスタなしで通知）
     const windowStart = now - config.reflectionIntervalMin * 60_000;
     const recent = s.recentReactions.filter((r) => r.tMs >= windowStart);
-    const clusters = clusterReactions(
-      recent.map((r, i) => ({
-        id: `recent-${i}`,
-        tMs: r.tMs,
-        kind: r.kind,
-        comment: r.comment,
-        participantId: r.participantId,
-        participantName: r.participantName,
-      }))
-    );
+    const clusters = clusterReactions(recentToClusterRows(recent));
     emitAlert(io, s, {
       alertId: crypto.randomUUID(),
       createdAtMs: now,

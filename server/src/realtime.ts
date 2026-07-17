@@ -53,6 +53,19 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       const lessonId = auth.lessonId;
       if (!lessonId) return next(new Error('lessonId が必要です'));
 
+      // 生徒: 参加トークンが明示されていればそちらを優先する
+      // （先生と同じ端末で生徒画面を開いた場合にCookieより優先されるように）
+      const participant = await verifyParticipantToken(auth.participantToken);
+      if (participant && participant.lessonId === lessonId) {
+        socket.data = {
+          role: 'student',
+          lessonId,
+          participantId: participant.id,
+          participantName: participant.displayName,
+        };
+        return next();
+      }
+
       // 先生: セッションCookieで認証し、授業の所有者であること
       const cookies = parseCookies(socket.request.headers.cookie);
       const raw = cookies['teacher_session'];
@@ -68,18 +81,6 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
             return next();
           }
         }
-      }
-
-      // 生徒: 参加トークンで認証し、その授業の参加者であること
-      const participant = await verifyParticipantToken(auth.participantToken);
-      if (participant && participant.lessonId === lessonId) {
-        socket.data = {
-          role: 'student',
-          lessonId,
-          participantId: participant.id,
-          participantName: participant.displayName,
-        };
-        return next();
       }
 
       return next(new Error('認証に失敗しました'));
