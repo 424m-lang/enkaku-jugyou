@@ -18,21 +18,21 @@ import SlideCanvas, { type DrawingTool } from '../../components/SlideCanvas';
 import JoinQrModal from '../../components/JoinQrModal';
 
 const TOOLS: { key: DrawingTool; label: string }[] = [
-  { key: 'none', label: '選択' },
   { key: 'pointer', label: 'ポインター' },
   { key: 'pen', label: 'ペン' },
-  { key: 'line', label: '直線' },
-  { key: 'rect', label: '四角' },
-  { key: 'ellipse', label: '楕円' },
   { key: 'text', label: 'テキスト' },
   { key: 'eraser', label: '消しゴム' },
 ];
-const COLORS = ['#111827', '#dc2626', '#2563eb', '#16a34a', '#f59e0b', '#9333ea'];
-const WIDTHS: { label: string; value: number }[] = [
-  { label: '細', value: 0.002 },
-  { label: '中', value: 0.004 },
-  { label: '太', value: 0.008 },
+// 黒 ＋ カラーユニバーサルデザイン（Okabe-Ito）の3色。色覚の違いがあっても見分けやすい
+const COLORS: { value: string; label: string }[] = [
+  { value: '#111827', label: '黒' },
+  { value: '#d55e00', label: '朱色' },
+  { value: '#0072b2', label: '青' },
+  { value: '#009e73', label: '緑' },
 ];
+const WIDTH_MIN = 0.0015;
+const WIDTH_MAX = 0.012;
+const WIDTH_DEFAULT = 0.004;
 
 export default function Teach() {
   const { id: lessonId } = useParams<{ id: string }>();
@@ -47,9 +47,9 @@ export default function Teach() {
   const [loadError, setLoadError] = useState('');
   const [showQr, setShowQr] = useState(false);
 
-  const [tool, setTool] = useState<DrawingTool>('none');
-  const [color, setColor] = useState(COLORS[1]);
-  const [lineWidth, setLineWidth] = useState(WIDTHS[1].value);
+  const [tool, setTool] = useState<DrawingTool>('pointer');
+  const [color, setColor] = useState(COLORS[0].value);
+  const [lineWidth, setLineWidth] = useState(WIDTH_DEFAULT);
 
   const audioStopRef = useRef<{ stop: () => void } | null>(null);
 
@@ -208,6 +208,15 @@ export default function Teach() {
     [socketRef]
   );
 
+  const onErase = useCallback(
+    (slideId: string, strokeIds: string[]) => {
+      const p = { slideId, strokeIds };
+      setStrokes((prev) => applyDrawingEvent({ ...prev }, 'clear_slide', p));
+      socketRef.current?.emit('clear_slide', p);
+    },
+    [socketRef, setStrokes]
+  );
+
   const onPointer = useCallback(
     (x: number, y: number, visible: boolean) => {
       if (!currentSlide) return;
@@ -347,23 +356,35 @@ export default function Teach() {
             <span className="toolbar-sep" />
             {COLORS.map((c) => (
               <button
-                key={c}
-                className={`color-swatch ${color === c ? 'color-active' : ''}`}
-                style={{ background: c }}
-                onClick={() => setColor(c)}
-                aria-label={`色 ${c}`}
+                key={c.value}
+                className={`color-swatch ${color === c.value ? 'color-active' : ''}`}
+                style={{ background: c.value }}
+                onClick={() => setColor(c.value)}
+                aria-label={`色 ${c.label}`}
+                title={c.label}
               />
             ))}
             <span className="toolbar-sep" />
-            {WIDTHS.map((w) => (
-              <button
-                key={w.label}
-                className={`btn tool ${lineWidth === w.value ? 'tool-active' : ''}`}
-                onClick={() => setLineWidth(w.value)}
-              >
-                {w.label}
-              </button>
-            ))}
+            <label className="size-slider" title="ペン・テキストのサイズ">
+              サイズ
+              <input
+                type="range"
+                min={WIDTH_MIN}
+                max={WIDTH_MAX}
+                step={0.0005}
+                value={lineWidth}
+                onChange={(e) => setLineWidth(Number(e.target.value))}
+              />
+              <span className="size-preview">
+                <span
+                  style={{
+                    width: Math.max(3, lineWidth * 1600),
+                    height: Math.max(3, lineWidth * 1600),
+                    background: color,
+                  }}
+                />
+              </span>
+            </label>
             <span className="toolbar-sep" />
             <button className="btn tool" onClick={clearCurrentSlide}>
               全消去
@@ -375,7 +396,7 @@ export default function Teach() {
             slide={currentSlide}
             strokes={currentSlideId ? (strokes[currentSlideId] ?? []) : []}
             progressStrokes={currentProgress}
-            drawing={{ tool, color, lineWidth, onStroke, onProgress, onPointer }}
+            drawing={{ tool, color, lineWidth, onStroke, onProgress, onPointer, onErase }}
           />
 
           <div className="slide-nav">

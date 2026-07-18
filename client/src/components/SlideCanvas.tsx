@@ -11,6 +11,8 @@ type DrawingProps = {
   onStroke: (s: StrokePayload) => void;
   onProgress: (s: StrokePayload) => void;
   onPointer: (x: number, y: number, visible: boolean) => void;
+  /** ストローク単位の削除（消しゴム・テキストの移動/編集で使用） */
+  onErase: (slideId: string, strokeIds: string[]) => void;
 };
 
 type Props = {
@@ -26,7 +28,107 @@ type Props = {
 };
 
 const DEFAULT_ASPECT = 16 / 9;
-const TEXT_FONT_SIZE = 0.06; // スライド高さに対する比
+const FONT_FAMILY = "'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', sans-serif";
+const TEXT_FONT_SIZE = 0.06; // スライド高さに対する比（既定値）
+const LINE_HEIGHT = 1.3;
+const FONT_SIZE_PER_WIDTH = 15; // テキストの文字サイズ = 線の太さ × この係数
+// ポインターは単色の点のみ（ハローなし）。彩度を抑えたやわらかい赤で目に刺さらないように
+const POINTER_COLOR = '#d9534f';
+const POINTER_RADIUS = 7;
+
+function textLines(s: StrokePayload): string[] {
+  return (s.text ?? '').split('\n');
+}
+
+/** テキストストロークのピクセル座標での外接矩形（当たり判定・エディタ配置用） */
+function textMetrics(
+  ctx: CanvasRenderingContext2D,
+  s: StrokePayload,
+  W: number,
+  H: number
+): { x: number; y: number; w: number; h: number; fs: number } {
+  const fs = (s.fontSize ?? TEXT_FONT_SIZE) * H;
+  ctx.font = `${fs}px ${FONT_FAMILY}`;
+  const lines = textLines(s);
+  let w = 0;
+  for (const ln of lines) w = Math.max(w, ctx.measureText(ln).width);
+  return { x: s.points[0] * W, y: s.points[1] * H, w, h: lines.length * fs * LINE_HEIGHT, fs };
+}
+
+function distToSegmentSq(
+  px: number,
+  py: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number
+): number {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 === 0 ? 0 : ((px - ax) * dx + (py - ay) * dy) / len2;
+  t = Math.max(0, Math.min(1, t));
+  const qx = ax + t * dx;
+  const qy = ay + t * dy;
+  return (px - qx) ** 2 + (py - qy) ** 2;
+}
+
+/** ストローク単位の当たり判定（消しゴム・テキスト選択用。座標はピクセル） */
+function hitStroke(
+  ctx: CanvasRenderingContext2D,
+  s: StrokePayload,
+  xPx: number,
+  yPx: number,
+  W: number,
+  H: number
+): boolean {
+  if (s.tool === 'text') {
+    const m = textMetrics(ctx, s, W, H);
+    const pad = 4;
+    return (
+      xPx >= m.x - pad &&
+      xPx <= m.x + Math.max(m.w, 12) + pad &&
+      yPx >= m.y - pad &&
+      yPx <= m.y + m.h + pad
+    );
+  }
+  const pts = s.points;
+  const n = Math.floor(pts.length / 2);
+  if (n === 0) return false;
+  const tol = Math.max((s.width * W) / 2, 5) + 5;
+  if (s.tool === 'rect' || s.tool === 'ellipse') {
+    // 旧データ用: 外接矩形（許容幅ぶん拡大）に入っていればヒット
+    const x0 = Math.min(pts[0], pts[(n - 1) * 2]) * W - tol;
+    const x1 = Math.max(pts[0], pts[(n - 1) * 2]) * W + tol;
+    const y0 = Math.min(pts[1], pts[(n - 1) * 2 + 1]) * H - tol;
+    const y1 = Math.max(pts[1], pts[(n - 1) * 2 + 1]) * H + tol;
+    return xPx >= x0 && xPx <= x1 && yPx >= y0 && yPx <= y1;
+  }
+  if (n === 1) {
+    return (xPx - pts[0] * W) ** 2 + (yPx - pts[1] * H) ** 2 <= tol * tol;
+  }
+  const tol2 = tol * tol;
+  for (let i = 0; i < n - 1; i++) {
+    const d2 = distToSegmentSq(
+      xPx,
+      yPx,
+      pts[i * 2] * W,
+      pts[i * 2 + 1] * H,
+      pts[(i + 1) * 2] * W,
+      pts[(i + 1) * 2 + 1] * H
+    );
+    if (d2 <= tol2) return true;
+  }
+  return false;
+}
+
+/** ストローク全体を平行移動したコピーを返す（テキストの移動用） */
+function shiftStroke(s: StrokePayload, dx: number, dy: number): StrokePayload {
+  const pts = s.points.map((v, i) =>
+    i % 2 === 0 ? Math.min(1, Math.max(0, v + dx)) : Math.min(1, Math.max(0, v + dy))
+  );
+  return { ...s, points: pts };
+}
 
 function drawStroke(
   ctx: CanvasRenderingContext2D,
@@ -42,6 +144,7 @@ function drawStroke(
 
   ctx.save();
   if (s.tool === 'eraser') {
+    // 旧データ用（現在の消しゴムはストローク自体を削除する方式）
     ctx.globalCompositeOperation = 'destination-out';
     ctx.strokeStyle = 'rgba(0,0,0,1)';
     ctx.fillStyle = 'rgba(0,0,0,1)';
@@ -96,23 +199,51 @@ function drawStroke(
       break;
     }
     case 'text': {
-      ctx.font = `${(s.fontSize ?? TEXT_FONT_SIZE) * H}px 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', sans-serif`;
+      const fs = (s.fontSize ?? TEXT_FONT_SIZE) * H;
+      ctx.font = `${fs}px ${FONT_FAMILY}`;
       ctx.textBaseline = 'top';
-      ctx.fillText(s.text ?? '', px(0), py(0));
+      // 編集用textarea（line-height: 1.3）と同じ見た目になるよう行内オフセットを加える
+      const off = ((LINE_HEIGHT - 1) / 2) * fs;
+      const lines = textLines(s);
+      lines.forEach((ln, i) => ctx.fillText(ln, px(0), py(0) + off + i * fs * LINE_HEIGHT));
       break;
     }
   }
   ctx.restore();
 }
 
+/** テキストのその場編集の状態 */
+type TextEditState = {
+  strokeId: string; // 編集中プレビュー配信に使うID（既存編集時は元のID）
+  slideId: string;
+  x: number;
+  y: number;
+  text: string;
+  color: string;
+  fontSize: number;
+  width: number;
+  isNew: boolean;
+  originalText: string; // 変更有無の判定用（新規は ''）
+};
+
+type TextDrag = {
+  stroke: StrokePayload;
+  startX: number;
+  startY: number;
+  dx: number;
+  dy: number;
+  moved: boolean;
+};
+
 /**
- * スライド1枚の表示（PDFページ or 白紙）＋ 書き込みオーバーレイ ＋ ポインター表示。
+ * スライド1枚の表示（PDFページ or 白紙）＋ 書き込みオーバーレイ ＋ ポインターレイヤ。
  * 白紙スライドも通常のPDFページと同じ仕組みで描画・書き込みできる。
  */
 export default function SlideCanvas({ pdf, slide, strokes, progressStrokes, pointer, drawing }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const baseRef = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
+  const pointerCanvasRef = useRef<HTMLCanvasElement>(null);
   const [aspect, setAspect] = useState(DEFAULT_ASPECT);
   const [size, setSize] = useState({ w: 800, h: 450 });
   const bitmapRef = useRef<ImageBitmap | null>(null);
@@ -122,6 +253,22 @@ export default function SlideCanvas({ pdf, slide, strokes, progressStrokes, poin
   const lastProgressSentRef = useRef(0);
   const drawingRef = useRef(drawing);
   drawingRef.current = drawing;
+
+  // ポインター: 先生自身のローカル位置＋リモート（生徒側）の補間表示
+  const localPtrRef = useRef<{ x: number; y: number } | null>(null);
+  const remoteTargetRef = useRef<PointerPayload | null>(null);
+  const dispPtrRef = useRef<{ x: number; y: number } | null>(null);
+  const rafRef = useRef(0);
+  const lastPointerSentRef = useRef(0);
+
+  // テキスト編集・移動、消しゴム
+  const [textEdit, setTextEdit] = useState<TextEditState | null>(null);
+  const textEditRef = useRef(textEdit);
+  textEditRef.current = textEdit;
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const textDragRef = useRef<TextDrag | null>(null);
+  const editProgressSentRef = useRef(false);
+  const eraseActiveRef = useRef(false);
 
   // ---- コンテナサイズへのフィット ----
   useEffect(() => {
@@ -184,7 +331,7 @@ export default function SlideCanvas({ pdf, slide, strokes, progressStrokes, poin
     drawBase();
   }, [drawBase]);
 
-  // ---- オーバーレイ（ストローク・ポインター）描画 ----
+  // ---- オーバーレイ（ストローク）描画 ----
   const drawOverlay = useCallback(() => {
     const canvas = overlayRef.current;
     if (!canvas) return;
@@ -197,27 +344,159 @@ export default function SlideCanvas({ pdf, slide, strokes, progressStrokes, poin
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, size.w, size.h);
 
-    for (const s of strokes) drawStroke(ctx, s, size.w, size.h);
+    // 編集中テキスト・移動中テキスト・プレビュー配信中のストロークは
+    // 確定版の代わりにその状態を描く（二重表示を避ける）
+    const progressIds = new Set((progressStrokes ?? []).map((p) => p.strokeId));
+    const editingId = textEdit?.strokeId ?? null;
+    const drag = textDragRef.current;
+    for (const s of strokes) {
+      if (s.strokeId === editingId) continue;
+      if (progressIds.has(s.strokeId)) continue;
+      if (drag && s.strokeId === drag.stroke.strokeId) continue;
+      drawStroke(ctx, s, size.w, size.h);
+    }
     for (const s of progressStrokes ?? []) drawStroke(ctx, s, size.w, size.h);
     if (localStrokeRef.current) drawStroke(ctx, localStrokeRef.current, size.w, size.h);
-
-    if (pointer && pointer.visible) {
-      const x = pointer.x * size.w;
-      const y = pointer.y * size.h;
-      ctx.beginPath();
-      ctx.fillStyle = 'rgba(239, 68, 68, 0.25)';
-      ctx.arc(x, y, 14, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.beginPath();
-      ctx.fillStyle = '#ef4444';
-      ctx.arc(x, y, 5, 0, Math.PI * 2);
-      ctx.fill();
+    if (drag && drag.moved) {
+      drawStroke(ctx, shiftStroke(drag.stroke, drag.dx, drag.dy), size.w, size.h);
     }
-  }, [size, strokes, progressStrokes, pointer]);
+  }, [size, strokes, progressStrokes, textEdit]);
 
   useEffect(() => {
     drawOverlay();
   }, [drawOverlay]);
+
+  // ---- ポインターレイヤ（単色の点のみ） ----
+  const drawPointerLayer = useCallback(() => {
+    const canvas = pointerCanvasRef.current;
+    if (!canvas) return;
+    const dpr = window.devicePixelRatio || 1;
+    if (canvas.width !== size.w * dpr || canvas.height !== size.h * dpr) {
+      canvas.width = size.w * dpr;
+      canvas.height = size.h * dpr;
+    }
+    const ctx = canvas.getContext('2d')!;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, size.w, size.h);
+    const remote =
+      remoteTargetRef.current && remoteTargetRef.current.visible ? dispPtrRef.current : null;
+    const p = localPtrRef.current ?? remote;
+    if (!p) return;
+    ctx.beginPath();
+    ctx.fillStyle = POINTER_COLOR;
+    ctx.arc(p.x * size.w, p.y * size.h, POINTER_RADIUS, 0, Math.PI * 2);
+    ctx.fill();
+  }, [size]);
+
+  useEffect(() => {
+    drawPointerLayer();
+  }, [drawPointerLayer]);
+
+  // リモートポインターは目標位置へ毎フレーム補間して滑らかに動かす
+  useEffect(() => {
+    remoteTargetRef.current = pointer ?? null;
+    if (!pointer || !pointer.visible) {
+      dispPtrRef.current = null;
+      drawPointerLayer();
+      return;
+    }
+    if (!dispPtrRef.current) dispPtrRef.current = { x: pointer.x, y: pointer.y };
+    if (!rafRef.current) {
+      const step = () => {
+        const t = remoteTargetRef.current;
+        const d = dispPtrRef.current;
+        if (!t || !t.visible || !d) {
+          rafRef.current = 0;
+          drawPointerLayer();
+          return;
+        }
+        d.x += (t.x - d.x) * 0.35;
+        d.y += (t.y - d.y) * 0.35;
+        drawPointerLayer();
+        rafRef.current = requestAnimationFrame(step);
+      };
+      rafRef.current = requestAnimationFrame(step);
+    }
+  }, [pointer, drawPointerLayer]);
+
+  useEffect(() => {
+    return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    };
+  }, []);
+
+  // ポインター以外のツールに切り替えたら自分のポインター表示を消す
+  useEffect(() => {
+    if (drawing?.tool !== 'pointer' && localPtrRef.current) {
+      localPtrRef.current = null;
+      drawPointerLayer();
+      drawingRef.current?.onPointer(0, 0, false);
+    }
+  }, [drawing?.tool, drawPointerLayer]);
+
+  // ---- テキスト編集 ----
+  const emitTextProgress = useCallback((te: TextEditState, text: string) => {
+    const d = drawingRef.current;
+    if (!d) return;
+    editProgressSentRef.current = true;
+    d.onProgress({
+      strokeId: te.strokeId,
+      slideId: te.slideId,
+      tool: 'text',
+      color: te.color,
+      width: te.width,
+      points: [te.x, te.y],
+      text,
+      fontSize: te.fontSize,
+    });
+  }, []);
+
+  const commitTextEdit = useCallback(() => {
+    const te = textEditRef.current;
+    if (!te) return;
+    setTextEdit(null);
+    const d = drawingRef.current;
+    if (!d) return;
+    const progressSent = editProgressSentRef.current;
+    editProgressSentRef.current = false;
+
+    if (te.text.trim() === '') {
+      // 空のまま確定 → 既存テキストなら削除、新規なら生徒側プレビューだけ消す
+      if (!te.isNew) d.onErase(te.slideId, [te.strokeId]);
+      else if (progressSent) emitTextProgress(te, '');
+      return;
+    }
+    if (!te.isNew && !progressSent && te.text === te.originalText) return; // 変更なし
+
+    if (!te.isNew) d.onErase(te.slideId, [te.strokeId]);
+    d.onStroke({
+      // 削除→追加の到着順が入れ替わっても壊れないよう、確定版は必ず新しいIDにする
+      strokeId: te.isNew ? te.strokeId : crypto.randomUUID(),
+      slideId: te.slideId,
+      tool: 'text',
+      color: te.color,
+      width: te.width,
+      points: [te.x, te.y],
+      text: te.text,
+      fontSize: te.fontSize,
+    });
+  }, [emitTextProgress]);
+
+  // スライドが切り替わったら編集中のテキストを確定する
+  useEffect(() => {
+    if (textEditRef.current && textEditRef.current.slideId !== slide?.id) commitTextEdit();
+  }, [slide?.id, commitTextEdit]);
+
+  // エディタを開いたらフォーカスしてカーソルを末尾へ
+  useEffect(() => {
+    if (!textEdit) return;
+    const ta = textareaRef.current;
+    if (ta) {
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [textEdit?.strokeId]);
 
   // ---- 描画入力（先生） ----
   const getPos = (e: React.PointerEvent): { x: number; y: number } => {
@@ -228,6 +507,24 @@ export default function SlideCanvas({ pdf, slide, strokes, progressStrokes, poin
     };
   };
 
+  const capturePointer = (e: React.PointerEvent) => {
+    try {
+      overlayRef.current!.setPointerCapture(e.pointerId);
+    } catch {
+      /* 合成イベント等でキャプチャできない場合は無視 */
+    }
+  };
+
+  const eraseAt = (x: number, y: number) => {
+    const d = drawingRef.current;
+    const ctx = overlayRef.current?.getContext('2d');
+    if (!d || !slide || !ctx) return;
+    const hits = strokes
+      .filter((s) => hitStroke(ctx, s, x * size.w, y * size.h, size.w, size.h))
+      .map((s) => s.strokeId);
+    if (hits.length > 0) d.onErase(slide.id, hits);
+  };
+
   const onPointerDown = (e: React.PointerEvent) => {
     const d = drawingRef.current;
     if (!d || !slide || d.tool === 'none') return;
@@ -235,37 +532,61 @@ export default function SlideCanvas({ pdf, slide, strokes, progressStrokes, poin
     const { x, y } = getPos(e);
 
     if (d.tool === 'pointer') {
+      localPtrRef.current = { x, y };
+      drawPointerLayer();
+      lastPointerSentRef.current = performance.now();
       d.onPointer(x, y, true);
       return;
     }
+
     if (d.tool === 'text') {
-      const text = window.prompt('表示するテキストを入力してください');
-      if (text && text.trim()) {
-        d.onStroke({
+      if (textEditRef.current) {
+        // 編集中に枠外をクリック → 確定のみ（誤って新規作成しない）
+        commitTextEdit();
+        return;
+      }
+      const ctx = overlayRef.current?.getContext('2d');
+      const hit = ctx
+        ? [...strokes]
+            .reverse()
+            .find((s) => s.tool === 'text' && hitStroke(ctx, s, x * size.w, y * size.h, size.w, size.h))
+        : undefined;
+      if (hit) {
+        // 既存テキスト: ドラッグで移動、動かさず離すと編集
+        capturePointer(e);
+        textDragRef.current = { stroke: hit, startX: x, startY: y, dx: 0, dy: 0, moved: false };
+      } else {
+        editProgressSentRef.current = false;
+        setTextEdit({
           strokeId: crypto.randomUUID(),
           slideId: slide.id,
-          tool: 'text',
+          x,
+          y,
+          text: '',
           color: d.color,
+          fontSize: Math.min(0.2, Math.max(0.02, d.lineWidth * FONT_SIZE_PER_WIDTH)),
           width: d.lineWidth,
-          points: [x, y],
-          text: text.trim(),
-          fontSize: TEXT_FONT_SIZE,
+          isNew: true,
+          originalText: '',
         });
       }
       return;
     }
 
-    try {
-      overlayRef.current!.setPointerCapture(e.pointerId);
-    } catch {
-      /* 合成イベント等でキャプチャできない場合は無視 */
+    if (d.tool === 'eraser') {
+      capturePointer(e);
+      eraseActiveRef.current = true;
+      eraseAt(x, y);
+      return;
     }
+
+    capturePointer(e);
     localStrokeRef.current = {
       strokeId: crypto.randomUUID(),
       slideId: slide.id,
       tool: d.tool,
       color: d.color,
-      width: d.tool === 'eraser' ? d.lineWidth * 6 : d.lineWidth,
+      width: d.lineWidth,
       points: [x, y],
     };
     drawOverlay();
@@ -277,12 +598,41 @@ export default function SlideCanvas({ pdf, slide, strokes, progressStrokes, poin
     const { x, y } = getPos(e);
 
     if (d.tool === 'pointer') {
-      d.onPointer(x, y, true);
+      localPtrRef.current = { x, y };
+      drawPointerLayer();
+      const now = performance.now();
+      if (now - lastPointerSentRef.current > 33) {
+        lastPointerSentRef.current = now;
+        d.onPointer(x, y, true);
+      }
       return;
     }
+
+    if (d.tool === 'text') {
+      const drag = textDragRef.current;
+      if (!drag) return;
+      drag.dx = x - drag.startX;
+      drag.dy = y - drag.startY;
+      if (Math.abs(drag.dx) + Math.abs(drag.dy) > 0.004) drag.moved = true;
+      if (drag.moved) {
+        drawOverlay();
+        const now = performance.now();
+        if (now - lastProgressSentRef.current > 66) {
+          lastProgressSentRef.current = now;
+          d.onProgress(shiftStroke(drag.stroke, drag.dx, drag.dy));
+        }
+      }
+      return;
+    }
+
+    if (d.tool === 'eraser') {
+      if (eraseActiveRef.current) eraseAt(x, y);
+      return;
+    }
+
     const cur = localStrokeRef.current;
     if (!cur) return;
-    if (cur.tool === 'pen' || cur.tool === 'eraser') {
+    if (cur.tool === 'pen') {
       const pts = cur.points;
       const lx = pts[pts.length - 2];
       const ly = pts[pts.length - 1];
@@ -314,13 +664,95 @@ export default function SlideCanvas({ pdf, slide, strokes, progressStrokes, poin
   const onPointerUp = (_e: React.PointerEvent) => {
     const d = drawingRef.current;
     if (d?.tool === 'pointer') return; // ポインターは押している間だけでなく移動中も表示
+
+    if (d?.tool === 'text') {
+      const drag = textDragRef.current;
+      if (!drag || !slide) return;
+      textDragRef.current = null;
+      if (drag.moved) {
+        // 移動を確定: 元を削除して新しいIDで追加（到着順が入れ替わっても安全）
+        const moved = { ...shiftStroke(drag.stroke, drag.dx, drag.dy), strokeId: crypto.randomUUID() };
+        d.onErase(drag.stroke.slideId, [drag.stroke.strokeId]);
+        d.onStroke(moved);
+      } else {
+        // 動かさずに離した → その場で内容を編集
+        editProgressSentRef.current = false;
+        setTextEdit({
+          strokeId: drag.stroke.strokeId,
+          slideId: drag.stroke.slideId,
+          x: drag.stroke.points[0],
+          y: drag.stroke.points[1],
+          text: drag.stroke.text ?? '',
+          color: drag.stroke.color,
+          fontSize: drag.stroke.fontSize ?? TEXT_FONT_SIZE,
+          width: drag.stroke.width,
+          isNew: false,
+          originalText: drag.stroke.text ?? '',
+        });
+      }
+      drawOverlay();
+      return;
+    }
+
+    if (d?.tool === 'eraser') {
+      eraseActiveRef.current = false;
+      return;
+    }
+
     if (localStrokeRef.current) finishStroke();
   };
 
   const onPointerLeave = () => {
     const d = drawingRef.current;
-    if (d?.tool === 'pointer') d.onPointer(0, 0, false);
+    if (d?.tool === 'pointer') {
+      localPtrRef.current = null;
+      drawPointerLayer();
+      d.onPointer(0, 0, false);
+    }
   };
+
+  const cursorFor = (tool: DrawingTool): string => {
+    switch (tool) {
+      case 'pointer':
+        return 'none'; // 自分のポインターの点がカーソル代わりになる
+      case 'text':
+        return 'text';
+      case 'eraser':
+        return 'cell';
+      case 'none':
+        return 'default';
+      default:
+        return 'crosshair';
+    }
+  };
+
+  // テキストエディタの配置・サイズ（canvas描画とWYSIWYGになるよう同じフォントで実測）
+  let editorStyle: React.CSSProperties | null = null;
+  if (textEdit) {
+    const fs = textEdit.fontSize * size.h;
+    const lines = textEdit.text.split('\n');
+    let wpx = 40;
+    const ctx = overlayRef.current?.getContext('2d');
+    if (ctx) {
+      ctx.font = `${fs}px ${FONT_FAMILY}`;
+      for (const ln of lines) wpx = Math.max(wpx, ctx.measureText(ln).width);
+    } else {
+      wpx = Math.max(40, ...lines.map((l) => l.length * fs));
+    }
+    const left = textEdit.x * size.w;
+    const top = textEdit.y * size.h;
+    editorStyle = {
+      left,
+      top,
+      width: Math.min(wpx + fs + 8, Math.max(60, size.w - left)),
+      height: lines.length * fs * LINE_HEIGHT + 6,
+      fontSize: fs,
+      lineHeight: `${LINE_HEIGHT}`,
+      fontFamily: FONT_FAMILY,
+      color: textEdit.color,
+      caretColor: textEdit.color,
+    };
+  }
 
   return (
     <div ref={containerRef} className="slide-container">
@@ -333,18 +765,41 @@ export default function SlideCanvas({ pdf, slide, strokes, progressStrokes, poin
             width: size.w,
             height: size.h,
             touchAction: 'none',
-            cursor:
-              drawing && drawing.tool !== 'none'
-                ? drawing.tool === 'pointer'
-                  ? 'crosshair'
-                  : 'cell'
-                : 'default',
+            cursor: drawing ? cursorFor(drawing.tool) : 'default',
           }}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
           onPointerLeave={onPointerLeave}
         />
+        <canvas
+          ref={pointerCanvasRef}
+          className="slide-pointer"
+          style={{ width: size.w, height: size.h }}
+        />
+        {textEdit && editorStyle && (
+          <textarea
+            ref={textareaRef}
+            className="text-annotation-editor"
+            style={editorStyle}
+            value={textEdit.text}
+            wrap="off"
+            spellCheck={false}
+            onChange={(e) => {
+              const text = e.target.value;
+              setTextEdit((prev) => (prev ? { ...prev, text } : prev));
+              const te = textEditRef.current;
+              if (te) emitTextProgress({ ...te, text }, text);
+            }}
+            onBlur={() => commitTextEdit()}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                commitTextEdit();
+              }
+            }}
+          />
+        )}
       </div>
     </div>
   );

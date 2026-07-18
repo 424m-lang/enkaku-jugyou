@@ -103,7 +103,7 @@ export default function Dashboard() {
 
 function CreateLessonForm({ onCreated }: { onCreated: (l: LessonSummary) => void }) {
   const [title, setTitle] = useState('');
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
   const [buttons, setButtons] = useState<ReactionButtonDef[]>(DEFAULT_REACTION_BUTTONS);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -112,9 +112,19 @@ function CreateLessonForm({ onCreated }: { onCreated: (l: LessonSummary) => void
     setButtons((prev) => prev.map((b, j) => (j === i ? { ...b, ...patch } : b)));
   }
 
+  function moveFile(i: number, delta: number) {
+    setFiles((prev) => {
+      const j = i + delta;
+      if (j < 0 || j >= prev.length) return prev;
+      const next = [...prev];
+      [next[i], next[j]] = [next[j], next[i]];
+      return next;
+    });
+  }
+
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!file) {
+    if (files.length === 0) {
       setError('スライドPDFを選択してください');
       return;
     }
@@ -129,7 +139,7 @@ function CreateLessonForm({ onCreated }: { onCreated: (l: LessonSummary) => void
           buttons.map((b, i) => ({ ...b, key: b.key || `btn_${i}` })).filter((b) => b.label.trim())
         )
       );
-      fd.append('pdf', file);
+      for (const f of files) fd.append('pdf', f, f.name);
       const res = await fetch('/api/lessons', { method: 'POST', body: fd });
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
@@ -152,14 +162,46 @@ function CreateLessonForm({ onCreated }: { onCreated: (l: LessonSummary) => void
           <input value={title} onChange={(e) => setTitle(e.target.value)} required maxLength={100} />
         </label>
         <label>
-          スライドPDF
+          スライドPDF（複数選択できます。上から順につながって1つのスライドになります）
           <input
             type="file"
             accept="application/pdf"
-            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-            required
+            multiple
+            onChange={(e) => {
+              const added = Array.from(e.target.files ?? []);
+              if (added.length > 0) setFiles((prev) => [...prev, ...added]);
+              e.target.value = ''; // 同じファイルを選び直せるようにリセット
+            }}
           />
         </label>
+        {files.length > 0 && (
+          <div className="pdf-file-list">
+            {files.map((f, i) => (
+              <div key={`${f.name}-${i}`} className="pdf-file-row">
+                <span className="pdf-file-order">{i + 1}</span>
+                <span className="pdf-file-name">{f.name}</span>
+                <button type="button" className="btn" disabled={i === 0} onClick={() => moveFile(i, -1)}>
+                  ↑
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={i === files.length - 1}
+                  onClick={() => moveFile(i, 1)}
+                >
+                  ↓
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => setFiles((prev) => prev.filter((_, j) => j !== i))}
+                >
+                  削除
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <div>
           <span className="muted">リアクションボタン（生徒が押すボタン。最大6個）</span>
           {buttons.map((b, i) => (

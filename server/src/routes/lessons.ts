@@ -82,11 +82,11 @@ export async function lessonRoutes(app: FastifyInstance): Promise<void> {
     const parts = req.parts();
     let title = '';
     let buttons: ReactionButtonDef[] = DEFAULT_REACTION_BUTTONS;
-    let pdfBuffer: Buffer | null = null;
+    const pdfBuffers: Buffer[] = [];
 
     for await (const part of parts) {
       if (part.type === 'file' && part.fieldname === 'pdf') {
-        pdfBuffer = await part.toBuffer();
+        pdfBuffers.push(await part.toBuffer());
       } else if (part.type === 'field' && part.fieldname === 'title') {
         title = String(part.value).trim();
       } else if (part.type === 'field' && part.fieldname === 'reactionButtons') {
@@ -99,13 +99,29 @@ export async function lessonRoutes(app: FastifyInstance): Promise<void> {
     }
 
     if (!title) return reply.code(400).send({ error: 'タイトルを入力してください' });
-    if (!pdfBuffer) return reply.code(400).send({ error: 'スライドPDFを選択してください' });
+    if (pdfBuffers.length === 0) {
+      return reply.code(400).send({ error: 'スライドPDFを選択してください' });
+    }
 
-    // PDFのページ数を取得（内容の検証も兼ねる）
+    // 複数PDFは1つに結合して保存する（授業中はページ送りだけでPDFを跨げる）。
+    // 1ファイルのときは元のバイト列をそのまま保存し、再保存による劣化を避ける
+    let pdfBuffer: Buffer;
     let pageCount = 0;
     try {
-      const doc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
-      pageCount = doc.getPageCount();
+      if (pdfBuffers.length === 1) {
+        pdfBuffer = pdfBuffers[0];
+        const doc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
+        pageCount = doc.getPageCount();
+      } else {
+        const merged = await PDFDocument.create();
+        for (const buf of pdfBuffers) {
+          const src = await PDFDocument.load(buf, { ignoreEncryption: true });
+          const pages = await merged.copyPages(src, src.getPageIndices());
+          for (const p of pages) merged.addPage(p);
+        }
+        pageCount = merged.getPageCount();
+        pdfBuffer = Buffer.from(await merged.save());
+      }
     } catch {
       return reply.code(400).send({ error: 'PDFファイルとして読み込めませんでした' });
     }

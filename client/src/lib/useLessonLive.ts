@@ -78,9 +78,17 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
     socket.on('stroke_progress', (p) =>
       setRemoteProgress((prev) => ({ ...prev, [p.strokeId]: p }))
     );
-    socket.on('clear_slide', (p) =>
-      setStrokes((prev) => applyDrawingEvent({ ...prev }, 'clear_slide', p))
-    );
+    socket.on('clear_slide', (p) => {
+      setStrokes((prev) => applyDrawingEvent({ ...prev }, 'clear_slide', p));
+      // 削除されたストロークの描画途中プレビューも破棄（テキスト編集・移動で使用）
+      if (p.strokeIds && p.strokeIds.length > 0) {
+        setRemoteProgress((prev) => {
+          const next = { ...prev };
+          for (const id of p.strokeIds!) delete next[id];
+          return next;
+        });
+      }
+    });
     socket.on('reflection_started', () => setReflectionActive(true));
     socket.on('reflection_ended', () => setReflectionActive(false));
     socket.on('lesson_started', () => setStatus('live'));

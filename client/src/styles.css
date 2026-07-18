@@ -245,6 +245,44 @@ textarea:focus {
   margin-bottom: 18px;
 }
 
+/* 選択済みPDFの一覧（並べ替え・削除つき） */
+.pdf-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.pdf-file-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.pdf-file-row .btn {
+  padding: 2px 8px;
+  font-size: 0.8rem;
+}
+
+.pdf-file-order {
+  min-width: 20px;
+  text-align: center;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.pdf-file-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.9rem;
+}
+
 .create-form h3 {
   margin: 0 0 10px;
 }
@@ -384,6 +422,53 @@ textarea:focus {
 
 .slide-overlay {
   z-index: 2;
+}
+
+/* ポインター表示レイヤ（クリック等は下のオーバーレイに通す） */
+.slide-pointer {
+  z-index: 3;
+  pointer-events: none;
+}
+
+/* テキスト注釈のその場編集エディタ（canvas描画と同じ見た目になるよう最小限の装飾） */
+.text-annotation-editor {
+  position: absolute;
+  z-index: 4;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: 1px dashed rgba(0, 0, 0, 0.45);
+  border-radius: 2px;
+  outline: none;
+  resize: none;
+  overflow: hidden;
+  white-space: pre;
+}
+
+/* ペン・テキストのサイズ調整バー */
+.size-slider {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.size-slider input[type='range'] {
+  width: 90px;
+}
+
+.size-preview {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.size-preview span {
+  display: block;
+  border-radius: 50%;
 }
 
 .slide-nav {
