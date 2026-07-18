@@ -443,7 +443,7 @@ export default function Teach() {
           <div className="points-strip">
             {points.length === 0 && (
               <p className="muted points-empty">
-                反応やコメントが付いたスライド（1分以上の説明）のまとめが自動で追加されます
+                反応やコメントが付いたスライド（合計1分以上の説明。行き来しても合算されます）のまとめが自動で追加されます
               </p>
             )}
             {points.map((p) => {

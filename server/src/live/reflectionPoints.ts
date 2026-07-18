@@ -21,22 +21,25 @@ function emitPoint(io: AnyServer, lessonId: string, point: ReflectionPoint): voi
 }
 
 /**
- * スライド切替時: 切替先が「確定保留中のスライド」への1分以内の復帰なら、
- * 滞在を継続扱いにして true を返す（切り替わりとして判定しない）。
+ * スライド切替時: 切替先が「確定保留中のスライド」への1分以内の再訪なら、
+ * 最初の表示開始からの連続区間として継続扱いにして true を返す
+ * （切り替わりとして判定しない）。
  */
 export function resumeHeldVisit(s: LiveSession, slideId: string, nowMs: number): boolean {
-  const held = s.heldVisit;
-  if (!held || held.slideId !== slideId) return false;
+  const held = s.heldVisits.get(slideId);
+  if (!held) return false;
   if (nowMs - held.leftAtMs > config.reflectionReturnWindowMs) return false;
   clearTimeout(held.timer);
-  s.heldVisit = null;
-  s.visitStartMs = held.startMs; // 元の滞在開始時刻から連続しているものとする
+  s.heldVisits.delete(slideId);
+  s.visitStartMs = held.startMs; // 最初の表示開始時刻から連続しているものとする
   return true;
 }
 
 /**
- * スライドを離れたときに呼ぶ。1分以上の滞在なら即確定せず保留し、
+ * スライドを離れたときに呼ぶ。表示時間の長さに関係なく保留し、
  * 1分以内に戻らなければタイマーで確定する（戻れば resumeHeldVisit が継続させる）。
+ * 短い表示も保留するため、行き来しながらの説明は合計でひとつの区間になり、
+ * 合計が1分に達していれば振り返りポイントの対象になる。
  */
 export function holdVisitEnd(
   io: AnyServer,
@@ -45,37 +48,27 @@ export function holdVisitEnd(
   startMs: number,
   leftAtMs: number
 ): void {
-  if (leftAtMs - startMs < config.reflectionMinVisitMs) return; // 短い通過は対象外
-
-  // 別のスライドの保留が残っていれば先に確定させる（保留は常に1件）
-  if (s.heldVisit) {
-    const prev = s.heldVisit;
-    clearTimeout(prev.timer);
-    s.heldVisit = null;
-    void finalizeVisit(io, s, prev.slideId, prev.startMs, prev.leftAtMs).catch((err) =>
-      console.error('[reflection-point] 確定に失敗:', err)
-    );
-  }
+  const prev = s.heldVisits.get(slideId);
+  if (prev) clearTimeout(prev.timer); // 期限切れ直前の入れ替わりに備えた保険
 
   const timer = setTimeout(() => {
-    s.heldVisit = null;
+    s.heldVisits.delete(slideId);
     void finalizeVisit(io, s, slideId, startMs, leftAtMs).catch((err) =>
       console.error('[reflection-point] 確定に失敗:', err)
     );
   }, config.reflectionReturnWindowMs);
-  s.heldVisit = { slideId, startMs, leftAtMs, timer };
+  s.heldVisits.set(slideId, { startMs, leftAtMs, timer });
 }
 
 /** 授業終了時: 保留中の滞在と表示中スライドの滞在をすべて確定する */
 export function flushVisitsAtEnd(io: AnyServer, s: LiveSession, endMs: number): void {
-  if (s.heldVisit) {
-    const held = s.heldVisit;
+  for (const [slideId, held] of s.heldVisits) {
     clearTimeout(held.timer);
-    s.heldVisit = null;
-    void finalizeVisit(io, s, held.slideId, held.startMs, held.leftAtMs).catch((err) =>
+    void finalizeVisit(io, s, slideId, held.startMs, held.leftAtMs).catch((err) =>
       console.error('[reflection-point] 確定に失敗:', err)
     );
   }
+  s.heldVisits.clear();
   if (s.currentSlideId) {
     void finalizeVisit(io, s, s.currentSlideId, s.visitStartMs, endMs).catch((err) =>
       console.error('[reflection-point] 確定に失敗:', err)
@@ -120,7 +113,8 @@ export async function finalizeVisit(
 
   await waitForComposers(s, slideId);
 
-  // ボタン反応: 滞在時間内のもの
+  // ボタン反応: 滞在時間内のもの。行き来で区間が重なっても二重計上しないよう、
+  // 押した瞬間に表示されていたスライドのタグで絞る（タグ無しの旧データは時間のみ）
   const buttonRows = await db
     .select({ kind: schema.reactions.kind })
     .from(schema.reactions)
@@ -129,7 +123,8 @@ export async function finalizeVisit(
         eq(schema.reactions.lessonId, s.lessonId),
         ne(schema.reactions.kind, 'comment'),
         gte(schema.reactions.tMs, startMs),
-        lt(schema.reactions.tMs, endMs)
+        lt(schema.reactions.tMs, endMs),
+        or(eq(schema.reactions.slideId, slideId), isNull(schema.reactions.slideId))
       )
     );
   const kinds: ReactionCounts = {};

@@ -171,13 +171,13 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         const prevSlideId = s.currentSlideId;
         const prevVisitStart = s.visitStartMs;
         const ev = await recordEvent(s, 'slide_change', p);
-        s.visitStartMs = ev.tMs;
         socket.to(room).emit('slide_change', { ...p, tMs: ev.tMs });
         if (prevSlideId && prevSlideId !== p.slideId) {
-          // 保留中スライドへの1分以内の復帰なら連続した説明として継続（切替と判定しない）
+          // 離れたスライドは表示時間の長さに関係なく保留（合計で1分に達すればポイントになる）
+          holdVisitEnd(io, s, prevSlideId, prevVisitStart, ev.tMs);
+          // 切替先が1分以内の再訪なら、最初の表示からの連続した説明として継続
           if (!resumeHeldVisit(s, p.slideId, ev.tMs)) {
-            // 1分以上の滞在は復帰猶予つきで保留し、戻らなければ振り返りポイントとして確定
-            holdVisitEnd(io, s, prevSlideId, prevVisitStart, ev.tMs);
+            s.visitStartMs = ev.tMs;
           }
         }
       });
