@@ -104,6 +104,8 @@ export const reactions = pgTable(
     tMs: integer('t_ms').notNull(),
     kind: text('kind').notNull(),
     comment: text('comment'),
+    // 反応の対象スライド（コメントは入力開始時のスライド。旧データはnull）
+    slideId: text('slide_id'),
     clipStartMs: integer('clip_start_ms').notNull(),
     clipEndMs: integer('clip_end_ms').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -125,7 +127,8 @@ export const reflectionPoints = pgTable(
     endMs: integer('end_ms').notNull(),
     kinds: jsonb('kinds').$type<ReactionCounts>().notNull(),
     comments: jsonb('comments').$type<string[]>().notNull(),
-    summary: text('summary'),
+    summary: text('summary'), // 説明内容の要約（音声から）
+    commentSummary: text('comment_summary'), // 生徒コメントの要約
     status: text('status', { enum: ['pending', 'ready', 'failed'] })
       .notNull()
       .default('pending'),

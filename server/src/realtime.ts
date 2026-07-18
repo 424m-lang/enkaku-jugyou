@@ -17,7 +17,7 @@ import {
   tMs,
 } from './live/liveSessions';
 import { recordReaction } from './live/reactions';
-import { finalizeVisit } from './live/reflectionPoints';
+import { flushVisitsAtEnd, holdVisitEnd, resumeHeldVisit } from './live/reflectionPoints';
 
 type SocketData = {
   role: 'teacher' | 'student';
@@ -134,17 +134,13 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       socket.on('end_lesson', async (cb) => {
         try {
           if (s.status !== 'live') return cb({ ok: false, error: '授業中ではありません' });
-          // 最後に表示していたスライドの滞在もクラスタとして確定する
-          const lastSlideId = s.currentSlideId;
-          const lastVisitStart = s.visitStartMs;
           const endMs = tMs(s);
           await endLesson(s);
           io.to(room).emit('lesson_ended');
           io.to(room).emit('lesson_state', toLiveState(s));
           cb({ ok: true });
-          void finalizeVisit(io, s.lessonId, lastSlideId, lastVisitStart, endMs).catch((err) =>
-            app.log.error(err)
-          );
+          // 保留中の滞在・最後に表示していたスライドの滞在を確定する
+          flushVisitsAtEnd(io, s, endMs);
         } catch (err) {
           app.log.error(err);
           cb({ ok: false, error: '終了に失敗しました' });
@@ -172,16 +168,17 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           socket.to(room).emit('slide_change', { ...p, tMs: 0 });
           return;
         }
-        // 直前のスライドの滞在を確定（1分以上なら振り返りポイントになる）
         const prevSlideId = s.currentSlideId;
         const prevVisitStart = s.visitStartMs;
         const ev = await recordEvent(s, 'slide_change', p);
         s.visitStartMs = ev.tMs;
         socket.to(room).emit('slide_change', { ...p, tMs: ev.tMs });
         if (prevSlideId && prevSlideId !== p.slideId) {
-          void finalizeVisit(io, s.lessonId, prevSlideId, prevVisitStart, ev.tMs).catch((err) =>
-            app.log.error(err)
-          );
+          // 保留中スライドへの1分以内の復帰なら連続した説明として継続（切替と判定しない）
+          if (!resumeHeldVisit(s, p.slideId, ev.tMs)) {
+            // 1分以上の滞在は復帰猶予つきで保留し、戻らなければ振り返りポイントとして確定
+            holdVisitEnd(io, s, prevSlideId, prevVisitStart, ev.tMs);
+          }
         }
       });
 
@@ -224,6 +221,18 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
 
     // ================= 生徒のイベント =================
     if (role === 'student') {
+      // コメント入力中の合図: 対象スライドの振り返りポイントの要約を待たせる
+      socket.on('comment_composing', (p) => {
+        if (s.status !== 'live') return;
+        const pid = socket.data.participantId;
+        if (!pid) return;
+        if (p && p.active && typeof p.slideId === 'string' && p.slideId.length <= 64) {
+          s.composing.set(pid, { slideId: p.slideId, atEpochMs: Date.now() });
+        } else {
+          s.composing.delete(pid);
+        }
+      });
+
       socket.on('reaction', async (input, cb) => {
         try {
           if (s.status !== 'live') return cb({ ok: false });
@@ -252,6 +261,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
     socket.on('disconnect', async () => {
       await broadcastParticipantCount(io, room);
       if (socket.data.participantId) {
+        s.composing.delete(socket.data.participantId);
         await touchParticipants([socket.data.participantId]).catch(() => {});
       }
     });

@@ -4,6 +4,8 @@ import type { AppSocket } from './socket';
 type QueuedReaction = {
   kind: string;
   comment?: string;
+  /** 反応の対象スライド（コメントは入力を始めたときのスライド） */
+  slideId?: string;
   pressedAtEpochMs: number;
 };
 
@@ -41,12 +43,12 @@ export class ReactionQueue {
   }
 
   /** 送信。失敗（切断・タイムアウト）した場合はキューに積んで後で再送する */
-  async send(kind: string, comment?: string): Promise<'sent' | 'queued'> {
+  async send(kind: string, comment?: string, slideId?: string): Promise<'sent' | 'queued'> {
     const pressedAtEpochMs = Date.now();
-    const ok = await this.trySend({ kind, comment, pressedAtEpochMs });
+    const ok = await this.trySend({ kind, comment, slideId, pressedAtEpochMs });
     if (ok) return 'sent';
     const items = this.load();
-    items.push({ kind, comment, pressedAtEpochMs });
+    items.push({ kind, comment, slideId, pressedAtEpochMs });
     this.save(items);
     return 'queued';
   }
@@ -56,6 +58,7 @@ export class ReactionQueue {
     const input: ReactionInput = {
       kind: q.kind,
       comment: q.comment,
+      slideId: q.slideId,
       delayMs: Math.max(0, Date.now() - q.pressedAtEpochMs),
     };
     return new Promise((resolve) => {

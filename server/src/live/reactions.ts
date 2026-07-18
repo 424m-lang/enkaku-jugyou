@@ -42,6 +42,10 @@ export async function recordReaction(
   const id = crypto.randomUUID();
   const clipStartMs = Math.max(0, t - config.clipBeforeMs);
   const clipEndMs = t + config.clipAfterMs;
+  const slideId =
+    typeof input.slideId === 'string' && input.slideId.length > 0 && input.slideId.length <= 64
+      ? input.slideId
+      : null;
 
   await db.insert(schema.reactions).values({
     id,
@@ -50,9 +54,15 @@ export async function recordReaction(
     tMs: t,
     kind: input.kind,
     comment: input.comment ?? null,
+    slideId,
     clipStartMs,
     clipEndMs,
   });
+
+  // コメントが届いたら「入力中」状態を解除（振り返りポイントの要約待ちを解く）
+  if (input.kind === 'comment') {
+    s.composing.delete(participant.id);
+  }
 
   if (input.kind !== 'comment') {
     s.counts[input.kind] = (s.counts[input.kind] ?? 0) + 1;

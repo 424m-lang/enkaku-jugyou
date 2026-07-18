@@ -20,12 +20,16 @@ export default function Class() {
   const audioElRef = useRef<HTMLAudioElement>(null);
   const playerRef = useRef<LiveAudioPlayer | null>(null);
   const queueRef = useRef<ReactionQueue | null>(null);
+  // コメントの対象スライド（入力を始めた時点のスライド。切替後に送っても正しく紐づく）
+  const composeSlideRef = useRef<string | null>(null);
+  const lastComposeSentRef = useRef(0);
 
   useEffect(() => {
     if (!lessonId || !hasToken) navigate('/join');
   }, [lessonId, hasToken, navigate]);
 
   const {
+    socketRef,
     connected,
     title,
     status,
@@ -58,26 +62,67 @@ export default function Class() {
     return () => playerRef.current?.dispose();
   }, []);
 
+  // 入力欄に文字がある間は「入力中」の合図を定期送信し続ける
+  // （手が止まって考えている間もサーバ側の要約待ちが切れないように）
+  useEffect(() => {
+    if (!comment.trim()) return;
+    const timer = setInterval(() => {
+      const socket = socketRef.current;
+      if (socket && composeSlideRef.current) {
+        socket.emit('comment_composing', { slideId: composeSlideRef.current, active: true });
+      }
+    }, 4000);
+    return () => clearInterval(timer);
+  }, [comment, socketRef]);
+
   const enableAudio = useCallback(() => {
     playerRef.current?.enable();
     setAudioEnabled(true);
   }, []);
 
-  const sendReaction = useCallback(async (kind: string, text?: string) => {
-    const q = queueRef.current;
-    if (!q) return;
-    const result = await q.send(kind, text);
-    setQueuedCount(q.pendingCount);
-    setFlash(result === 'sent' ? '送信しました' : 'オフラインのため送信待ちに保存しました');
-    setTimeout(() => setFlash(null), 1500);
-  }, []);
+  const sendReaction = useCallback(
+    async (kind: string, text?: string, slideId?: string) => {
+      const q = queueRef.current;
+      if (!q) return;
+      const result = await q.send(kind, text, slideId ?? currentSlideId ?? undefined);
+      setQueuedCount(q.pendingCount);
+      setFlash(result === 'sent' ? '送信しました' : 'オフラインのため送信待ちに保存しました');
+      setTimeout(() => setFlash(null), 1500);
+    },
+    [currentSlideId]
+  );
+
+  // コメント入力中の合図（入力中は数秒おきに送り、送信・クリアで解除）
+  const onCommentChange = useCallback(
+    (value: string) => {
+      setComment(value);
+      const socket = socketRef.current;
+      if (!socket) return;
+      if (value.trim()) {
+        if (!composeSlideRef.current) composeSlideRef.current = currentSlideId;
+        const now = Date.now();
+        if (now - lastComposeSentRef.current > 4000 && composeSlideRef.current) {
+          lastComposeSentRef.current = now;
+          socket.emit('comment_composing', { slideId: composeSlideRef.current, active: true });
+        }
+      } else if (composeSlideRef.current) {
+        socket.emit('comment_composing', { slideId: composeSlideRef.current, active: false });
+        composeSlideRef.current = null;
+        lastComposeSentRef.current = 0;
+      }
+    },
+    [socketRef, currentSlideId]
+  );
 
   const sendComment = useCallback(async () => {
     const text = comment.trim();
     if (!text) return;
+    const slideId = composeSlideRef.current ?? currentSlideId ?? undefined;
+    composeSlideRef.current = null;
+    lastComposeSentRef.current = 0;
     setComment('');
-    await sendReaction('comment', text);
-  }, [comment, sendReaction]);
+    await sendReaction('comment', text, slideId);
+  }, [comment, sendReaction, currentSlideId]);
 
   if (!lessonId) return null;
 
@@ -138,7 +183,7 @@ export default function Class() {
         <div className="comment-row">
           <input
             value={comment}
-            onChange={(e) => setComment(e.target.value)}
+            onChange={(e) => onCommentChange(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.nativeEvent.isComposing) void sendComment();
             }}

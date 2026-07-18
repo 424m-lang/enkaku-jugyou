@@ -26,6 +26,8 @@ export const config = {
 
   // 振り返りポイント: 先生がこの時間以上滞在したスライドを対象にする
   reflectionMinVisitMs: Number(process.env.REFLECTION_MIN_VISIT_MS ?? 60_000),
+  // この時間以内に元のスライドへ戻ったら「連続した説明」とみなして切替と判定しない
+  reflectionReturnWindowMs: Number(process.env.REFLECTION_RETURN_WINDOW_MS ?? 60_000),
 
   // クリップ範囲（反応時刻の前後）
   clipBeforeMs: 15_000,

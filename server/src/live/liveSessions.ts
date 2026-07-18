@@ -50,6 +50,18 @@ export type LiveSession = {
 
   /** 現在のスライドの滞在開始時刻（振り返りポイントのクラスタ境界に使う） */
   visitStartMs: number;
+  /**
+   * 離脱後1分以内の復帰を「連続した説明」として扱うため、確定を保留中の滞在。
+   * 期限内に同じスライドへ戻れば滞在を継続、戻らなければタイマーで確定する
+   */
+  heldVisit: {
+    slideId: string;
+    startMs: number;
+    leftAtMs: number;
+    timer: ReturnType<typeof setTimeout>;
+  } | null;
+  /** コメント入力中の生徒（participantId → 入力対象スライドと最終合図時刻） */
+  composing: Map<string, { slideId: string; atEpochMs: number }>;
 
   // 音声（1レッスン=原則1ファイル。先生のリロード時のみ新パートに切替）
   currentAudioPart: AudioPart | null;
@@ -102,6 +114,8 @@ export async function getSession(lessonId: string): Promise<LiveSession | null> 
     drawingEvents: [],
     counts: {},
     visitStartMs: 0,
+    heldVisit: null,
+    composing: new Map(),
     currentAudioPart: null,
     audioSeq: 0,
     audioInitSegment: null,
@@ -290,6 +304,11 @@ export async function startLesson(s: LiveSession): Promise<void> {
   s.counts = {};
   s.recentReactions = [];
   s.visitStartMs = 0;
+  if (s.heldVisit) {
+    clearTimeout(s.heldVisit.timer);
+    s.heldVisit = null;
+  }
+  s.composing.clear();
   s.audioSeq = 0;
   s.audioInitSegment = null;
   s.currentAudioPart = null;

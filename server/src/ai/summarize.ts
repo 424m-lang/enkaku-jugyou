@@ -55,32 +55,38 @@ async function callSummaryLLM(
 }
 
 /**
- * 授業中の振り返りポイント向け: スライド1枚の滞在区間について、
- * 説明音声の文字起こしと生徒の反応から短いまとめを作る。
+ * 振り返りポイントの「説明内容」: スライド1枚分の説明音声の文字起こしを、
+ * 内容だけを端的に要約する（生徒の反応への言及や提案はしない）。
  */
-export async function summarizeSlideVisit(
-  transcriptText: string | null,
-  info: {
-    kinds: Record<string, number>;
-    labels: Record<string, string>; // kindキー → ボタンの表示ラベル
-    comments: string[];
-    durationMs: number;
-  }
+export async function summarizeExplanation(
+  transcriptText: string
 ): Promise<{ text: string; provider: string }> {
-  const kindsText =
-    Object.entries(info.kinds)
-      .map(([k, n]) => `${k === 'comment' ? 'コメント' : (info.labels[k] ?? k)}×${n}`)
-      .join(', ') || '反応なし';
-  const minutes = Math.max(1, Math.round(info.durationMs / 60_000));
-
   const result = await callSummaryLLM(
-    'あなたは遠隔授業を行う先生を支援するアシスタントです。スライド1枚の説明区間について、音声の文字起こしと生徒のリアクションをもとに「振り返りポイント」を日本語で作成します。出力は3文以内で、(1)このスライドで扱った内容の要点 (2)生徒の反応から見た理解状況 (3)振り返り・補足の提案 を含めてください。文字起こしが無い場合は反応だけから簡潔にまとめてください。装飾や前置きは不要です。',
-    `滞在時間: 約${minutes}分\n\n説明音声の文字起こし:\n${transcriptText ? transcriptText.slice(0, 30_000) : '（録音なし）'}\n\n生徒の反応: ${kindsText}\n生徒のコメント: ${info.comments.join(' / ') || 'なし'}`,
-    500
+    'あなたは授業の説明音声の文字起こしを要約するアシスタントです。スライド1枚分の説明内容を、日本語で1〜2文に端的に要約してください。何を説明したかという内容の要約だけを書き、生徒の反応への言及・評価・提案・前置きは一切書かないでください。',
+    transcriptText.slice(0, 30_000),
+    300
   );
   if (result) return result;
   return {
-    text: `（モックまとめ）このスライドには約${minutes}分滞在し、反応は「${kindsText}」でした。SUMMARY_PROVIDER=anthropic または openai とAPIキーを設定すると実際のAIまとめになります。`,
+    text: '（モック要約）この区間の説明内容の要約です。SUMMARY_PROVIDER=anthropic または openai とAPIキーを設定すると実際のAI要約になります。',
+    provider: 'mock',
+  };
+}
+
+/**
+ * 振り返りポイントの「コメント」: 区間内の生徒コメントだけを端的に要約する。
+ */
+export async function summarizeComments(
+  comments: string[]
+): Promise<{ text: string; provider: string }> {
+  const result = await callSummaryLLM(
+    'あなたは授業中に生徒から届いたコメントを整理するアシスタントです。コメント群の要点（質問・つまずき・要望）を日本語で1〜2文に端的にまとめてください。同じ趣旨のコメントはまとめ、評価・提案・前置きは書かないでください。',
+    comments.map((c, i) => `${i + 1}. ${c}`).join('\n'),
+    300
+  );
+  if (result) return result;
+  return {
+    text: `（モック要約）コメント${comments.length}件の要点です。SUMMARY_PROVIDER設定で実際のAI要約になります。`,
     provider: 'mock',
   };
 }

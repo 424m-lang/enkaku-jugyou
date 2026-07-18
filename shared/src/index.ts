@@ -97,6 +97,11 @@ export type ReactionInput = {
    * （端末の時計ズレの影響を受けない相対値）
    */
   delayMs: number;
+  /**
+   * 反応の対象スライド。コメントは「入力を始めたときのスライド」を入れることで、
+   * 送信がページ切替の後になっても本来のスライドの振り返りポイントに紐づく
+   */
+  slideId?: string;
 };
 
 export type ReactionFeedItem = {
@@ -123,16 +128,18 @@ export type ReactionCluster = {
 };
 
 // ---- 振り返りポイント ----
-// 先生が1分以上滞在したスライド（の滞在区間）を1つのクラスタとして、
-// その間の音声文字起こしと生徒の反応をAIでまとめたもの
+// 先生が1分以上滞在したスライド（の滞在区間）を1つのクラスタとして扱う。
+// 1分以内に元のスライドへ戻った場合は連続した説明とみなして切替と判定しない。
+// 反応もコメントも無かった区間はポイントにしない。
 export type ReflectionPoint = {
   id: string;
   slideId: string;
   startMs: number; // 滞在開始（授業タイムライン）
   endMs: number; // 滞在終了
-  kinds: ReactionCounts; // 区間内の反応数（コメントは kind='comment'）
-  comments: string[]; // 区間内のコメント本文
-  summary: string | null; // AIによるまとめ（生成中はnull）
+  kinds: ReactionCounts; // 区間内のボタン反応数（コメントは含まない）
+  comments: string[]; // 区間に対する生徒コメント本文
+  summary: string | null; // 説明内容の要約（音声から。録音なしはnull）
+  commentSummary: string | null; // 生徒コメントの要約（コメントなしはnull）
   status: 'pending' | 'ready' | 'failed';
 };
 
@@ -181,6 +188,11 @@ export interface ClientToServerEvents {
 
   // 生徒
   reaction: (r: ReactionInput, cb: (res: { ok: boolean }) => void) => void;
+  /**
+   * コメント入力中の合図（入力中は数秒おきに active:true、送信/クリアで active:false）。
+   * サーバはこの合図がある間、そのスライドの振り返りポイントの要約を待つ
+   */
+  comment_composing: (p: { slideId: string; active: boolean }) => void;
 }
 
 // 参加時にサーバから送る、授業のライブ状態スナップショット

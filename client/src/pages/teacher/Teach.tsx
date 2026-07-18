@@ -14,6 +14,7 @@ import { useLessonLive } from '../../lib/useLessonLive';
 import { fmtClock } from '../../lib/format';
 import { makeReactionMeta } from '../../lib/reactionMeta';
 import SlideCanvas, { type DrawingTool } from '../../components/SlideCanvas';
+import SlideThumb from '../../components/SlideThumb';
 import JoinQrModal from '../../components/JoinQrModal';
 
 const TOOLS: { key: DrawingTool; label: string }[] = [
@@ -45,6 +46,7 @@ export default function Teach() {
   const [joinCode, setJoinCode] = useState('');
   const [recent, setRecent] = useState<RecentItem[]>([]);
   const [points, setPoints] = useState<ReflectionPoint[]>([]);
+  const [pointsOpen, setPointsOpen] = useState(false);
   const [participantCount, setParticipantCount] = useState(0);
   const [audioState, setAudioState] = useState<'off' | 'on' | 'error'>('off');
   const [loadError, setLoadError] = useState('');
@@ -83,9 +85,10 @@ export default function Teach() {
           [{ ...item, expiresAt: Date.now() + RECENT_WINDOW_MS }, ...prev].slice(0, 200)
         );
       });
-      // 振り返りポイント（新規作成時とAIまとめ完成時に同じイベントで届く → 上書き）
+      // 振り返りポイント（新規作成時とAI要約完成時に同じイベントで届く → 上書き）
       socket.on('reflection_point', (p) => {
         setPoints((prev) => [p, ...prev.filter((x) => x.id !== p.id)].sort((a, b) => b.startMs - a.startMs));
+        setPointsOpen(true); // 新しいポイントが届いたらパネルを開いて知らせる
       });
     },
   });
@@ -425,46 +428,85 @@ export default function Teach() {
             </div>
           </div>
 
-          <div className="card points-card">
-            <h3>振り返りポイント</h3>
-            <div className="points-list">
-              {points.length === 0 && (
-                <p className="muted">
-                  1分以上とどまったスライドごとに、生徒の反応と説明内容のまとめが自動で追加されます
-                </p>
-              )}
-              {points.map((p) => {
-                const idx = sortedSlides.findIndex((sl) => sl.id === p.slideId);
-                return (
-                  <div key={p.id} className="point-card">
-                    <div className="point-head">
+        </aside>
+      </div>
+
+      {/* 振り返りポイント: 画面下部の開閉式パネル（スライド画像つき横並びカード） */}
+      <div className={`points-drawer ${pointsOpen ? 'open' : ''}`}>
+        <button className="points-drawer-head" onClick={() => setPointsOpen((v) => !v)}>
+          <span>
+            振り返りポイント <span className="points-count">{points.length}</span>
+          </span>
+          <span className="muted">{pointsOpen ? '▼ 閉じる' : '▲ 開く'}</span>
+        </button>
+        {pointsOpen && (
+          <div className="points-strip">
+            {points.length === 0 && (
+              <p className="muted points-empty">
+                反応やコメントが付いたスライド（1分以上の説明）のまとめが自動で追加されます
+              </p>
+            )}
+            {points.map((p) => {
+              const idx = sortedSlides.findIndex((sl) => sl.id === p.slideId);
+              const slide = idx >= 0 ? sortedSlides[idx] : null;
+              return (
+                <div key={p.id} className="point-card">
+                  <div className="point-side">
+                    <SlideThumb pdf={pdf} slide={slide} width={150} />
+                    <div className="point-title">
                       <strong>{idx >= 0 ? `スライド ${idx + 1}` : 'スライド'}</strong>
                       <span className="muted">
                         {fmtClock(p.startMs)}〜{fmtClock(p.endMs)}
                       </span>
                     </div>
-                    {Object.keys(p.kinds).length > 0 && (
-                      <div className="clip-kinds">
-                        {Object.entries(p.kinds).map(([k, n]) => (
-                          <span key={k} className="kind-pill" style={{ background: reactionMeta.color(k) }}>
-                            {reactionMeta.label(k)} ×{n}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                    <p className={p.status === 'ready' ? 'point-summary' : 'muted'}>
-                      {p.status === 'pending'
-                        ? 'AIがまとめを生成中...'
-                        : p.status === 'failed'
-                          ? 'まとめの生成に失敗しました'
-                          : p.summary}
-                    </p>
                   </div>
-                );
-              })}
-            </div>
+                  <div className="point-body">
+                    <div className="point-sec">
+                      <span className="point-label">反応数</span>
+                      {Object.keys(p.kinds).length > 0 ? (
+                        <span className="clip-kinds">
+                          {Object.entries(p.kinds).map(([k, n]) => (
+                            <span
+                              key={k}
+                              className="kind-pill"
+                              style={{ background: reactionMeta.color(k) }}
+                            >
+                              {reactionMeta.label(k)} ×{n}
+                            </span>
+                          ))}
+                        </span>
+                      ) : (
+                        <span className="muted">なし</span>
+                      )}
+                    </div>
+                    {p.status === 'pending' && <p className="muted">AIが要約を生成中...</p>}
+                    {p.status === 'failed' && <p className="muted">要約の生成に失敗しました</p>}
+                    {p.status === 'ready' && (
+                      <>
+                        <div className="point-sec">
+                          <span className="point-label">説明内容</span>
+                          {p.summary ? (
+                            <p className="point-text">{p.summary}</p>
+                          ) : (
+                            <span className="muted">録音がないため要約はありません</span>
+                          )}
+                        </div>
+                        {(p.commentSummary || p.comments.length > 0) && (
+                          <div className="point-sec">
+                            <span className="point-label">コメント</span>
+                            <p className="point-text">
+                              {p.commentSummary ?? p.comments.join(' / ')}
+                            </p>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
-        </aside>
+        )}
       </div>
     </div>
   );

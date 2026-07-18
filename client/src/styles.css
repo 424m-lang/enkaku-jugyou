@@ -557,42 +557,114 @@ textarea:focus {
   font-size: 0.9rem;
 }
 
-/* ---- 振り返りポイント ---- */
-.points-card {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
+/* ---- 振り返りポイント（画面下部の開閉式パネル） ---- */
+.points-drawer {
+  border-top: 1px solid var(--border);
+  background: #fff;
+  flex-shrink: 0;
 }
 
-.points-list {
+.points-drawer-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.92rem;
+}
+
+.points-drawer-head:hover {
+  background: #f9fafb;
+}
+
+.points-count {
+  display: inline-block;
+  min-width: 22px;
+  padding: 1px 7px;
+  margin-left: 4px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: #fff;
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+.points-strip {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding: 2px 16px 12px;
+}
+
+.points-empty {
+  padding: 8px 0 16px;
+}
+
+.point-card {
+  flex: 0 0 480px;
+  display: flex;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #f9fafb;
+  height: 200px;
+}
+
+.point-side {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.slide-thumb {
+  display: block;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.point-title {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.85rem;
+}
+
+.point-body {
   flex: 1;
-  min-height: 0;
+  min-width: 0;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-.point-card {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 8px 10px;
-  background: #f9fafb;
+.point-sec {
+  font-size: 0.85rem;
 }
 
-.point-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 4px;
+.point-label {
+  display: inline-block;
+  margin-right: 6px;
+  margin-bottom: 3px;
+  padding: 1px 8px;
+  border-radius: 6px;
+  background: #e5e7eb;
+  color: #374151;
+  font-size: 0.75rem;
+  font-weight: 600;
 }
 
-.point-summary {
-  margin: 6px 0 0;
+.point-text {
+  margin: 2px 0 0;
   font-size: 0.88rem;
   white-space: pre-wrap;
+  word-break: break-word;
 }
 
 /* ---- 受講画面（生徒） ---- */
