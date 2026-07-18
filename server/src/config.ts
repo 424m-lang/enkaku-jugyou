@@ -24,9 +24,8 @@ export const config = {
   openaiApiKey: process.env.OPENAI_API_KEY || '',
   openaiModel: process.env.OPENAI_MODEL || 'gpt-4o-mini',
 
-  // 振り返りタイム
-  reflectionIntervalMin: Number(process.env.REFLECTION_INTERVAL_MIN ?? 15),
-  reflectionThreshold: Number(process.env.REFLECTION_THRESHOLD ?? 3),
+  // 振り返りポイント: 先生がこの時間以上滞在したスライドを対象にする
+  reflectionMinVisitMs: Number(process.env.REFLECTION_MIN_VISIT_MS ?? 60_000),
 
   // クリップ範囲（反応時刻の前後）
   clipBeforeMs: 15_000,

@@ -14,16 +14,10 @@ import {
   endLesson,
   insertBlankSlide,
   touchParticipants,
-  type LiveSession,
+  tMs,
 } from './live/liveSessions';
 import { recordReaction } from './live/reactions';
-import {
-  checkThresholdAlert,
-  startIntervalAlerts,
-  emitPendingAlerts,
-  ackAlert,
-  clearPendingAlerts,
-} from './live/reflection';
+import { finalizeVisit } from './live/reflectionPoints';
 
 type SocketData = {
   role: 'teacher' | 'student';
@@ -102,10 +96,6 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
     await socket.join(room);
     if (role === 'teacher') {
       await socket.join(teacherRoom);
-      if (s.status === 'live') {
-        startIntervalAlerts(io, s);
-        emitPendingAlerts(io, s, socket.id);
-      }
     }
 
     // 参加直後に現在のライブ状態のスナップショットを送る
@@ -131,7 +121,6 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           if (s.status === 'ended') return cb({ ok: false, error: 'この授業は終了済みです' });
           if (s.status !== 'live') {
             await startLesson(s);
-            startIntervalAlerts(io, s);
           }
           io.to(room).emit('lesson_started');
           io.to(room).emit('lesson_state', toLiveState(s));
@@ -145,10 +134,17 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       socket.on('end_lesson', async (cb) => {
         try {
           if (s.status !== 'live') return cb({ ok: false, error: '授業中ではありません' });
+          // 最後に表示していたスライドの滞在もクラスタとして確定する
+          const lastSlideId = s.currentSlideId;
+          const lastVisitStart = s.visitStartMs;
+          const endMs = tMs(s);
           await endLesson(s);
           io.to(room).emit('lesson_ended');
           io.to(room).emit('lesson_state', toLiveState(s));
           cb({ ok: true });
+          void finalizeVisit(io, s.lessonId, lastSlideId, lastVisitStart, endMs).catch((err) =>
+            app.log.error(err)
+          );
         } catch (err) {
           app.log.error(err);
           cb({ ok: false, error: '終了に失敗しました' });
@@ -176,8 +172,17 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           socket.to(room).emit('slide_change', { ...p, tMs: 0 });
           return;
         }
+        // 直前のスライドの滞在を確定（1分以上なら振り返りポイントになる）
+        const prevSlideId = s.currentSlideId;
+        const prevVisitStart = s.visitStartMs;
         const ev = await recordEvent(s, 'slide_change', p);
+        s.visitStartMs = ev.tMs;
         socket.to(room).emit('slide_change', { ...p, tMs: ev.tMs });
+        if (prevSlideId && prevSlideId !== p.slideId) {
+          void finalizeVisit(io, s.lessonId, prevSlideId, prevVisitStart, ev.tMs).catch((err) =>
+            app.log.error(err)
+          );
+        }
       });
 
       socket.on('stroke', async (p) => {
@@ -215,22 +220,6 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         }
       });
 
-      socket.on('reflection_start', async () => {
-        if (s.status !== 'live' || s.reflectionActive) return;
-        await recordEvent(s, 'reflection_start', {});
-        clearPendingAlerts(s); // 実施したので未確認通知は解消
-        io.to(room).emit('reflection_started');
-      });
-
-      socket.on('reflection_end', async () => {
-        if (s.status !== 'live' || !s.reflectionActive) return;
-        await recordEvent(s, 'reflection_end', {});
-        io.to(room).emit('reflection_ended');
-      });
-
-      socket.on('reflection_ack', (alertId) => {
-        ackAlert(s, alertId);
-      });
     }
 
     // ================= 生徒のイベント =================
@@ -252,7 +241,6 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           cb({ ok: true }); // デバウンスで集約された場合も生徒側には成功として返す
           if (item) {
             io.to(teacherRoom).emit('reaction_feed', item, s.counts);
-            checkThresholdAlert(io, s);
           }
         } catch (err) {
           app.log.error(err);

@@ -34,7 +34,6 @@ export default function Class() {
     currentSlide,
     strokes,
     currentProgress,
-    reflectionActive,
     pdf,
   } = useLessonLive(lessonId && hasToken ? lessonId : null, {
     setup: (socket) => {
@@ -98,12 +97,6 @@ export default function Class() {
           )}
         </div>
       </header>
-
-      {reflectionActive && (
-        <div className="reflection-active-bar student">
-          先生が振り返りタイムを実施しています
-        </div>
-      )}
 
       <div className="class-main">
         {status === 'draft' && (

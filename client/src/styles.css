@@ -490,28 +490,24 @@ textarea:focus {
   font-size: 0.95rem;
 }
 
-.counts-card .count-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 4px 0;
-}
-
-.count-label {
-  border-left: 4px solid;
-  padding-left: 8px;
-  font-weight: 600;
-}
-
-.count-row strong {
-  font-size: 1.3rem;
-}
-
 .feed-card {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+
+/* 直近5分の種類別カウント */
+.recent-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.small {
+  font-size: 0.78rem;
+  font-weight: normal;
 }
 
 .feed-list {
@@ -553,39 +549,6 @@ textarea:focus {
   word-break: break-word;
 }
 
-/* ---- 振り返りタイム通知 ---- */
-.alert-stack {
-  padding: 8px 12px 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.reflection-banner {
-  background: #fff7ed;
-  border: 2px solid #fb923c;
-  border-radius: 10px;
-  padding: 12px 14px;
-  animation: pulse-border 2s infinite;
-}
-
-@keyframes pulse-border {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 rgba(251, 146, 60, 0.4);
-  }
-  50% {
-    box-shadow: 0 0 0 6px rgba(251, 146, 60, 0);
-  }
-}
-
-.reflection-banner-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
 .suggestion {
   margin: 6px 0 0;
   background: #fff;
@@ -594,20 +557,42 @@ textarea:focus {
   font-size: 0.9rem;
 }
 
-.reflection-active-bar {
-  background: #dcfce7;
-  border-bottom: 1px solid #86efac;
-  color: #166534;
-  padding: 8px 16px;
+/* ---- 振り返りポイント ---- */
+.points-card {
+  flex: 1;
+  min-height: 0;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 14px;
-  font-weight: 600;
+  flex-direction: column;
 }
 
-.reflection-active-bar.student {
-  justify-content: center;
+.points-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.point-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #f9fafb;
+}
+
+.point-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.point-summary {
+  margin: 6px 0 0;
+  font-size: 0.88rem;
+  white-space: pre-wrap;
 }
 
 /* ---- 受講画面（生徒） ---- */

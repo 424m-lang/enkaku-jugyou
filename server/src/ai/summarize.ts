@@ -55,21 +55,32 @@ async function callSummaryLLM(
 }
 
 /**
- * 授業中の振り返りタイム向け: 反応が集中した箇所の文字起こしから
- * 「今、力を入れて振り返るべき内容」の短い提案文を作る。
+ * 授業中の振り返りポイント向け: スライド1枚の滞在区間について、
+ * 説明音声の文字起こしと生徒の反応から短いまとめを作る。
  */
-export async function suggestReflectionFocus(
-  transcriptText: string,
-  info: { participantCount: number; kinds: Record<string, number>; comments: string[] }
+export async function summarizeSlideVisit(
+  transcriptText: string | null,
+  info: {
+    kinds: Record<string, number>;
+    labels: Record<string, string>; // kindキー → ボタンの表示ラベル
+    comments: string[];
+    durationMs: number;
+  }
 ): Promise<{ text: string; provider: string }> {
+  const kindsText =
+    Object.entries(info.kinds)
+      .map(([k, n]) => `${k === 'comment' ? 'コメント' : (info.labels[k] ?? k)}×${n}`)
+      .join(', ') || '反応なし';
+  const minutes = Math.max(1, Math.round(info.durationMs / 60_000));
+
   const result = await callSummaryLLM(
-    'あなたは遠隔授業を行う先生を支援するアシスタントです。生徒の理解度反応が集中した箇所の文字起こしを読み、先生への短い提案文を日本語で作成します。出力は2〜3文、話題の要約と「ここを重点的に振り返ることをお勧めします」という形の提案で締めてください。装飾や前置きは不要です。',
-    `文字起こし（生徒${info.participantCount}人が反応した箇所）:\n${transcriptText}\n\n反応の内訳: ${JSON.stringify(info.kinds)}\n生徒のコメント: ${info.comments.join(' / ') || 'なし'}`,
+    'あなたは遠隔授業を行う先生を支援するアシスタントです。スライド1枚の説明区間について、音声の文字起こしと生徒のリアクションをもとに「振り返りポイント」を日本語で作成します。出力は3文以内で、(1)このスライドで扱った内容の要点 (2)生徒の反応から見た理解状況 (3)振り返り・補足の提案 を含めてください。文字起こしが無い場合は反応だけから簡潔にまとめてください。装飾や前置きは不要です。',
+    `滞在時間: 約${minutes}分\n\n説明音声の文字起こし:\n${transcriptText ? transcriptText.slice(0, 30_000) : '（録音なし）'}\n\n生徒の反応: ${kindsText}\n生徒のコメント: ${info.comments.join(' / ') || 'なし'}`,
     500
   );
   if (result) return result;
   return {
-    text: `（モック提案）直近で${info.participantCount}人の反応が集中したのは、この文字起こし区間の内容です。ここを重点的に振り返ることをお勧めします。SUMMARY_PROVIDER=anthropic または openai とAPIキーを設定すると実際のAI提案になります。`,
+    text: `（モックまとめ）このスライドには約${minutes}分滞在し、反応は「${kindsText}」でした。SUMMARY_PROVIDER=anthropic または openai とAPIキーを設定すると実際のAIまとめになります。`,
     provider: 'mock',
   };
 }

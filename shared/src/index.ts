@@ -44,7 +44,7 @@ export type PointerPayload = {
 
 export type SlideChangePayload = { slideId: string };
 export type ClearSlidePayload = { slideId: string; strokeIds?: string[] }; // strokeIds指定時は部分削除
-export type ReflectionPayload = { reason?: string };
+export type ReflectionPayload = { reason?: string }; // 旧「振り返りタイム」イベントのペイロード（過去データ再生用に残置）
 // 録音は通常1レッスン=1ファイルだが、先生の画面リロード等で録音が再開された場合は
 // 新しいパートファイルに切り替わる。その境界もタイムラインイベントとして記録する
 export type AudioPartPayload = { file: string };
@@ -54,8 +54,8 @@ export type TimelineEventType =
   | 'stroke'
   | 'pointer'
   | 'clear_slide'
-  | 'reflection_start'
-  | 'reflection_end'
+  | 'reflection_start' // 旧機能（過去データ用）
+  | 'reflection_end' // 旧機能（過去データ用）
   | 'audio_part';
 
 export type TimelineEvent = {
@@ -122,13 +122,18 @@ export type ReactionCluster = {
   summaryText?: string | null;
 };
 
-// ---- 振り返りタイム通知 ----
-export type ReflectionAlert = {
-  alertId: string;
-  createdAtMs: number; // 授業タイムライン上の時刻
-  reason: 'threshold' | 'interval';
-  cluster: ReactionCluster | null;
-  suggestion: string | null; // AIによる提案文（生成中はnull→後からsuggestionイベントで届く）
+// ---- 振り返りポイント ----
+// 先生が1分以上滞在したスライド（の滞在区間）を1つのクラスタとして、
+// その間の音声文字起こしと生徒の反応をAIでまとめたもの
+export type ReflectionPoint = {
+  id: string;
+  slideId: string;
+  startMs: number; // 滞在開始（授業タイムライン）
+  endMs: number; // 滞在終了
+  kinds: ReactionCounts; // 区間内の反応数（コメントは kind='comment'）
+  comments: string[]; // 区間内のコメント本文
+  summary: string | null; // AIによるまとめ（生成中はnull）
+  status: 'pending' | 'ready' | 'failed';
 };
 
 // ---- Socket.IO イベント型 ----
@@ -155,11 +160,8 @@ export interface ServerToClientEvents {
   reaction_feed: (item: ReactionFeedItem, counts: ReactionCounts) => void;
   reaction_counts: (counts: ReactionCounts) => void;
 
-  // 振り返りタイム
-  reflection_alert: (alert: ReflectionAlert) => void;
-  reflection_suggestion: (alertId: string, suggestion: string) => void;
-  reflection_started: () => void;
-  reflection_ended: () => void;
+  // 振り返りポイント（先生向け。新規作成時とAIまとめ完成時に同じイベントで届く）
+  reflection_point: (point: ReflectionPoint) => void;
 }
 
 export interface ClientToServerEvents {
@@ -176,9 +178,6 @@ export interface ClientToServerEvents {
     afterPosition: number,
     cb: (res: { ok: boolean; slides?: SlideInfo[]; newSlideId?: string }) => void
   ) => void;
-  reflection_start: () => void;
-  reflection_end: () => void;
-  reflection_ack: (alertId: string) => void;
 
   // 生徒
   reaction: (r: ReactionInput, cb: (res: { ok: boolean }) => void) => void;
@@ -196,7 +195,6 @@ export type LiveLessonState = {
   serverNowEpochMs: number;
   // 現時点までの描画状態を再構成するためのイベント（stroke/clearのみ）
   drawingEvents: TimelineEvent[];
-  reflectionActive: boolean;
   counts: ReactionCounts;
 };
 

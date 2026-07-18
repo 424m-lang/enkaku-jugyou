@@ -7,7 +7,6 @@ import type {
   LessonStatus,
   ReactionButtonDef,
   ReactionCounts,
-  ReflectionAlert,
   SlideInfo,
   TimelineEvent,
   TimelineEventType,
@@ -48,7 +47,9 @@ export type LiveSession = {
   /** 途中参加者が描画状態を再構成するための stroke / clear_slide イベント */
   drawingEvents: TimelineEvent[];
   counts: ReactionCounts;
-  reflectionActive: boolean;
+
+  /** 現在のスライドの滞在開始時刻（振り返りポイントのクラスタ境界に使う） */
+  visitStartMs: number;
 
   // 音声（1レッスン=原則1ファイル。先生のリロード時のみ新パートに切替）
   currentAudioPart: AudioPart | null;
@@ -58,13 +59,7 @@ export type LiveSession = {
 
   // リアクション
   lastReactionAt: Map<string, number>; // key: participantId:kind → tMs（デバウンス用）
-  recentReactions: RecentReaction[]; // クラスタ検出用（直近数分）
-
-  // 振り返りタイム通知
-  alertsById: Map<string, ReflectionAlert>;
-  pendingAlertIds: Set<string>;
-  lastAlertAtMs: number;
-  intervalTimer: ReturnType<typeof setInterval> | null;
+  recentReactions: RecentReaction[]; // クリップ集約用（直近数分）
 };
 
 const sessions = new Map<string, LiveSession>();
@@ -106,16 +101,12 @@ export async function getSession(lessonId: string): Promise<LiveSession | null> 
     currentSlideId: slides[0]?.id ?? null,
     drawingEvents: [],
     counts: {},
-    reflectionActive: false,
+    visitStartMs: 0,
     currentAudioPart: null,
     audioSeq: 0,
     audioInitSegment: null,
     lastReactionAt: new Map(),
     recentReactions: [],
-    alertsById: new Map(),
-    pendingAlertIds: new Set(),
-    lastAlertAtMs: 0,
-    intervalTimer: null,
   };
 
   // サーバ再起動後の復元: live中ならタイムラインから描画状態・現在スライドを再構成
@@ -135,6 +126,10 @@ export async function getSession(lessonId: string): Promise<LiveSession | null> 
       });
       if (ev.type === 'audio_part') {
         lastAudioPart = { file: (ev.payload as { file: string }).file, startMs: ev.tMs };
+      }
+      // 現在スライドの滞在開始時刻も復元する（振り返りポイント用）
+      if (ev.type === 'slide_change') {
+        s.visitStartMs = ev.tMs;
       }
     }
     // 録音は最後のパートへ追記モードで再開する（先生のMediaRecorderは動き続けており、
@@ -182,12 +177,7 @@ export function applyEventToState(s: LiveSession, ev: TimelineEvent): void {
       });
       break;
     }
-    case 'reflection_start':
-      s.reflectionActive = true;
-      break;
-    case 'reflection_end':
-      s.reflectionActive = false;
-      break;
+    // reflection_start / reflection_end は旧機能のイベント（無視して読み飛ばす）
   }
 }
 
@@ -250,7 +240,6 @@ export function toLiveState(s: LiveSession): LiveLessonState {
     startedAtEpochMs: s.startedAtEpochMs,
     serverNowEpochMs: Date.now(),
     drawingEvents: s.drawingEvents,
-    reflectionActive: s.reflectionActive,
     counts: s.counts,
   };
 }
@@ -300,6 +289,7 @@ export async function startLesson(s: LiveSession): Promise<void> {
   s.drawingEvents = [];
   s.counts = {};
   s.recentReactions = [];
+  s.visitStartMs = 0;
   s.audioSeq = 0;
   s.audioInitSegment = null;
   s.currentAudioPart = null;
@@ -319,10 +309,6 @@ export async function endLesson(s: LiveSession): Promise<void> {
     const st = s.currentAudioPart.stream;
     await new Promise<void>((resolve) => st.end(() => resolve()));
     s.currentAudioPart = null;
-  }
-  if (s.intervalTimer) {
-    clearInterval(s.intervalTimer);
-    s.intervalTimer = null;
   }
   await db
     .update(schema.lessons)

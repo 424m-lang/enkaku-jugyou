@@ -35,7 +35,6 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
   const [currentSlideId, setCurrentSlideId] = useState<string | null>(null);
   const [strokes, setStrokes] = useState<StrokesBySlide>({});
   const [remoteProgress, setRemoteProgress] = useState<Record<string, StrokePayload>>({});
-  const [reflectionActive, setReflectionActive] = useState(false);
   const [pdf, setPdf] = useState<PdfCache | null>(null);
 
   useEffect(() => {
@@ -61,7 +60,6 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
       setSlides(st.slides);
       setCurrentSlideId((cur) => st.currentSlideId ?? cur ?? st.slides[0]?.id ?? null);
       setStrokes(rebuildStrokes(st.drawingEvents));
-      setReflectionActive(st.reflectionActive);
       optionsRef.current.onLessonState?.(st);
     });
 
@@ -89,8 +87,6 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
         });
       }
     });
-    socket.on('reflection_started', () => setReflectionActive(true));
-    socket.on('reflection_ended', () => setReflectionActive(false));
     socket.on('lesson_started', () => setStatus('live'));
     socket.on('lesson_ended', () => setStatus('ended'));
 
@@ -131,7 +127,6 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
     strokes,
     setStrokes,
     currentProgress,
-    reflectionActive,
     pdf,
   };
 }

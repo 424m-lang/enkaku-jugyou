@@ -8,7 +8,7 @@ import {
   doublePrecision,
   index,
 } from 'drizzle-orm/pg-core';
-import type { ReactionButtonDef } from '@shared';
+import type { ReactionButtonDef, ReactionCounts } from '@shared';
 
 export const teachers = pgTable('teachers', {
   id: text('id').primaryKey(),
@@ -109,6 +109,29 @@ export const reactions = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('reactions_lesson_t_idx').on(t.lessonId, t.tMs)]
+);
+
+// 振り返りポイント: 先生が一定時間以上滞在したスライドの区間を1クラスタとして、
+// 区間内の反応とAIまとめを保存する（授業中に生成し、再接続時はここから復元）
+export const reflectionPoints = pgTable(
+  'reflection_points',
+  {
+    id: text('id').primaryKey(),
+    lessonId: text('lesson_id')
+      .notNull()
+      .references(() => lessons.id),
+    slideId: text('slide_id').notNull(),
+    startMs: integer('start_ms').notNull(),
+    endMs: integer('end_ms').notNull(),
+    kinds: jsonb('kinds').$type<ReactionCounts>().notNull(),
+    comments: jsonb('comments').$type<string[]>().notNull(),
+    summary: text('summary'),
+    status: text('status', { enum: ['pending', 'ready', 'failed'] })
+      .notNull()
+      .default('pending'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('reflection_points_lesson_idx').on(t.lessonId, t.startMs)]
 );
 
 // 文字起こし・要約（授業中のクリップ範囲 / 授業後の全体 の両方を同じ仕組みで保存）

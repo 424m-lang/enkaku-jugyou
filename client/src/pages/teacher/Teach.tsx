@@ -3,9 +3,8 @@ import { useNavigate, useParams } from 'react-router-dom';
 import type {
   LessonStatus,
   ReactionButtonDef,
-  ReactionCounts,
   ReactionFeedItem,
-  ReflectionAlert,
+  ReflectionPoint,
   StrokePayload,
 } from '@shared';
 import { api, ApiError } from '../../lib/api';
@@ -34,15 +33,19 @@ const WIDTH_MIN = 0.0015;
 const WIDTH_MAX = 0.012;
 const WIDTH_DEFAULT = 0.004;
 
+// 「最新のリアクション・コメント」に表示する期間
+const RECENT_WINDOW_MS = 5 * 60_000;
+
+type RecentItem = ReactionFeedItem & { expiresAt: number };
+
 export default function Teach() {
   const { id: lessonId } = useParams<{ id: string }>();
   const navigate = useNavigate();
 
   const [joinCode, setJoinCode] = useState('');
-  const [counts, setCounts] = useState<ReactionCounts>({});
-  const [feed, setFeed] = useState<ReactionFeedItem[]>([]);
+  const [recent, setRecent] = useState<RecentItem[]>([]);
+  const [points, setPoints] = useState<ReflectionPoint[]>([]);
   const [participantCount, setParticipantCount] = useState(0);
-  const [alerts, setAlerts] = useState<ReflectionAlert[]>([]);
   const [audioState, setAudioState] = useState<'off' | 'on' | 'error'>('off');
   const [loadError, setLoadError] = useState('');
   const [showQr, setShowQr] = useState(false);
@@ -70,24 +73,20 @@ export default function Teach() {
     strokes,
     setStrokes,
     currentProgress,
-    reflectionActive,
     pdf,
   } = useLessonLive(lessonId, {
-    onLessonState: (st) => setCounts(st.counts),
     setup: (socket) => {
       // 先生画面だけが受け取るイベント
       socket.on('participant_count', (n) => setParticipantCount(n));
-      socket.on('reaction_feed', (item, c) => {
-        setFeed((prev) => [item, ...prev].slice(0, 100));
-        setCounts({ ...c });
+      socket.on('reaction_feed', (item) => {
+        setRecent((prev) =>
+          [{ ...item, expiresAt: Date.now() + RECENT_WINDOW_MS }, ...prev].slice(0, 200)
+        );
       });
-      socket.on('reflection_alert', (alert) => {
-        setAlerts((prev) => [...prev.filter((a) => a.alertId !== alert.alertId), alert]);
+      // 振り返りポイント（新規作成時とAIまとめ完成時に同じイベントで届く → 上書き）
+      socket.on('reflection_point', (p) => {
+        setPoints((prev) => [p, ...prev.filter((x) => x.id !== p.id)].sort((a, b) => b.startMs - a.startMs));
       });
-      socket.on('reflection_suggestion', (alertId, suggestion) => {
-        setAlerts((prev) => prev.map((a) => (a.alertId === alertId ? { ...a, suggestion } : a)));
-      });
-      socket.on('reflection_started', () => setAlerts([]));
     },
   });
 
@@ -110,6 +109,21 @@ export default function Teach() {
         setJoinCode(detail.joinCode);
         setButtons(detail.reactionButtons);
         setStatus(detail.status);
+
+        // 振り返りポイントと直近リアクションを復元（リロード・再接続対応）
+        const [pts, rec] = await Promise.all([
+          api<ReflectionPoint[]>(`/api/lessons/${lessonId}/reflection-points`),
+          api<{ items: (ReactionFeedItem & { ageMs: number })[] }>(
+            `/api/lessons/${lessonId}/recent-reactions`
+          ),
+        ]);
+        if (disposed) return;
+        setPoints([...pts].sort((a, b) => b.startMs - a.startMs));
+        setRecent(
+          rec.items
+            .map((i) => ({ ...i, expiresAt: Date.now() + Math.max(0, RECENT_WINDOW_MS - i.ageMs) }))
+            .reverse()
+        );
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) navigate('/login');
         else setLoadError('授業の読み込みに失敗しました');
@@ -119,6 +133,15 @@ export default function Teach() {
       disposed = true;
     };
   }, [lessonId, navigate, setTitle, setButtons, setStatus]);
+
+  // 5分を過ぎた反応を定期的に取り除く
+  useEffect(() => {
+    const timer = setInterval(
+      () => setRecent((prev) => prev.filter((i) => i.expiresAt > Date.now())),
+      10_000
+    );
+    return () => clearInterval(timer);
+  }, []);
 
   // 画面を離れるときはマイクを止める
   useEffect(() => {
@@ -233,12 +256,8 @@ export default function Teach() {
     socketRef.current?.emit('clear_slide', p);
   }, [socketRef, currentSlide, setStrokes]);
 
-  const toggleReflection = useCallback(() => {
-    if (reflectionActive) socketRef.current?.emit('reflection_end');
-    else socketRef.current?.emit('reflection_start');
-  }, [socketRef, reflectionActive]);
-
   const reactionMeta = makeReactionMeta(buttons);
+  const commentCount = recent.filter((r) => r.kind === 'comment').length;
 
   if (loadError) {
     return (
@@ -283,9 +302,6 @@ export default function Teach() {
                   マイクを開始
                 </button>
               )}
-              <button className={reflectionActive ? 'btn' : 'btn primary'} onClick={toggleReflection}>
-                {reflectionActive ? '振り返りタイムを終了' : '振り返りタイムを開始'}
-              </button>
               <button className="btn danger" onClick={endLesson}>
                 授業を終了
               </button>
@@ -300,46 +316,6 @@ export default function Teach() {
       </header>
 
       {showQr && <JoinQrModal joinCode={joinCode} onClose={() => setShowQr(false)} />}
-
-      {/* 振り返りタイム通知（対応するまで消えない） */}
-      {alerts.length > 0 && !reflectionActive && (
-        <div className="alert-stack">
-          {alerts.map((a) => (
-            <div key={a.alertId} className="reflection-banner">
-              <div className="reflection-banner-head">
-                <strong>
-                  振り返りタイムです
-                  {a.cluster
-                    ? `（${fmtClock(a.cluster.centerMs)}頃に${a.cluster.participantCount}人が反応）`
-                    : `（定期のお知らせ）`}
-                </strong>
-                <button className="btn primary" onClick={toggleReflection}>
-                  振り返りタイムを開始
-                </button>
-              </div>
-              {a.cluster && (
-                <p className="muted">
-                  内訳:{' '}
-                  {Object.entries(a.cluster.kinds)
-                    .map(([k, n]) => `${reactionMeta.label(k)}×${n}`)
-                    .join(' / ')}
-                </p>
-              )}
-              <p className="suggestion">
-                {a.suggestion ?? 'AIが振り返りポイントを分析中です...'}
-              </p>
-            </div>
-          ))}
-        </div>
-      )}
-      {reflectionActive && (
-        <div className="reflection-active-bar">
-          振り返りタイム実施中（生徒の画面にも表示されています）
-          <button className="btn" onClick={toggleReflection}>
-            終了する
-          </button>
-        </div>
-      )}
 
       <div className="teach-main">
         <div className="slide-area">
@@ -421,22 +397,23 @@ export default function Teach() {
         </div>
 
         <aside className="sidebar">
-          <div className="card counts-card">
-            <h3>リアクション集計</h3>
-            {buttons.map((b) => (
-              <div key={b.key} className="count-row">
-                <span className="count-label" style={{ borderColor: b.color, color: b.color }}>
-                  {b.label}
-                </span>
-                <strong>{counts[b.key] ?? 0}</strong>
-              </div>
-            ))}
-          </div>
           <div className="card feed-card">
-            <h3>リアクション・コメント</h3>
+            <h3>
+              最新のリアクション・コメント <span className="muted small">（直近5分）</span>
+            </h3>
+            <div className="recent-chips">
+              {buttons.map((b) => (
+                <span key={b.key} className="kind-pill" style={{ background: b.color }}>
+                  {b.label} ×{recent.filter((r) => r.kind === b.key).length}
+                </span>
+              ))}
+              <span className="kind-pill" style={{ background: '#6b7280' }}>
+                コメント ×{commentCount}
+              </span>
+            </div>
             <div className="feed-list">
-              {feed.length === 0 && <p className="muted">まだ反応はありません</p>}
-              {feed.map((f) => (
+              {recent.length === 0 && <p className="muted">直近5分間の反応はありません</p>}
+              {recent.map((f) => (
                 <div key={f.id} className={`feed-item ${f.kind === 'comment' ? 'feed-comment' : ''}`}>
                   <span className="feed-time">{fmtClock(f.tMs)}</span>
                   <span className="feed-name">{f.participantName}</span>
@@ -445,6 +422,46 @@ export default function Teach() {
                   </span>
                 </div>
               ))}
+            </div>
+          </div>
+
+          <div className="card points-card">
+            <h3>振り返りポイント</h3>
+            <div className="points-list">
+              {points.length === 0 && (
+                <p className="muted">
+                  1分以上とどまったスライドごとに、生徒の反応と説明内容のまとめが自動で追加されます
+                </p>
+              )}
+              {points.map((p) => {
+                const idx = sortedSlides.findIndex((sl) => sl.id === p.slideId);
+                return (
+                  <div key={p.id} className="point-card">
+                    <div className="point-head">
+                      <strong>{idx >= 0 ? `スライド ${idx + 1}` : 'スライド'}</strong>
+                      <span className="muted">
+                        {fmtClock(p.startMs)}〜{fmtClock(p.endMs)}
+                      </span>
+                    </div>
+                    {Object.keys(p.kinds).length > 0 && (
+                      <div className="clip-kinds">
+                        {Object.entries(p.kinds).map(([k, n]) => (
+                          <span key={k} className="kind-pill" style={{ background: reactionMeta.color(k) }}>
+                            {reactionMeta.label(k)} ×{n}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <p className={p.status === 'ready' ? 'point-summary' : 'muted'}>
+                      {p.status === 'pending'
+                        ? 'AIがまとめを生成中...'
+                        : p.status === 'failed'
+                          ? 'まとめの生成に失敗しました'
+                          : p.summary}
+                    </p>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </aside>
