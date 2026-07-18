@@ -12,15 +12,27 @@ import { pdfPath, lessonDir } from '../storage';
 import { loadSlides } from '../live/liveSessions';
 import { listReflectionPoints } from '../live/reflectionPoints';
 
-// 紛らわしい文字（0/O, 1/I/L）を除いた授業コード
-const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+// 授業コード（4文字）の文字セット。
+// - 紛らわしい文字（0/O, 1/I/L）を除外
+// - 母音（A/E/I/O/U）とYを除外 → 単語として読める文字列が生まれない
+//   （1文字打ち間違えても母音は現れないため「1文字違いで意味のある語」も起こらない）
+const CODE_LETTERS = 'BCDFGHJKMNPQRSTVWXZ';
+const CODE_DIGITS = '23456789';
+const CODE_CHARS = CODE_LETTERS + CODE_DIGITS;
+// 母音なしでも意味を連想させる略語は避ける
+const CODE_BLOCKLIST = ['FCK', 'FKN', 'FGT', 'NGR', 'KKK', 'SHT', 'WTF', 'CNT', 'DCK', 'PNS', 'SS'];
 
 function generateJoinCode(): string {
-  let code = '';
-  for (let i = 0; i < 6; i++) {
-    code += CODE_CHARS[crypto.randomInt(CODE_CHARS.length)];
+  for (;;) {
+    let code = '';
+    for (let i = 0; i < 4; i++) {
+      code += CODE_CHARS[crypto.randomInt(CODE_CHARS.length)];
+    }
+    // 数字を最低1つ含める（4文字すべてが子音の並びになるのを防ぐ）
+    if (![...code].some((c) => CODE_DIGITS.includes(c))) continue;
+    if (CODE_BLOCKLIST.some((w) => code.includes(w))) continue;
+    return code;
   }
-  return code;
 }
 
 const buttonsSchema = z

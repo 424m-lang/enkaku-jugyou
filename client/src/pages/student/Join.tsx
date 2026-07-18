@@ -40,7 +40,7 @@ export default function Join() {
               value={code}
               onChange={(e) => setCode(e.target.value.toUpperCase())}
               required
-              placeholder="例: AB3K7X"
+              placeholder="例: B7KQ"
               maxLength={12}
               style={{ textTransform: 'uppercase', letterSpacing: '0.15em' }}
             />

@@ -17,12 +17,6 @@ import SlideCanvas, { type DrawingTool } from '../../components/SlideCanvas';
 import SlideThumb from '../../components/SlideThumb';
 import JoinQrModal from '../../components/JoinQrModal';
 
-const TOOLS: { key: DrawingTool; label: string }[] = [
-  { key: 'pointer', label: 'ポインター' },
-  { key: 'pen', label: 'ペン' },
-  { key: 'text', label: 'テキスト' },
-  { key: 'eraser', label: '消しゴム' },
-];
 // 黒 ＋ カラーユニバーサルデザイン（Okabe-Ito）の3色。色覚の違いがあっても見分けやすい
 const COLORS: { value: string; label: string }[] = [
   { value: '#111827', label: '黒' },
@@ -30,9 +24,11 @@ const COLORS: { value: string; label: string }[] = [
   { value: '#0072b2', label: '青' },
   { value: '#009e73', label: '緑' },
 ];
-const WIDTH_MIN = 0.0015;
-const WIDTH_MAX = 0.012;
-const WIDTH_DEFAULT = 0.004;
+// サイズはスライダーの整数目盛り × この単位で扱う（端まで確実に動かせるように）
+const WIDTH_UNIT = 0.0005;
+const WIDTH_MIN_STEPS = 3; // 0.0015
+const WIDTH_MAX_STEPS = 24; // 0.012
+const WIDTH_DEFAULT = 8 * WIDTH_UNIT; // 0.004
 
 // 「最新のリアクション・コメント」に表示する期間
 const RECENT_WINDOW_MS = 5 * 60_000;
@@ -287,6 +283,19 @@ export default function Teach() {
           <button className="btn" onClick={() => setShowQr(true)} disabled={!joinCode}>
             参加用QR
           </button>
+          <button
+            className="btn"
+            title="生徒画面と同じスライドを別ウィンドウで表示（プロジェクタ投影用）"
+            onClick={() =>
+              window.open(
+                `/screen/${lessonId}`,
+                `screen-${lessonId}`,
+                'popup=yes,width=1024,height=640'
+              )
+            }
+          >
+            スクリーン表示
+          </button>
           <span className="muted">生徒 {participantCount}人</span>
           {status === 'live' && (
             <span className={audioState === 'on' ? 'rec-on' : 'rec-off'}>
@@ -323,16 +332,20 @@ export default function Teach() {
       <div className="teach-main">
         <div className="slide-area">
           <div className="toolbar">
-            {TOOLS.map((t) => (
+            {(
+              [
+                ['pen', 'ペン'],
+                ['text', '文字'],
+              ] as [DrawingTool, string][]
+            ).map(([key, label]) => (
               <button
-                key={t.key}
-                className={`btn tool ${tool === t.key ? 'tool-active' : ''}`}
-                onClick={() => setTool(t.key)}
+                key={key}
+                className={`btn tool ${tool === key ? 'tool-active' : ''}`}
+                onClick={() => setTool((prev) => (prev === key ? 'none' : key))}
               >
-                {t.label}
+                {label}
               </button>
             ))}
-            <span className="toolbar-sep" />
             {COLORS.map((c) => (
               <button
                 key={c.value}
@@ -343,16 +356,15 @@ export default function Teach() {
                 title={c.label}
               />
             ))}
-            <span className="toolbar-sep" />
-            <label className="size-slider" title="ペン・テキストのサイズ">
+            <label className="size-slider" title="ペン・文字のサイズ">
               サイズ
               <input
                 type="range"
-                min={WIDTH_MIN}
-                max={WIDTH_MAX}
-                step={0.0005}
-                value={lineWidth}
-                onChange={(e) => setLineWidth(Number(e.target.value))}
+                min={WIDTH_MIN_STEPS}
+                max={WIDTH_MAX_STEPS}
+                step={1}
+                value={Math.round(lineWidth / WIDTH_UNIT)}
+                onChange={(e) => setLineWidth(Number(e.target.value) * WIDTH_UNIT)}
               />
               <span className="size-preview">
                 <span
@@ -365,8 +377,21 @@ export default function Teach() {
               </span>
             </label>
             <span className="toolbar-sep" />
+            <button
+              className={`btn tool ${tool === 'eraser' ? 'tool-active' : ''}`}
+              onClick={() => setTool((prev) => (prev === 'eraser' ? 'none' : 'eraser'))}
+            >
+              消しゴム
+            </button>
             <button className="btn tool" onClick={clearCurrentSlide}>
               全消去
+            </button>
+            <span className="toolbar-sep" />
+            <button
+              className={`btn tool ${tool === 'pointer' ? 'tool-active' : ''}`}
+              onClick={() => setTool((prev) => (prev === 'pointer' ? 'none' : 'pointer'))}
+            >
+              ポインター
             </button>
           </div>
 

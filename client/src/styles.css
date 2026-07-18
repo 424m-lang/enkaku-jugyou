@@ -366,8 +366,10 @@ textarea:focus {
 }
 
 .btn.tool {
-  padding: 6px 10px;
+  min-width: 84px; /* ツールボタンの大きさを統一（最長の「ポインター」に合わせる） */
+  padding: 6px 8px;
   font-size: 0.85rem;
+  text-align: center;
 }
 
 .tool-active {
@@ -665,6 +667,38 @@ textarea:focus {
   font-size: 0.88rem;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* ---- スクリーン投影用ウィンドウ ---- */
+.screen-page {
+  height: 100vh;
+  height: 100dvh;
+  background: #000;
+  display: flex;
+}
+
+.screen-page .slide-container {
+  flex: 1;
+  background: #000;
+  border-radius: 0;
+}
+
+.screen-waiting {
+  margin: auto;
+  color: #e5e7eb;
+  text-align: center;
+}
+
+/* QRモーダルのURL行（コピー付き） */
+.qr-url-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.qr-url-row .qr-url {
+  margin: 0;
 }
 
 /* ---- 受講画面（生徒） ---- */
