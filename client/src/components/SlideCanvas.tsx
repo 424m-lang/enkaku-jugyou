@@ -11,8 +11,13 @@ type DrawingProps = {
   onStroke: (s: StrokePayload) => void;
   onProgress: (s: StrokePayload) => void;
   onPointer: (x: number, y: number, visible: boolean) => void;
-  /** ストローク単位の削除（消しゴム・テキストの移動/編集で使用） */
+  /** ストローク単位の削除（消しゴムで使用） */
   onErase: (slideId: string, strokeIds: string[]) => void;
+  /**
+   * 既存ストロークをまとめて置き換える（テキストの内容変更・移動で使用）。
+   * 削除＋追加を1つの操作として扱うので、undo/redoで1回に戻せる
+   */
+  onReplace: (slideId: string, oldStrokeIds: string[], newStroke: StrokePayload) => void;
 };
 
 type Props = {
@@ -468,8 +473,7 @@ export default function SlideCanvas({ pdf, slide, strokes, progressStrokes, poin
     }
     if (!te.isNew && !progressSent && te.text === te.originalText) return; // 変更なし
 
-    if (!te.isNew) d.onErase(te.slideId, [te.strokeId]);
-    d.onStroke({
+    const newStroke: StrokePayload = {
       // 削除→追加の到着順が入れ替わっても壊れないよう、確定版は必ず新しいIDにする
       strokeId: te.isNew ? te.strokeId : crypto.randomUUID(),
       slideId: te.slideId,
@@ -479,7 +483,12 @@ export default function SlideCanvas({ pdf, slide, strokes, progressStrokes, poin
       points: [te.x, te.y],
       text: te.text,
       fontSize: te.fontSize,
-    });
+    };
+    if (te.isNew) {
+      d.onStroke(newStroke);
+    } else {
+      d.onReplace(te.slideId, [te.strokeId], newStroke);
+    }
   }, [emitTextProgress]);
 
   // スライドが切り替わったら編集中のテキストを確定する
@@ -672,8 +681,7 @@ export default function SlideCanvas({ pdf, slide, strokes, progressStrokes, poin
       if (drag.moved) {
         // 移動を確定: 元を削除して新しいIDで追加（到着順が入れ替わっても安全）
         const moved = { ...shiftStroke(drag.stroke, drag.dx, drag.dy), strokeId: crypto.randomUUID() };
-        d.onErase(drag.stroke.slideId, [drag.stroke.strokeId]);
-        d.onStroke(moved);
+        d.onReplace(drag.stroke.slideId, [drag.stroke.strokeId], moved);
       } else {
         // 動かさずに離した → その場で内容を編集
         editProgressSentRef.current = false;

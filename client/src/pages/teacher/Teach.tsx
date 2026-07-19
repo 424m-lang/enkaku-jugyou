@@ -35,6 +35,17 @@ const RECENT_WINDOW_MS = 5 * 60_000;
 
 type RecentItem = ReactionFeedItem & { expiresAt: number };
 
+// ---- 描画のUndo/Redo ----
+// ペン・文字の追加/削除/置き換えを1操作として記録し、スライドごとに戻す・やり直せるようにする
+type DrawCommand =
+  | { type: 'add'; stroke: StrokePayload }
+  | { type: 'erase'; slideId: string; strokes: StrokePayload[] }
+  | { type: 'replace'; slideId: string; oldStrokes: StrokePayload[]; newStroke: StrokePayload };
+
+function commandSlideId(cmd: DrawCommand): string {
+  return cmd.type === 'add' ? cmd.stroke.slideId : cmd.slideId;
+}
+
 export default function Teach() {
   const { id: lessonId } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -51,6 +62,10 @@ export default function Teach() {
   const [tool, setTool] = useState<DrawingTool>('pointer');
   const [color, setColor] = useState(COLORS[0].value);
   const [lineWidth, setLineWidth] = useState(WIDTH_DEFAULT);
+
+  // スライドごとのundo/redo履歴（表示中のスライドの操作だけを戻す・やり直す）
+  const [undoStacks, setUndoStacks] = useState<Record<string, DrawCommand[]>>({});
+  const [redoStacks, setRedoStacks] = useState<Record<string, DrawCommand[]>>({});
 
   const audioStopRef = useRef<{ stop: () => void } | null>(null);
 
@@ -215,12 +230,37 @@ export default function Teach() {
     });
   }, [socketRef, currentSlide, setSlides, changeSlideTo]);
 
-  const onStroke = useCallback(
+  // ---- 描画の反映（undo/redo履歴には積まない下位関数） ----
+  const addLocal = useCallback(
     (p: StrokePayload) => {
       setStrokes((prev) => applyDrawingEvent({ ...prev }, 'stroke', p));
       socketRef.current?.emit('stroke', p);
     },
     [socketRef, setStrokes]
+  );
+
+  const eraseLocal = useCallback(
+    (slideId: string, strokeIds: string[]) => {
+      const p = { slideId, strokeIds };
+      setStrokes((prev) => applyDrawingEvent({ ...prev }, 'clear_slide', p));
+      socketRef.current?.emit('clear_slide', p);
+    },
+    [socketRef, setStrokes]
+  );
+
+  // 新しい操作を履歴に積む。分岐した時点でredo履歴は無効になる
+  const pushUndo = useCallback((cmd: DrawCommand) => {
+    const sid = commandSlideId(cmd);
+    setUndoStacks((prev) => ({ ...prev, [sid]: [...(prev[sid] ?? []), cmd] }));
+    setRedoStacks((prev) => (prev[sid]?.length ? { ...prev, [sid]: [] } : prev));
+  }, []);
+
+  const onStroke = useCallback(
+    (p: StrokePayload) => {
+      addLocal(p);
+      pushUndo({ type: 'add', stroke: p });
+    },
+    [addLocal, pushUndo]
   );
 
   const onProgress = useCallback(
@@ -232,12 +272,79 @@ export default function Teach() {
 
   const onErase = useCallback(
     (slideId: string, strokeIds: string[]) => {
-      const p = { slideId, strokeIds };
-      setStrokes((prev) => applyDrawingEvent({ ...prev }, 'clear_slide', p));
-      socketRef.current?.emit('clear_slide', p);
+      const removed = (strokes[slideId] ?? []).filter((s) => strokeIds.includes(s.strokeId));
+      eraseLocal(slideId, strokeIds);
+      if (removed.length > 0) pushUndo({ type: 'erase', slideId, strokes: removed });
     },
-    [socketRef, setStrokes]
+    [strokes, eraseLocal, pushUndo]
   );
+
+  const onReplace = useCallback(
+    (slideId: string, oldStrokeIds: string[], newStroke: StrokePayload) => {
+      const oldStrokes = (strokes[slideId] ?? []).filter((s) => oldStrokeIds.includes(s.strokeId));
+      eraseLocal(slideId, oldStrokeIds);
+      addLocal(newStroke);
+      pushUndo({ type: 'replace', slideId, oldStrokes, newStroke });
+    },
+    [strokes, eraseLocal, addLocal, pushUndo]
+  );
+
+  const undo = useCallback(() => {
+    if (!currentSlideId) return;
+    const stack = undoStacks[currentSlideId] ?? [];
+    const cmd = stack[stack.length - 1];
+    if (!cmd) return;
+    if (cmd.type === 'add') {
+      eraseLocal(cmd.stroke.slideId, [cmd.stroke.strokeId]);
+    } else if (cmd.type === 'erase') {
+      for (const s of cmd.strokes) addLocal(s);
+    } else {
+      eraseLocal(cmd.slideId, [cmd.newStroke.strokeId]);
+      for (const s of cmd.oldStrokes) addLocal(s);
+    }
+    setUndoStacks((prev) => ({ ...prev, [currentSlideId]: stack.slice(0, -1) }));
+    setRedoStacks((prev) => ({ ...prev, [currentSlideId]: [...(prev[currentSlideId] ?? []), cmd] }));
+  }, [currentSlideId, undoStacks, eraseLocal, addLocal]);
+
+  const redo = useCallback(() => {
+    if (!currentSlideId) return;
+    const stack = redoStacks[currentSlideId] ?? [];
+    const cmd = stack[stack.length - 1];
+    if (!cmd) return;
+    if (cmd.type === 'add') {
+      addLocal(cmd.stroke);
+    } else if (cmd.type === 'erase') {
+      eraseLocal(cmd.slideId, cmd.strokes.map((s) => s.strokeId));
+    } else {
+      eraseLocal(cmd.slideId, cmd.oldStrokes.map((s) => s.strokeId));
+      addLocal(cmd.newStroke);
+    }
+    setRedoStacks((prev) => ({ ...prev, [currentSlideId]: stack.slice(0, -1) }));
+    setUndoStacks((prev) => ({ ...prev, [currentSlideId]: [...(prev[currentSlideId] ?? []), cmd] }));
+  }, [currentSlideId, redoStacks, eraseLocal, addLocal]);
+
+  const canUndo = ((currentSlideId && undoStacks[currentSlideId]) ?? []).length > 0;
+  const canRedo = ((currentSlideId && redoStacks[currentSlideId]) ?? []).length > 0;
+
+  // Ctrl/Cmd+Z で戻す、Ctrl/Cmd+Y または Shift+Ctrl/Cmd+Z でやり直す
+  // （テキスト入力欄にフォーカスがある間は入力欄自身の元に戻す機能を優先し、奪わない）
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (!(e.ctrlKey || e.metaKey)) return;
+      if (e.key === 'z' || e.key === 'Z') {
+        e.preventDefault();
+        if (e.shiftKey) redo();
+        else undo();
+      } else if (e.key === 'y' || e.key === 'Y') {
+        e.preventDefault();
+        redo();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [undo, redo]);
 
   const onPointer = useCallback(
     (x: number, y: number, visible: boolean) => {
@@ -250,10 +357,10 @@ export default function Teach() {
   const clearCurrentSlide = useCallback(() => {
     if (!currentSlide) return;
     if (!window.confirm('このスライドの書き込みをすべて消しますか？')) return;
-    const p = { slideId: currentSlide.id };
-    setStrokes((prev) => applyDrawingEvent({ ...prev }, 'clear_slide', p));
-    socketRef.current?.emit('clear_slide', p);
-  }, [socketRef, currentSlide, setStrokes]);
+    const ids = (strokes[currentSlide.id] ?? []).map((s) => s.strokeId);
+    if (ids.length === 0) return;
+    onErase(currentSlide.id, ids); // undo/redo履歴に1操作として積む
+  }, [currentSlide, strokes, onErase]);
 
   const reactionMeta = makeReactionMeta(buttons);
   const commentCount = recent.filter((r) => r.kind === 'comment').length;
@@ -280,11 +387,14 @@ export default function Teach() {
           <span className="muted">
             参加コード: <strong className="inline-code">{joinCode}</strong>
           </span>
-          <button className="btn" onClick={() => setShowQr(true)} disabled={!joinCode}>
+          <button className="btn header-action" onClick={() => navigate('/dashboard')}>
+            授業一覧へ
+          </button>
+          <button className="btn header-action" onClick={() => setShowQr(true)} disabled={!joinCode}>
             参加用QR
           </button>
           <button
-            className="btn"
+            className="btn header-action"
             title="生徒画面と同じスライドを別ウィンドウで表示（プロジェクタ投影用）"
             onClick={() =>
               window.open(
@@ -303,7 +413,7 @@ export default function Teach() {
             </span>
           )}
           {status === 'draft' && (
-            <button className="btn primary" onClick={startLesson}>
+            <button className="btn primary header-action" onClick={startLesson}>
               授業を開始
             </button>
           )}
@@ -386,6 +496,22 @@ export default function Teach() {
             <button className="btn tool" onClick={clearCurrentSlide}>
               全消去
             </button>
+            <button
+              className="btn tool"
+              onClick={undo}
+              disabled={!canUndo}
+              title="元に戻す（Ctrl+Z）"
+            >
+              ↶ 戻す
+            </button>
+            <button
+              className="btn tool"
+              onClick={redo}
+              disabled={!canRedo}
+              title="やり直す（Ctrl+Y）"
+            >
+              ↷ 進む
+            </button>
             <span className="toolbar-sep" />
             <button
               className={`btn tool ${tool === 'pointer' ? 'tool-active' : ''}`}
@@ -400,7 +526,7 @@ export default function Teach() {
             slide={currentSlide}
             strokes={currentSlideId ? (strokes[currentSlideId] ?? []) : []}
             progressStrokes={currentProgress}
-            drawing={{ tool, color, lineWidth, onStroke, onProgress, onPointer, onErase }}
+            drawing={{ tool, color, lineWidth, onStroke, onProgress, onPointer, onErase, onReplace }}
           />
 
           <div className="slide-nav">

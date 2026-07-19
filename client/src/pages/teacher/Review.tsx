@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import type {
   FullTranscriptSummary,
   LessonStats,
@@ -263,11 +263,6 @@ export default function Review() {
       <header className="app-header">
         <div className="header-left">
           <h1>{lesson.title} — 振り返り</h1>
-        </div>
-        <div className="header-right">
-          <Link className="btn" to="/dashboard">
-            ダッシュボードへ
-          </Link>
         </div>
       </header>
 

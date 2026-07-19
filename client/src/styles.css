@@ -158,6 +158,12 @@ textarea:focus {
   flex-wrap: wrap;
 }
 
+/* 授業一覧へ・参加用QR・スクリーン表示・授業を開始のサイズを揃える */
+.btn.header-action {
+  min-width: 128px;
+  text-align: center;
+}
+
 .chip {
   font-size: 0.75rem;
   padding: 2px 10px;
