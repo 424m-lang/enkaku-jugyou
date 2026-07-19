@@ -1102,10 +1102,15 @@ textarea:focus {
 @media (max-width: 860px) {
   .teach-main {
     grid-template-columns: 1fr;
-    grid-template-rows: 1fr auto;
+    /* スライドは最低限見やすい高さを確保し、サイドバーは固定高でスクロールさせる。
+       これにより、リアクション・コメントが増えてもスライドが縮み続けない。
+       画面が短くて収まらない場合は teach-main 自体を縦スクロールできるようにする */
+    grid-template-rows: minmax(300px, 1fr) 220px;
+    overflow-y: auto;
   }
 
   .sidebar {
-    max-height: 280px;
+    max-height: none;
+    min-height: 0;
   }
 }

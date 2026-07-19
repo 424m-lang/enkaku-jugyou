@@ -264,6 +264,11 @@ export default function Review() {
         <div className="header-left">
           <h1>{lesson.title} — 振り返り</h1>
         </div>
+        <div className="header-right">
+          <button className="btn" onClick={() => navigate('/dashboard')}>
+            授業一覧へ
+          </button>
+        </div>
       </header>
 
       {error && <p className="error" style={{ padding: '0 16px' }}>{error}</p>}

@@ -359,12 +359,12 @@ export default function Teach() {
       <header className="app-header">
         <div className="header-left">
           <h1>{title}</h1>
-          <button className="btn header-action" onClick={() => navigate('/dashboard')}>
-            授業一覧へ
-          </button>
           <span className={`chip chip-${status}`}>
             {status === 'draft' ? '開始前' : status === 'live' ? '授業中' : '終了'}
           </span>
+          <button className="btn header-action" onClick={() => navigate('/dashboard')}>
+            授業一覧へ
+          </button>
           {!connected && <span className="chip chip-offline">再接続中...</span>}
         </div>
         {/* 参加コード〜授業を開始: 画面が狭いときは横スクロールで1行表示 */}
