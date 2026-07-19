@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import type {
+  CommentInsight,
   LessonStatus,
   ReactionButtonDef,
   ReactionFeedItem,
-  ReflectionPoint,
   StrokePayload,
 } from '@shared';
 import { api, ApiError } from '../../lib/api';
@@ -14,7 +14,6 @@ import { useLessonLive } from '../../lib/useLessonLive';
 import { fmtClock } from '../../lib/format';
 import { makeReactionMeta } from '../../lib/reactionMeta';
 import SlideCanvas, { type DrawingTool } from '../../components/SlideCanvas';
-import SlideThumb from '../../components/SlideThumb';
 import JoinQrModal from '../../components/JoinQrModal';
 
 // 黒 ＋ カラーユニバーサルデザイン（Okabe-Ito）の3色。色覚の違いがあっても見分けやすい
@@ -41,14 +40,21 @@ function commandSlideId(cmd: DrawCommand): string {
   return cmd.type === 'add' ? cmd.stroke.slideId : cmd.slideId;
 }
 
+// 「直近のリアクション」の集計対象期間
+const RECENT_WINDOW_MS = 5 * 60_000;
+
+// コメント・振り返りカードの並び順キー（最後に動きがあったカードを上に）
+function insightSortKey(p: CommentInsight): number {
+  return p.comments[p.comments.length - 1]?.tMs ?? p.windowStartMs;
+}
+
 export default function Teach() {
   const { id: lessonId } = useParams<{ id: string }>();
   const navigate = useNavigate();
 
   const [joinCode, setJoinCode] = useState('');
   const [reactions, setReactions] = useState<ReactionFeedItem[]>([]);
-  const [points, setPoints] = useState<ReflectionPoint[]>([]);
-  const [pointsOpen, setPointsOpen] = useState(false);
+  const [insights, setInsights] = useState<CommentInsight[]>([]);
   const [participantCount, setParticipantCount] = useState(0);
   const [audioState, setAudioState] = useState<'off' | 'on' | 'error'>('off');
   const [loadError, setLoadError] = useState('');
@@ -63,6 +69,13 @@ export default function Teach() {
   const [redoStacks, setRedoStacks] = useState<Record<string, DrawCommand[]>>({});
 
   const audioStopRef = useRef<{ stop: () => void } | null>(null);
+  // 「直近のリアクション」の判定に使う授業タイムライン時計（サーバ時刻基準）
+  const lessonClockRef = useRef<{ startedAtEpochMs: number | null; offsetMs: number }>({
+    startedAtEpochMs: null,
+    offsetMs: 0,
+  });
+  // 5分窓の集計を時間経過でも更新するための定期タイマー
+  const [nowTick, setNowTick] = useState(() => Date.now());
 
   const {
     socketRef,
@@ -83,6 +96,12 @@ export default function Teach() {
     currentProgress,
     pdf,
   } = useLessonLive(lessonId, {
+    onLessonState: (st) => {
+      lessonClockRef.current = {
+        startedAtEpochMs: st.startedAtEpochMs,
+        offsetMs: st.serverNowEpochMs - Date.now(),
+      };
+    },
     setup: (socket) => {
       // 先生画面だけが受け取るイベント
       socket.on('participant_count', (n) => setParticipantCount(n));
@@ -92,10 +111,17 @@ export default function Teach() {
           prev.some((r) => r.id === item.id) ? prev : [item, ...prev]
         );
       });
-      // 振り返りポイント（新規作成時とAI要約完成時に同じイベントで届く → 上書き）
-      socket.on('reflection_point', (p) => {
-        setPoints((prev) => [p, ...prev.filter((x) => x.id !== p.id)].sort((a, b) => b.startMs - a.startMs));
-        setPointsOpen(true); // 新しいポイントが届いたらパネルを開いて知らせる
+      // コメント・振り返り（コメント到着時とAI分析完成時に同じidで届く → 上書き）
+      socket.on('comment_insight', (p) => {
+        setInsights((prev) =>
+          [p, ...prev.filter((x) => x.id !== p.id)].sort(
+            (a, b) => insightSortKey(b) - insightSortKey(a)
+          )
+        );
+      });
+      // 既存カードへ統合されて不要になったカードを取り除く
+      socket.on('comment_insight_removed', (id) => {
+        setInsights((prev) => prev.filter((x) => x.id !== id));
       });
     },
   });
@@ -120,14 +146,14 @@ export default function Teach() {
         setButtons(detail.reactionButtons);
         setStatus(detail.status);
 
-        // 振り返りと全リアクションを復元（リロード・再接続対応）
-        const [pts, rec] = await Promise.all([
-          api<ReflectionPoint[]>(`/api/lessons/${lessonId}/reflection-points`),
+        // コメント・振り返りとリアクションを復元（リロード・再接続対応）
+        const [ins, rec] = await Promise.all([
+          api<CommentInsight[]>(`/api/lessons/${lessonId}/comment-insights`),
           api<{ items: ReactionFeedItem[] }>(`/api/lessons/${lessonId}/reactions`),
         ]);
         if (disposed) return;
-        setPoints([...pts].sort((a, b) => b.startMs - a.startMs));
-        setReactions([...rec.items].reverse()); // 新しい順に表示
+        setInsights([...ins].sort((a, b) => insightSortKey(b) - insightSortKey(a)));
+        setReactions([...rec.items].reverse()); // 新しい順に保持
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) navigate('/login');
         else setLoadError('授業の読み込みに失敗しました');
@@ -145,6 +171,13 @@ export default function Teach() {
       audioStopRef.current = null;
     };
   }, []);
+
+  // 「直近のリアクション」: 授業中は30秒ごとに再集計して窓から外れた反応を落とす
+  useEffect(() => {
+    if (status !== 'live') return;
+    const timer = setInterval(() => setNowTick(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, [status]);
 
   // ---- 操作 ----
   const startAudio = useCallback(async () => {
@@ -344,7 +377,21 @@ export default function Teach() {
   }, [currentSlide, strokes, onErase]);
 
   const reactionMeta = makeReactionMeta(buttons);
-  const commentCount = reactions.filter((r) => r.kind === 'comment').length;
+
+  // 直近5分間のボタン反応数（授業タイムライン時刻で判定。サーバとの時計ズレはoffsetで補正）
+  const recentCounts = useMemo(() => {
+    const clock = lessonClockRef.current;
+    const counts: Record<string, number> = {};
+    if (!clock.startedAtEpochMs) return counts;
+    const nowMs = nowTick + clock.offsetMs - clock.startedAtEpochMs;
+    for (const r of reactions) {
+      if (r.kind === 'comment') continue;
+      if (r.tMs >= nowMs - RECENT_WINDOW_MS) {
+        counts[r.kind] = (counts[r.kind] ?? 0) + 1;
+      }
+    }
+    return counts;
+  }, [reactions, nowTick]);
 
   if (loadError) {
     return (
@@ -530,115 +577,77 @@ export default function Teach() {
             <button className="btn" onClick={insertBlank} title="このスライドの直後に白紙ページを挿入">
               ＋ 白紙を挿入
             </button>
+            {/* 直近のリアクション: 直近5分間のボタン反応数 */}
+            <div className="recent-reactions">
+              <span className="recent-label">直近のリアクション</span>
+              {buttons.map((b) => (
+                <span key={b.key} className="kind-pill" style={{ background: b.color }}>
+                  {b.label} ×{recentCounts[b.key] ?? 0}
+                </span>
+              ))}
+            </div>
           </div>
         </div>
 
         <aside className="sidebar">
           <div className="card feed-card">
-            <h3>リアクション・コメント</h3>
-            <div className="recent-chips">
-              {buttons.map((b) => (
-                <span key={b.key} className="kind-pill" style={{ background: b.color }}>
-                  {b.label} ×{reactions.filter((r) => r.kind === b.key).length}
-                </span>
-              ))}
-              <span className="kind-pill" style={{ background: '#6b7280' }}>
-                コメント ×{commentCount}
-              </span>
-            </div>
-            <div className="feed-list">
-              {reactions.length === 0 && <p className="muted">まだ反応はありません</p>}
-              {reactions.map((f) => (
-                <div key={f.id} className={`feed-item ${f.kind === 'comment' ? 'feed-comment' : ''}`}>
-                  <span className="feed-time">{fmtClock(f.tMs)}</span>
-                  <span className="feed-name">{f.participantName}</span>
-                  <span className="feed-body">
-                    {f.kind === 'comment' ? f.comment : reactionMeta.label(f.kind)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-        </aside>
-      </div>
-
-      {/* 振り返り: 画面下部の開閉式パネル（スライド画像つき横並びカード） */}
-      <div className={`points-drawer ${pointsOpen ? 'open' : ''}`}>
-        <button className="points-drawer-head" onClick={() => setPointsOpen((v) => !v)}>
-          <span>
-            振り返り <span className="points-count">{points.length}</span>
-          </span>
-          <span className="muted">{pointsOpen ? '▼ 閉じる' : '▲ 開く'}</span>
-        </button>
-        {pointsOpen && (
-          <div className="points-strip">
-            {points.length === 0 && (
-              <p className="muted points-empty">
-                反応やコメントが付いたスライド（合計1分以上の説明。行き来しても合算されます）のまとめが自動で追加されます
-              </p>
-            )}
-            {points.map((p) => {
-              const idx = sortedSlides.findIndex((sl) => sl.id === p.slideId);
-              const slide = idx >= 0 ? sortedSlides[idx] : null;
-              return (
-                <div key={p.id} className="point-card">
-                  <div className="point-side">
-                    <SlideThumb pdf={pdf} slide={slide} width={150} />
-                    <div className="point-title">
-                      <strong>{idx >= 0 ? `スライド ${idx + 1}` : 'スライド'}</strong>
-                      <span className="muted">
-                        {fmtClock(p.startMs)}〜{fmtClock(p.endMs)}
-                      </span>
+            <h3>コメント・振り返り</h3>
+            <div className="insight-list">
+              {insights.length === 0 && (
+                <p className="muted">
+                  生徒からコメントが届くと、AIが関連する説明の要約とあわせてここに表示します
+                </p>
+              )}
+              {insights.map((p) => (
+                <div key={p.id} className="insight-card">
+                  {p.comments.map((c) => (
+                    <div key={c.reactionId} className="insight-comment">
+                      <span className="feed-time">{fmtClock(c.tMs)}</span>
+                      <span className="feed-name">{c.participantName}</span>
+                      <span className="feed-body">{c.text}</span>
                     </div>
-                  </div>
-                  <div className="point-body">
-                    <div className="point-sec">
-                      <span className="point-label">反応数</span>
-                      {Object.keys(p.kinds).length > 0 ? (
-                        <span className="clip-kinds">
-                          {Object.entries(p.kinds).map(([k, n]) => (
-                            <span
-                              key={k}
-                              className="kind-pill"
-                              style={{ background: reactionMeta.color(k) }}
-                            >
-                              {reactionMeta.label(k)} ×{n}
-                            </span>
-                          ))}
-                        </span>
-                      ) : (
-                        <span className="muted">なし</span>
-                      )}
-                    </div>
-                    {p.status === 'pending' && <p className="muted">AIが要約を生成中...</p>}
-                    {p.status === 'failed' && <p className="muted">要約の生成に失敗しました</p>}
-                    {p.status === 'ready' && (
-                      <>
-                        <div className="point-sec">
-                          <span className="point-label">説明内容</span>
-                          {p.summary ? (
-                            <p className="point-text">{p.summary}</p>
-                          ) : (
-                            <span className="muted">録音がないため要約はありません</span>
-                          )}
-                        </div>
-                        {(p.commentSummary || p.comments.length > 0) && (
-                          <div className="point-sec">
-                            <span className="point-label">コメント</span>
-                            <p className="point-text">
-                              {p.commentSummary ?? p.comments.join(' / ')}
-                            </p>
-                          </div>
+                  ))}
+                  {p.status === 'pending' && (
+                    <p className="muted small insight-status">AIが関連する説明を分析中...</p>
+                  )}
+                  {p.status === 'failed' && (
+                    <p className="muted small insight-status">関連する説明の分析に失敗しました</p>
+                  )}
+                  {p.status === 'ready' && (
+                    <>
+                      <div className="insight-sec">
+                        <span className="point-label">関連する説明</span>
+                        {p.summary ? (
+                          <p className="point-text">{p.summary}</p>
+                        ) : (
+                          <span className="muted small">録音がないため要約はありません</span>
                         )}
-                      </>
-                    )}
-                  </div>
+                      </div>
+                      <div className="insight-sec">
+                        <span className="point-label">周辺の反応</span>
+                        {Object.keys(p.kinds).length > 0 ? (
+                          <span className="clip-kinds">
+                            {Object.entries(p.kinds).map(([k, n]) => (
+                              <span
+                                key={k}
+                                className="kind-pill"
+                                style={{ background: reactionMeta.color(k) }}
+                              >
+                                {reactionMeta.label(k)} ×{n}
+                              </span>
+                            ))}
+                          </span>
+                        ) : (
+                          <span className="muted small">なし</span>
+                        )}
+                      </div>
+                    </>
+                  )}
                 </div>
-              );
-            })}
+              ))}
+            </div>
           </div>
-        )}
+        </aside>
       </div>
     </div>
   );

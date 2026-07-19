@@ -10,7 +10,7 @@ import { db, schema } from '../db';
 import { requireTeacher, teacherIdOf, verifyParticipantToken } from '../auth';
 import { pdfPath, lessonDir } from '../storage';
 import { loadSlides } from '../live/liveSessions';
-import { listReflectionPoints } from '../live/reflectionPoints';
+import { listCommentInsights } from '../live/commentInsights';
 
 // 授業コード（4文字）の文字セット。
 // - 紛らわしい文字（0/O, 1/I/L）を除外
@@ -229,15 +229,15 @@ export async function lessonRoutes(app: FastifyInstance): Promise<void> {
     return lessonToSummary(updated);
   });
 
-  // ---- 振り返りポイント一覧（先生画面の初期表示・再接続時の復元用） ----
-  app.get('/api/lessons/:id/reflection-points', { preHandler: requireTeacher }, async (req, reply) => {
+  // ---- コメント・振り返り一覧（先生画面の初期表示・再接続時の復元用） ----
+  app.get('/api/lessons/:id/comment-insights', { preHandler: requireTeacher }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const [lesson] = await db
       .select({ id: schema.lessons.id })
       .from(schema.lessons)
       .where(and(eq(schema.lessons.id, id), eq(schema.lessons.teacherId, teacherIdOf(req))));
     if (!lesson) return reply.code(404).send({ error: '授業が見つかりません' });
-    return listReflectionPoints(id);
+    return listCommentInsights(id);
   });
 
   // ---- リアクション一覧（先生画面「リアクション・コメント」の初期表示・復元用） ----

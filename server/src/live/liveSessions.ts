@@ -48,21 +48,11 @@ export type LiveSession = {
   drawingEvents: TimelineEvent[];
   counts: ReactionCounts;
 
-  /** 現在のスライドの滞在開始時刻（振り返りポイントのクラスタ境界に使う） */
-  visitStartMs: number;
   /**
-   * 離脱後1分以内の復帰を「連続した説明」として扱うため、確定を保留中の滞在
-   * （slideId → 最初の表示開始時刻と最終離脱時刻）。
-   * 期限内に同じスライドへ戻れば最初の表示からの連続区間として合算し、
-   * 戻らなければタイマーで確定する。短い表示も保留するので、
-   * 「A 1秒 → B 10秒 → A 40秒 …」のような行き来も合計でAの1区間になる
+   * コメント入力中の生徒（participantId → 入力対象スライド・入力開始時刻・最終合図時刻）。
+   * startTMs はコメント・振り返りのAI分析対象の音声範囲を決めるのに使う
    */
-  heldVisits: Map<
-    string,
-    { startMs: number; leftAtMs: number; timer: ReturnType<typeof setTimeout> }
-  >;
-  /** コメント入力中の生徒（participantId → 入力対象スライドと最終合図時刻） */
-  composing: Map<string, { slideId: string; atEpochMs: number }>;
+  composing: Map<string, { slideId: string; startTMs: number; atEpochMs: number }>;
 
   // 音声（1レッスン=原則1ファイル。先生のリロード時のみ新パートに切替）
   currentAudioPart: AudioPart | null;
@@ -114,8 +104,6 @@ export async function getSession(lessonId: string): Promise<LiveSession | null> 
     currentSlideId: slides[0]?.id ?? null,
     drawingEvents: [],
     counts: {},
-    visitStartMs: 0,
-    heldVisits: new Map(),
     composing: new Map(),
     currentAudioPart: null,
     audioSeq: 0,
@@ -141,10 +129,6 @@ export async function getSession(lessonId: string): Promise<LiveSession | null> 
       });
       if (ev.type === 'audio_part') {
         lastAudioPart = { file: (ev.payload as { file: string }).file, startMs: ev.tMs };
-      }
-      // 現在スライドの滞在開始時刻も復元する（振り返りポイント用）
-      if (ev.type === 'slide_change') {
-        s.visitStartMs = ev.tMs;
       }
     }
     // 録音は最後のパートへ追記モードで再開する（先生のMediaRecorderは動き続けており、
@@ -304,9 +288,6 @@ export async function startLesson(s: LiveSession): Promise<void> {
   s.drawingEvents = [];
   s.counts = {};
   s.recentReactions = [];
-  s.visitStartMs = 0;
-  for (const held of s.heldVisits.values()) clearTimeout(held.timer);
-  s.heldVisits.clear();
   s.composing.clear();
   s.audioSeq = 0;
   s.audioInitSegment = null;

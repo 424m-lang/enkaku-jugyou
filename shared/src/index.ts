@@ -99,7 +99,7 @@ export type ReactionInput = {
   delayMs: number;
   /**
    * 反応の対象スライド。コメントは「入力を始めたときのスライド」を入れることで、
-   * 送信がページ切替の後になっても本来のスライドの振り返りポイントに紐づく
+   * 送信がページ切替の後になっても本来のスライドに対する反応として扱える
    */
   slideId?: string;
 };
@@ -127,19 +127,28 @@ export type ReactionCluster = {
   summaryText?: string | null;
 };
 
-// ---- 振り返りポイント ----
-// 先生が1分以上滞在したスライド（の滞在区間）を1つのクラスタとして扱う。
-// 1分以内に元のスライドへ戻った場合は連続した説明とみなして切替と判定しない。
-// 反応もコメントも無かった区間はポイントにしない。
-export type ReflectionPoint = {
+// ---- コメント・振り返り ----
+// 生徒のコメントを起点に、入力開始時刻の周辺の先生の音声をAIで分析し、
+// 「生徒が何についてコメントしようとしたのか（関連する説明の重要ポイント）」を
+// 要約して表示するカード。届いた直後はコメント原文のみ（status=pending）で配信し、
+// 分析が終わると同じidで要約・周辺反応数つきのカードに更新される。
+// 同じ事柄への言及と判定されたコメントは1枚のカードに統合される。
+export type InsightComment = {
+  reactionId: string;
+  text: string;
+  participantName: string;
+  tMs: number; // 送信時刻
+  composeStartMs: number; // 入力開始時刻（この周辺の音声を分析する）
+};
+
+export type CommentInsight = {
   id: string;
-  slideId: string;
-  startMs: number; // 滞在開始（授業タイムライン）
-  endMs: number; // 滞在終了
-  kinds: ReactionCounts; // 区間内のボタン反応数（コメントは含まない）
-  comments: string[]; // 区間に対する生徒コメント本文
-  summary: string | null; // 説明内容の要約（音声から。録音なしはnull）
-  commentSummary: string | null; // 生徒コメントの要約（コメントなしはnull）
+  slideId: string | null; // 最初のコメントの入力開始時のスライド
+  windowStartMs: number; // AI分析の対象になる音声範囲
+  windowEndMs: number;
+  comments: InsightComment[]; // 統合された場合は複数（原文はすべて表示する）
+  kinds: ReactionCounts; // コメント周辺に届いた全生徒のボタン反応数
+  summary: string | null; // コメントに関連する先生の話の重要ポイント（録音なしはnull）
   status: 'pending' | 'ready' | 'failed';
 };
 
@@ -167,8 +176,10 @@ export interface ServerToClientEvents {
   reaction_feed: (item: ReactionFeedItem, counts: ReactionCounts) => void;
   reaction_counts: (counts: ReactionCounts) => void;
 
-  // 振り返りポイント（先生向け。新規作成時とAIまとめ完成時に同じイベントで届く）
-  reflection_point: (point: ReflectionPoint) => void;
+  // コメント・振り返り（先生向け。コメント到着時とAI分析完成時に同じidで届く → 上書き）
+  comment_insight: (insight: CommentInsight) => void;
+  // コメントが既存カードへ統合されて不要になったカードの削除通知
+  comment_insight_removed: (insightId: string) => void;
 }
 
 export interface ClientToServerEvents {
@@ -190,7 +201,8 @@ export interface ClientToServerEvents {
   reaction: (r: ReactionInput, cb: (res: { ok: boolean }) => void) => void;
   /**
    * コメント入力中の合図（入力中は数秒おきに active:true、送信/クリアで active:false）。
-   * サーバはこの合図がある間、そのスライドの振り返りポイントの要約を待つ
+   * サーバは最初の合図の時刻を「入力開始時刻」として記録し、
+   * コメント・振り返りのAI分析対象の音声範囲を決めるのに使う
    */
   comment_composing: (p: { slideId: string; active: boolean }) => void;
 }

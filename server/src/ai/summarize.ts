@@ -55,40 +55,41 @@ async function callSummaryLLM(
 }
 
 /**
- * 振り返りポイントの「説明内容」: スライド1枚分の説明音声の文字起こしを、
- * 内容だけを端的に要約する（生徒の反応への言及や提案はしない）。
+ * コメント・振り返り: 生徒のコメントと入力開始時刻周辺の音声の文字起こしから、
+ * 「生徒が何についてコメントしようとしたのか」を割り出し、
+ * その部分の先生の話の重要ポイントを端的に要約する。
  */
-export async function summarizeExplanation(
-  transcriptText: string
+export async function summarizeCommentContext(
+  transcriptText: string,
+  comments: string[]
 ): Promise<{ text: string; provider: string }> {
   const result = await callSummaryLLM(
-    'あなたは授業の説明音声の文字起こしを要約するアシスタントです。スライド1枚分の説明内容を、日本語で1〜2文に端的に要約してください。何を説明したかという内容の要約だけを書き、生徒の反応への言及・評価・提案・前置きは一切書かないでください。',
-    transcriptText.slice(0, 30_000),
+    'あなたは授業中の生徒コメントを分析するアシスタントです。先生の説明音声の文字起こしと生徒のコメントを読み、コメントが先生の話のどの内容についてのものかを特定し、その部分の重要ポイントを日本語で1〜2文に端的に要約してください。要約だけを書き、評価・提案・前置きは一切書かないでください。コメントに対応する説明が文字起こしに見当たらない場合は、文字起こし全体の要点を1文で書いてください。',
+    `先生の説明（文字起こし）:\n${transcriptText.slice(0, 30_000)}\n\n生徒のコメント:\n${comments.map((c, i) => `${i + 1}. ${c}`).join('\n')}`,
     300
   );
   if (result) return result;
   return {
-    text: '（モック要約）この区間の説明内容の要約です。SUMMARY_PROVIDER=anthropic または openai とAPIキーを設定すると実際のAI要約になります。',
+    text: '（モック要約）コメントに関連する説明の要約です。SUMMARY_PROVIDER=anthropic または openai とAPIキーを設定すると実際のAI要約になります。',
     provider: 'mock',
   };
 }
 
 /**
- * 振り返りポイントの「コメント」: 区間内の生徒コメントだけを端的に要約する。
+ * 新しいコメントが既存カードのコメント群と同じ事柄への言及かを判定する。
+ * LLMが使えない場合は null を返す（呼び出し側でヒューリスティックにフォールバック）。
  */
-export async function summarizeComments(
-  comments: string[]
-): Promise<{ text: string; provider: string }> {
+export async function judgeSameTopic(
+  existingComments: string[],
+  newComment: string
+): Promise<boolean | null> {
   const result = await callSummaryLLM(
-    'あなたは授業中に生徒から届いたコメントを整理するアシスタントです。コメント群の要点（質問・つまずき・要望）を日本語で1〜2文に端的にまとめてください。同じ趣旨のコメントはまとめ、評価・提案・前置きは書かないでください。',
-    comments.map((c, i) => `${i + 1}. ${c}`).join('\n'),
-    300
+    'あなたは授業中の生徒コメントを整理するアシスタントです。既存のコメント群と新しいコメントが同じ事柄（同じ話題・同じ疑問）への言及かどうかを判定し、「yes」か「no」のみを出力してください。',
+    `既存のコメント:\n${existingComments.map((c, i) => `${i + 1}. ${c}`).join('\n')}\n\n新しいコメント:\n${newComment}`,
+    8
   );
-  if (result) return result;
-  return {
-    text: `（モック要約）コメント${comments.length}件の要点です。SUMMARY_PROVIDER設定で実際のAI要約になります。`,
-    provider: 'mock',
-  };
+  if (!result) return null;
+  return /yes/i.test(result.text);
 }
 
 /**

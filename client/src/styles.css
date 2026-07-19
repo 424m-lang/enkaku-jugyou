@@ -526,11 +526,28 @@ textarea:focus {
   border-radius: 50%;
 }
 
+/* スライド操作は左寄せにし、空いた右側に「直近のリアクション」を置く */
 .slide-nav {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 14px;
+  justify-content: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.recent-reactions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.recent-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
 }
 
 .sidebar {
@@ -552,41 +569,9 @@ textarea:focus {
   flex-direction: column;
 }
 
-/* 直近5分の種類別カウント */
-.recent-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-bottom: 8px;
-}
-
 .small {
   font-size: 0.78rem;
   font-weight: normal;
-}
-
-.feed-list {
-  flex: 1;
-  overflow-y: auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.feed-item {
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
-  font-size: 0.85rem;
-  padding: 4px 6px;
-  border-radius: 6px;
-  background: #f9fafb;
-}
-
-.feed-comment {
-  background: #eff6ff;
-  border-left: 3px solid var(--primary);
 }
 
 .feed-time {
@@ -612,69 +597,40 @@ textarea:focus {
   font-size: 0.9rem;
 }
 
-/* ---- 振り返りポイント（画面下部の開閉式パネル） ---- */
-.points-drawer {
-  border-top: 1px solid var(--border);
-  background: #fff;
-  flex-shrink: 0;
-}
-
-.points-drawer-head {
-  width: 100%;
+/* ---- コメント・振り返り（サイドバーのカード一覧） ---- */
+.insight-list {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 16px;
-  background: none;
-  border: none;
-  cursor: pointer;
-  font-weight: 600;
-  font-size: 0.92rem;
+  flex-direction: column;
+  gap: 10px;
 }
 
-.points-drawer-head:hover {
-  background: #f9fafb;
-}
-
-.points-count {
-  display: inline-block;
-  min-width: 22px;
-  padding: 1px 7px;
-  margin-left: 4px;
-  border-radius: 999px;
-  background: var(--primary);
-  color: #fff;
-  font-size: 0.8rem;
-  text-align: center;
-}
-
-.points-strip {
-  display: flex;
-  gap: 12px;
-  overflow-x: auto;
-  padding: 2px 16px 12px;
-}
-
-.points-empty {
-  padding: 8px 0 16px;
-}
-
-.point-card {
-  flex: 0 0 480px;
-  display: flex;
-  gap: 12px;
+.insight-card {
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 10px 12px;
+  border-left: 3px solid var(--primary);
+  border-radius: 8px;
+  padding: 8px 10px;
   background: #f9fafb;
-  height: 200px;
-}
-
-.point-side {
-  flex-shrink: 0;
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.insight-comment {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 0.85rem;
+}
+
+.insight-status {
+  margin: 0;
+}
+
+.insight-sec {
+  font-size: 0.85rem;
 }
 
 .slide-thumb {
@@ -682,25 +638,6 @@ textarea:focus {
   border: 1px solid var(--border);
   border-radius: 6px;
   background: #fff;
-}
-
-.point-title {
-  display: flex;
-  flex-direction: column;
-  font-size: 0.85rem;
-}
-
-.point-body {
-  flex: 1;
-  min-width: 0;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.point-sec {
-  font-size: 0.85rem;
 }
 
 .point-label {

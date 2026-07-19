@@ -17,7 +17,10 @@ import {
   tMs,
 } from './live/liveSessions';
 import { recordReaction } from './live/reactions';
-import { flushVisitsAtEnd, holdVisitEnd, resumeHeldVisit } from './live/reflectionPoints';
+import { handleCommentForInsight } from './live/commentInsights';
+
+/** コメント入力中の合図がこの時間途絶えたら入力をやめたとみなす */
+const COMPOSING_STALE_MS = 20_000;
 
 type SocketData = {
   role: 'teacher' | 'student';
@@ -134,13 +137,10 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       socket.on('end_lesson', async (cb) => {
         try {
           if (s.status !== 'live') return cb({ ok: false, error: '授業中ではありません' });
-          const endMs = tMs(s);
           await endLesson(s);
           io.to(room).emit('lesson_ended');
           io.to(room).emit('lesson_state', toLiveState(s));
           cb({ ok: true });
-          // 保留中の滞在・最後に表示していたスライドの滞在を確定する
-          flushVisitsAtEnd(io, s, endMs);
         } catch (err) {
           app.log.error(err);
           cb({ ok: false, error: '終了に失敗しました' });
@@ -168,18 +168,8 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           socket.to(room).emit('slide_change', { ...p, tMs: 0 });
           return;
         }
-        const prevSlideId = s.currentSlideId;
-        const prevVisitStart = s.visitStartMs;
         const ev = await recordEvent(s, 'slide_change', p);
         socket.to(room).emit('slide_change', { ...p, tMs: ev.tMs });
-        if (prevSlideId && prevSlideId !== p.slideId) {
-          // 離れたスライドは表示時間の長さに関係なく保留（合計で1分に達すればポイントになる）
-          holdVisitEnd(io, s, prevSlideId, prevVisitStart, ev.tMs);
-          // 切替先が1分以内の再訪なら、最初の表示からの連続した説明として継続
-          if (!resumeHeldVisit(s, p.slideId, ev.tMs)) {
-            s.visitStartMs = ev.tMs;
-          }
-        }
       });
 
       socket.on('stroke', async (p) => {
@@ -221,13 +211,18 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
 
     // ================= 生徒のイベント =================
     if (role === 'student') {
-      // コメント入力中の合図: 対象スライドの振り返りポイントの要約を待たせる
+      // コメント入力中の合図: 最初の合図の時刻を「入力開始時刻」として記録し、
+      // コメント・振り返りのAI分析対象の音声範囲を決めるのに使う
       socket.on('comment_composing', (p) => {
         if (s.status !== 'live') return;
         const pid = socket.data.participantId;
         if (!pid) return;
         if (p && p.active && typeof p.slideId === 'string' && p.slideId.length <= 64) {
-          s.composing.set(pid, { slideId: p.slideId, atEpochMs: Date.now() });
+          const prev = s.composing.get(pid);
+          // 合図が続いている間は入力開始時刻を保持し、途絶えていたら取り直す
+          const startTMs =
+            prev && Date.now() - prev.atEpochMs <= COMPOSING_STALE_MS ? prev.startTMs : tMs(s);
+          s.composing.set(pid, { slideId: p.slideId, startTMs, atEpochMs: Date.now() });
         } else {
           s.composing.delete(pid);
         }
@@ -242,14 +237,35 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           ) {
             return cb({ ok: false });
           }
+          const pid = socket.data.participantId!;
+          // 入力開始時刻は recordReaction が composing を消す前に取り出しておく
+          const compose = input.kind === 'comment' ? s.composing.get(pid) : undefined;
           const item = await recordReaction(
             s,
-            { id: socket.data.participantId!, displayName: socket.data.participantName! },
+            { id: pid, displayName: socket.data.participantName! },
             input
           );
           cb({ ok: true }); // デバウンスで集約された場合も生徒側には成功として返す
           if (item) {
             io.to(teacherRoom).emit('reaction_feed', item, s.counts);
+            if (item.kind === 'comment' && item.comment) {
+              // 合図が無い/途絶えていた場合は送信直前に打ち始めたとみなす
+              const composeStartMs =
+                compose && Date.now() - compose.atEpochMs <= COMPOSING_STALE_MS
+                  ? Math.min(compose.startTMs, item.tMs)
+                  : Math.max(0, item.tMs - 5_000);
+              handleCommentForInsight(io, s, {
+                reactionId: item.id,
+                text: item.comment,
+                participantName: item.participantName,
+                tMs: item.tMs,
+                slideId:
+                  typeof input.slideId === 'string' && input.slideId.length <= 64
+                    ? input.slideId
+                    : null,
+                composeStartMs,
+              });
+            }
           }
         } catch (err) {
           app.log.error(err);

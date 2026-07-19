@@ -8,7 +8,7 @@ import {
   doublePrecision,
   index,
 } from 'drizzle-orm/pg-core';
-import type { ReactionButtonDef, ReactionCounts } from '@shared';
+import type { InsightComment, ReactionButtonDef, ReactionCounts } from '@shared';
 
 export const teachers = pgTable('teachers', {
   id: text('id').primaryKey(),
@@ -113,8 +113,30 @@ export const reactions = pgTable(
   (t) => [index('reactions_lesson_t_idx').on(t.lessonId, t.tMs)]
 );
 
-// 振り返りポイント: 先生が一定時間以上滞在したスライドの区間を1クラスタとして、
-// 区間内の反応とAIまとめを保存する（授業中に生成し、再接続時はここから復元）
+// コメント・振り返り: 生徒コメントを起点に、入力開始時刻周辺の音声のAI分析結果を
+// 1枚のカードとして保存する（授業中に生成し、再接続時はここから復元）
+export const commentInsights = pgTable(
+  'comment_insights',
+  {
+    id: text('id').primaryKey(),
+    lessonId: text('lesson_id')
+      .notNull()
+      .references(() => lessons.id),
+    slideId: text('slide_id'), // 最初のコメントの入力開始時のスライド
+    windowStartMs: integer('window_start_ms').notNull(),
+    windowEndMs: integer('window_end_ms').notNull(),
+    comments: jsonb('comments').$type<InsightComment[]>().notNull(),
+    kinds: jsonb('kinds').$type<ReactionCounts>().notNull(),
+    summary: text('summary'), // コメントに関連する先生の話の重要ポイント
+    status: text('status', { enum: ['pending', 'ready', 'failed'] })
+      .notNull()
+      .default('pending'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('comment_insights_lesson_idx').on(t.lessonId, t.windowStartMs)]
+);
+
+// 旧・振り返りポイント（スライド滞在クラスタ方式）。過去データ参照用に残置
 export const reflectionPoints = pgTable(
   'reflection_points',
   {
