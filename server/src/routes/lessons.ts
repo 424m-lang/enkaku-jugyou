@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { and, asc, desc, eq, gte } from 'drizzle-orm';
+import { and, asc, desc, eq } from 'drizzle-orm';
 import { PDFDocument } from 'pdf-lib';
 import { DEFAULT_REACTION_BUTTONS, type ReactionButtonDef } from '@shared';
 import { db, schema } from '../db';
@@ -240,18 +240,17 @@ export async function lessonRoutes(app: FastifyInstance): Promise<void> {
     return listReflectionPoints(id);
   });
 
-  // ---- 直近のリアクション（先生画面「最新のリアクション・コメント」の初期表示用） ----
-  app.get('/api/lessons/:id/recent-reactions', { preHandler: requireTeacher }, async (req, reply) => {
+  // ---- リアクション一覧（先生画面「リアクション・コメント」の初期表示・復元用） ----
+  // 授業開始からのすべての反応・コメントを時系列で返す
+  app.get('/api/lessons/:id/reactions', { preHandler: requireTeacher }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const [lesson] = await db
       .select()
       .from(schema.lessons)
       .where(and(eq(schema.lessons.id, id), eq(schema.lessons.teacherId, teacherIdOf(req))));
     if (!lesson) return reply.code(404).send({ error: '授業が見つかりません' });
-    if (lesson.status !== 'live' || !lesson.startedAt) return { items: [] };
+    if (!lesson.startedAt) return { items: [] };
 
-    const nowT = Date.now() - lesson.startedAt.getTime();
-    const cutoff = Math.max(0, nowT - 5 * 60_000);
     const rows = await db
       .select({
         id: schema.reactions.id,
@@ -262,10 +261,9 @@ export async function lessonRoutes(app: FastifyInstance): Promise<void> {
       })
       .from(schema.reactions)
       .innerJoin(schema.participants, eq(schema.reactions.participantId, schema.participants.id))
-      .where(and(eq(schema.reactions.lessonId, id), gte(schema.reactions.tMs, cutoff)))
+      .where(eq(schema.reactions.lessonId, id))
       .orderBy(asc(schema.reactions.tMs));
-    // ageMs: クライアントが「あと何分表示するか」を時計ズレなしで計算するための経過時間
-    return { items: rows.map((r) => ({ ...r, ageMs: Math.max(0, nowT - r.tMs) })) };
+    return { items: rows };
   });
 
   // ---- スライドPDFの配信（参加時に一括ダウンロード＆全ページ事前レンダリング） ----

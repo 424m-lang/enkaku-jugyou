@@ -158,10 +158,48 @@ textarea:focus {
   flex-wrap: wrap;
 }
 
-/* 授業一覧へ・参加用QR・スクリーン表示・授業を開始のサイズを揃える */
+/* 授業一覧へ・参加用QR・スクリーン表示・授業を開始などのサイズを揃える */
 .btn.header-action {
-  min-width: 128px;
+  min-width: 112px;
+  padding: 8px 12px;
   text-align: center;
+}
+
+.nowrap {
+  white-space: nowrap;
+}
+
+/* 授業画面: ヘッダは1行に保ち、右側グループは狭いとき横スクロールで表示 */
+.teach .app-header {
+  flex-wrap: nowrap;
+}
+
+.teach .header-left {
+  flex-shrink: 1;
+  min-width: 0;
+  flex-wrap: nowrap;
+}
+
+.teach .header-left h1 {
+  min-width: 40px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.teach .header-left .header-action {
+  flex-shrink: 0;
+}
+
+.header-scroll {
+  min-width: 0;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.header-scroll > * {
+  flex-shrink: 0;
 }
 
 .chip {
@@ -364,18 +402,27 @@ textarea:focus {
   min-height: 0;
 }
 
+/* ポインター〜進む: 標準的なPCの全画面では1行に収まり、狭いと横スクロール */
 .toolbar {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  padding-bottom: 2px;
+}
+
+.toolbar > * {
+  flex-shrink: 0;
 }
 
 .btn.tool {
-  min-width: 84px; /* ツールボタンの大きさを統一（最長の「ポインター」に合わせる） */
+  min-width: 72px; /* ツールボタンの大きさを統一（最長の「ポインター」に合わせる） */
   padding: 6px 8px;
   font-size: 0.85rem;
   text-align: center;
+  white-space: nowrap;
 }
 
 .tool-active {

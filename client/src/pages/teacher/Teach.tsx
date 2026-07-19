@@ -30,11 +30,6 @@ const WIDTH_MIN_STEPS = 3; // 0.0015
 const WIDTH_MAX_STEPS = 24; // 0.012
 const WIDTH_DEFAULT = 8 * WIDTH_UNIT; // 0.004
 
-// 「最新のリアクション・コメント」に表示する期間
-const RECENT_WINDOW_MS = 5 * 60_000;
-
-type RecentItem = ReactionFeedItem & { expiresAt: number };
-
 // ---- 描画のUndo/Redo ----
 // ペン・文字の追加/削除/置き換えを1操作として記録し、スライドごとに戻す・やり直せるようにする
 type DrawCommand =
@@ -51,7 +46,7 @@ export default function Teach() {
   const navigate = useNavigate();
 
   const [joinCode, setJoinCode] = useState('');
-  const [recent, setRecent] = useState<RecentItem[]>([]);
+  const [reactions, setReactions] = useState<ReactionFeedItem[]>([]);
   const [points, setPoints] = useState<ReflectionPoint[]>([]);
   const [pointsOpen, setPointsOpen] = useState(false);
   const [participantCount, setParticipantCount] = useState(0);
@@ -92,8 +87,9 @@ export default function Teach() {
       // 先生画面だけが受け取るイベント
       socket.on('participant_count', (n) => setParticipantCount(n));
       socket.on('reaction_feed', (item) => {
-        setRecent((prev) =>
-          [{ ...item, expiresAt: Date.now() + RECENT_WINDOW_MS }, ...prev].slice(0, 200)
+        // 同じ反応が重複して届いても二重表示しない（再接続時の取りこぼし補完に備える）
+        setReactions((prev) =>
+          prev.some((r) => r.id === item.id) ? prev : [item, ...prev]
         );
       });
       // 振り返りポイント（新規作成時とAI要約完成時に同じイベントで届く → 上書き）
@@ -124,20 +120,14 @@ export default function Teach() {
         setButtons(detail.reactionButtons);
         setStatus(detail.status);
 
-        // 振り返りポイントと直近リアクションを復元（リロード・再接続対応）
+        // 振り返りと全リアクションを復元（リロード・再接続対応）
         const [pts, rec] = await Promise.all([
           api<ReflectionPoint[]>(`/api/lessons/${lessonId}/reflection-points`),
-          api<{ items: (ReactionFeedItem & { ageMs: number })[] }>(
-            `/api/lessons/${lessonId}/recent-reactions`
-          ),
+          api<{ items: ReactionFeedItem[] }>(`/api/lessons/${lessonId}/reactions`),
         ]);
         if (disposed) return;
         setPoints([...pts].sort((a, b) => b.startMs - a.startMs));
-        setRecent(
-          rec.items
-            .map((i) => ({ ...i, expiresAt: Date.now() + Math.max(0, RECENT_WINDOW_MS - i.ageMs) }))
-            .reverse()
-        );
+        setReactions([...rec.items].reverse()); // 新しい順に表示
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) navigate('/login');
         else setLoadError('授業の読み込みに失敗しました');
@@ -147,15 +137,6 @@ export default function Teach() {
       disposed = true;
     };
   }, [lessonId, navigate, setTitle, setButtons, setStatus]);
-
-  // 5分を過ぎた反応を定期的に取り除く
-  useEffect(() => {
-    const timer = setInterval(
-      () => setRecent((prev) => prev.filter((i) => i.expiresAt > Date.now())),
-      10_000
-    );
-    return () => clearInterval(timer);
-  }, []);
 
   // 画面を離れるときはマイクを止める
   useEffect(() => {
@@ -363,7 +344,7 @@ export default function Teach() {
   }, [currentSlide, strokes, onErase]);
 
   const reactionMeta = makeReactionMeta(buttons);
-  const commentCount = recent.filter((r) => r.kind === 'comment').length;
+  const commentCount = reactions.filter((r) => r.kind === 'comment').length;
 
   if (loadError) {
     return (
@@ -378,18 +359,19 @@ export default function Teach() {
       <header className="app-header">
         <div className="header-left">
           <h1>{title}</h1>
+          <button className="btn header-action" onClick={() => navigate('/dashboard')}>
+            授業一覧へ
+          </button>
           <span className={`chip chip-${status}`}>
             {status === 'draft' ? '開始前' : status === 'live' ? '授業中' : '終了'}
           </span>
           {!connected && <span className="chip chip-offline">再接続中...</span>}
         </div>
-        <div className="header-right">
-          <span className="muted">
+        {/* 参加コード〜授業を開始: 画面が狭いときは横スクロールで1行表示 */}
+        <div className="header-right header-scroll">
+          <span className="muted nowrap">
             参加コード: <strong className="inline-code">{joinCode}</strong>
           </span>
-          <button className="btn header-action" onClick={() => navigate('/dashboard')}>
-            授業一覧へ
-          </button>
           <button className="btn header-action" onClick={() => setShowQr(true)} disabled={!joinCode}>
             参加用QR
           </button>
@@ -406,9 +388,9 @@ export default function Teach() {
           >
             スクリーン表示
           </button>
-          <span className="muted">生徒 {participantCount}人</span>
+          <span className="muted nowrap">生徒 {participantCount}人</span>
           {status === 'live' && (
-            <span className={audioState === 'on' ? 'rec-on' : 'rec-off'}>
+            <span className={`nowrap ${audioState === 'on' ? 'rec-on' : 'rec-off'}`}>
               {audioState === 'on' ? '● 録音・配信中' : audioState === 'error' ? 'マイクエラー' : '音声停止中'}
             </span>
           )}
@@ -420,17 +402,17 @@ export default function Teach() {
           {status === 'live' && (
             <>
               {audioState !== 'on' && (
-                <button className="btn" onClick={() => void startAudio()}>
+                <button className="btn header-action" onClick={() => void startAudio()}>
                   マイクを開始
                 </button>
               )}
-              <button className="btn danger" onClick={endLesson}>
+              <button className="btn danger header-action" onClick={endLesson}>
                 授業を終了
               </button>
             </>
           )}
           {status === 'ended' && (
-            <button className="btn" onClick={() => navigate(`/review/${lessonId}`)}>
+            <button className="btn header-action" onClick={() => navigate(`/review/${lessonId}`)}>
               振り返りへ
             </button>
           )}
@@ -441,7 +423,15 @@ export default function Teach() {
 
       <div className="teach-main">
         <div className="slide-area">
+          {/* ポインター〜進む: 画面が狭いときは横スクロールで1行表示 */}
           <div className="toolbar">
+            <button
+              className={`btn tool ${tool === 'pointer' ? 'tool-active' : ''}`}
+              onClick={() => setTool((prev) => (prev === 'pointer' ? 'none' : 'pointer'))}
+            >
+              ポインター
+            </button>
+            <span className="toolbar-sep" />
             {(
               [
                 ['pen', 'ペン'],
@@ -512,13 +502,6 @@ export default function Teach() {
             >
               ↷ 進む
             </button>
-            <span className="toolbar-sep" />
-            <button
-              className={`btn tool ${tool === 'pointer' ? 'tool-active' : ''}`}
-              onClick={() => setTool((prev) => (prev === 'pointer' ? 'none' : 'pointer'))}
-            >
-              ポインター
-            </button>
           </div>
 
           <SlideCanvas
@@ -552,13 +535,11 @@ export default function Teach() {
 
         <aside className="sidebar">
           <div className="card feed-card">
-            <h3>
-              最新のリアクション・コメント <span className="muted small">（直近5分）</span>
-            </h3>
+            <h3>リアクション・コメント</h3>
             <div className="recent-chips">
               {buttons.map((b) => (
                 <span key={b.key} className="kind-pill" style={{ background: b.color }}>
-                  {b.label} ×{recent.filter((r) => r.kind === b.key).length}
+                  {b.label} ×{reactions.filter((r) => r.kind === b.key).length}
                 </span>
               ))}
               <span className="kind-pill" style={{ background: '#6b7280' }}>
@@ -566,8 +547,8 @@ export default function Teach() {
               </span>
             </div>
             <div className="feed-list">
-              {recent.length === 0 && <p className="muted">直近5分間の反応はありません</p>}
-              {recent.map((f) => (
+              {reactions.length === 0 && <p className="muted">まだ反応はありません</p>}
+              {reactions.map((f) => (
                 <div key={f.id} className={`feed-item ${f.kind === 'comment' ? 'feed-comment' : ''}`}>
                   <span className="feed-time">{fmtClock(f.tMs)}</span>
                   <span className="feed-name">{f.participantName}</span>
@@ -582,11 +563,11 @@ export default function Teach() {
         </aside>
       </div>
 
-      {/* 振り返りポイント: 画面下部の開閉式パネル（スライド画像つき横並びカード） */}
+      {/* 振り返り: 画面下部の開閉式パネル（スライド画像つき横並びカード） */}
       <div className={`points-drawer ${pointsOpen ? 'open' : ''}`}>
         <button className="points-drawer-head" onClick={() => setPointsOpen((v) => !v)}>
           <span>
-            振り返りポイント <span className="points-count">{points.length}</span>
+            振り返り <span className="points-count">{points.length}</span>
           </span>
           <span className="muted">{pointsOpen ? '▼ 閉じる' : '▲ 開く'}</span>
         </button>
