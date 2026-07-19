@@ -62,11 +62,9 @@ export function handleCommentForInsight(
     composeStartMs: number;
   }
 ): void {
+  // 分析対象は「入力開始時刻の90秒前」〜「コメント送信時刻」
   const windowStartMs = Math.max(0, comment.composeStartMs - config.insightWindowBeforeMs);
-  const windowEndMs = Math.min(
-    Math.max(comment.tMs, comment.composeStartMs),
-    comment.composeStartMs + config.insightWindowAfterMs
-  );
+  const windowEndMs = Math.max(comment.tMs, comment.composeStartMs);
   const ic: InsightComment = {
     reactionId: comment.reactionId,
     text: comment.text,

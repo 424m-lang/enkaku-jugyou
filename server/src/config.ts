@@ -24,9 +24,8 @@ export const config = {
   openaiApiKey: process.env.OPENAI_API_KEY || '',
   openaiModel: process.env.OPENAI_MODEL || 'gpt-4o-mini',
 
-  // コメント・振り返り: コメント入力開始時刻の前後この範囲の音声をAI分析の対象にする
-  insightWindowBeforeMs: Number(process.env.INSIGHT_WINDOW_BEFORE_MS ?? 60_000),
-  insightWindowAfterMs: Number(process.env.INSIGHT_WINDOW_AFTER_MS ?? 60_000),
+  // コメント・振り返り: 分析対象は「入力開始時刻のこの時間前」〜「コメント送信時刻」
+  insightWindowBeforeMs: Number(process.env.INSIGHT_WINDOW_BEFORE_MS ?? 90_000),
   // 分析範囲がこの間隔以内で近接する既存カードを「同じ事柄か」の統合判定にかける
   insightMergeGapMs: Number(process.env.INSIGHT_MERGE_GAP_MS ?? 30_000),
 
