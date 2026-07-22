@@ -15,17 +15,29 @@ export type ReactionRow = {
   clipEndMs: number;
 };
 
+/** コメント入力中の合図がこの時間途絶えていたら、入力を止めていたとみなす */
+const COMPOSING_STALE_MS = 20_000;
+/** 入力開始の合図が無いコメントは、この時間前に打ち始めたものとして扱う */
+const COMPOSE_FALLBACK_MS = 5_000;
+
+export type RecordedReaction = {
+  item: ReactionFeedItem;
+  /** コメントの入力開始時刻（ボタン反応はnull） */
+  composeStartMs: number | null;
+};
+
 /**
  * リアクションを記録する。
  * - 音声データはコピーせず、連続音声ファイルへのタイムスタンプ範囲（クリップ参照）のみ持つ
  * - 同一生徒×同一ボタンの5秒未満の連打は誤タップとみなして1回に集約（コメントは対象外）
  * - オフライン再送は delayMs で元の押下時刻を復元する
+ * - コメントは「入力を始めた時刻」も記録し、授業中・授業後の振り返りで使う
  */
 export async function recordReaction(
   s: LiveSession,
   participant: { id: string; displayName: string },
   input: ReactionInput
-): Promise<ReactionFeedItem | null> {
+): Promise<RecordedReaction | null> {
   const now = tMs(s);
   const delay = Math.max(0, Math.min(input.delayMs ?? 0, now));
   const t = Math.max(0, now - delay);
@@ -47,6 +59,18 @@ export async function recordReaction(
       ? input.slideId
       : null;
 
+  // 入力開始時刻: 合図が続いていればその開始時刻、途絶えていた/無ければ送信直前とみなす
+  let composeStartMs: number | null = null;
+  if (input.kind === 'comment') {
+    const compose = s.composing.get(participant.id);
+    composeStartMs =
+      compose && Date.now() - compose.atEpochMs <= COMPOSING_STALE_MS
+        ? Math.max(0, Math.min(compose.startTMs, t))
+        : Math.max(0, t - COMPOSE_FALLBACK_MS);
+    // コメントが届いたら「入力中」状態を解除する
+    s.composing.delete(participant.id);
+  }
+
   await db.insert(schema.reactions).values({
     id,
     lessonId: s.lessonId,
@@ -55,14 +79,10 @@ export async function recordReaction(
     kind: input.kind,
     comment: input.comment ?? null,
     slideId,
+    composeStartMs,
     clipStartMs,
     clipEndMs,
   });
-
-  // コメントが届いたら「入力中」状態を解除（振り返りポイントの要約待ちを解く）
-  if (input.kind === 'comment') {
-    s.composing.delete(participant.id);
-  }
 
   if (input.kind !== 'comment') {
     s.counts[input.kind] = (s.counts[input.kind] ?? 0) + 1;
@@ -80,11 +100,14 @@ export async function recordReaction(
   s.recentReactions = s.recentReactions.filter((r) => r.tMs >= cutoff);
 
   return {
-    id,
-    tMs: t,
-    kind: input.kind,
-    comment: input.comment ?? null,
-    participantName: participant.displayName,
+    item: {
+      id,
+      tMs: t,
+      kind: input.kind,
+      comment: input.comment ?? null,
+      participantName: participant.displayName,
+    },
+    composeStartMs,
   };
 }
 

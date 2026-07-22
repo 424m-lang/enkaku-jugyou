@@ -29,6 +29,14 @@ export const config = {
   // 分析範囲がこの間隔以内で近接する既存カードを「同じ事柄か」の統合判定にかける
   insightMergeGapMs: Number(process.env.INSIGHT_MERGE_GAP_MS ?? 30_000),
 
+  // 授業後「ボタン」タブのクリップ範囲（反応の30秒前〜15秒後の45秒）
+  buttonClipBeforeMs: 30_000,
+  buttonClipAfterMs: 15_000,
+  // この間隔以内に続いた同じスライドへの反応は、同じ事柄への反応とみなしてまとめる
+  buttonMergeGapMs: 20_000,
+  // 授業後「コメント」タブ: 対象の発言を探すためにコメントから遡る時間
+  commentLookbackMs: 240_000,
+
   // クリップ範囲（反応時刻の前後）
   clipBeforeMs: 15_000,
   clipAfterMs: 5_000,

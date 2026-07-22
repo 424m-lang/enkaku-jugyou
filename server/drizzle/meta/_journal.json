@@ -43,6 +43,13 @@
       "when": 1784449316452,
       "tag": "0005_overjoyed_leech",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1784688754376,
+      "tag": "0006_tiny_wraith",
+      "breakpoints": true
     }
   ]
 }

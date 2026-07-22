@@ -114,6 +114,40 @@ export type ReactionFeedItem = {
 
 export type ReactionCounts = Record<string, number>;
 
+// ---- 授業後の振り返り: 「ボタン」クリップ ----
+// ボタン反応1件につき「反応の30秒前〜15秒後」の45秒をクリップとし、
+// 同じ事柄への反応とみなせる（時間が近く同じスライド）ものはひとつにまとめる。
+export type ButtonClip = {
+  id: string;
+  startMs: number;
+  endMs: number;
+  kinds: ReactionCounts;
+  participantCount: number;
+  /** まとめられた個々の反応（薄字で反応時刻を出すために使う） */
+  reactions: { name: string; kind: string; tMs: number }[];
+  slideId: string | null;
+};
+
+// ---- 授業後の振り返り: 「コメント」クリップ ----
+// コメントと、その数分前の文字起こしから「先生のどの発言に向けたコメントか」を
+// AIが推定し、その位置にクリップを作る。未解析の間は入力開始時刻を基準にした暫定範囲。
+export type CommentClip = {
+  /** コメント（reaction）のid */
+  id: string;
+  text: string;
+  participantName: string;
+  /** 送信時刻（薄字で表示する） */
+  tMs: number;
+  /** 入力開始時刻（分からない場合は送信時刻と同じ） */
+  composeStartMs: number;
+  slideId: string | null;
+  clipStartMs: number;
+  clipEndMs: number;
+  /** AIが特定した「このコメントが向けられた先生の発言」 */
+  targetText: string | null;
+  analyzed: boolean;
+};
+
 // ---- クリップ / クラスタ ----
 export type ReactionCluster = {
   id: string; // クラスタの代表reaction id
@@ -249,6 +283,4 @@ export type LessonStats = {
     counts: ReactionCounts;
     reactions: { tMs: number; kind: string; comment: string | null }[];
   }[];
-  // 話速（文字/分）と反応の相関（文字起こし済みの場合）
-  speechRate: { minute: number; charsPerMin: number }[] | null;
 };

@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import type {
-  FullTranscriptSummary,
+  ButtonClip,
+  CommentClip,
   LessonStats,
   PointerPayload,
   ReactionButtonDef,
-  ReactionCluster,
   SlideInfo,
   StrokePayload,
   TimelineEvent,
@@ -26,6 +26,7 @@ type LessonDetail = {
 };
 
 type AudioPart = { file: string; startMs: number };
+type Tab = 'buttons' | 'comments' | 'video';
 
 export default function Review() {
   const { id: lessonId } = useParams<{ id: string }>();
@@ -34,14 +35,14 @@ export default function Review() {
   const [lesson, setLesson] = useState<LessonDetail | null>(null);
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
   const [durationMs, setDurationMs] = useState(0);
-  const [clips, setClips] = useState<ReactionCluster[]>([]);
+  const [buttonClips, setButtonClips] = useState<ButtonClip[]>([]);
+  const [commentClips, setCommentClips] = useState<CommentClip[]>([]);
   const [stats, setStats] = useState<LessonStats | null>(null);
-  const [summary, setSummary] = useState<FullTranscriptSummary | null>(null);
   const [pdf, setPdf] = useState<PdfCache | null>(null);
-  const [tab, setTab] = useState<'clips' | 'summary' | 'stats'>('clips');
+  const [tab, setTab] = useState<Tab>('buttons');
   const [playhead, setPlayhead] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [generating, setGenerating] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
   const [error, setError] = useState('');
 
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -54,23 +55,20 @@ export default function Review() {
     if (!lessonId) return;
     (async () => {
       try {
-        const [detail, tl, cl, st] = await Promise.all([
+        const [detail, tl, bc, cc, st] = await Promise.all([
           api<LessonDetail>(`/api/lessons/${lessonId}`),
           api<{ durationMs: number; events: TimelineEvent[] }>(`/api/lessons/${lessonId}/timeline`),
-          api<ReactionCluster[]>(`/api/lessons/${lessonId}/clips`),
+          api<ButtonClip[]>(`/api/lessons/${lessonId}/button-clips`),
+          api<CommentClip[]>(`/api/lessons/${lessonId}/comment-clips`),
           api<LessonStats>(`/api/lessons/${lessonId}/stats`),
         ]);
         setLesson(detail);
         setTimeline(tl.events);
         setDurationMs(tl.durationMs || detail.audioDurationMs || 0);
-        setClips(cl);
+        setButtonClips(bc);
+        setCommentClips(cc);
         setStats(st);
         setPdf(await loadLessonPdf(lessonId));
-        try {
-          setSummary(await api<FullTranscriptSummary>(`/api/lessons/${lessonId}/summary`));
-        } catch {
-          /* まだ要約なし */
-        }
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) navigate('/login');
         else setError('読み込みに失敗しました');
@@ -197,55 +195,45 @@ export default function Review() {
     }
   }, [playing, playhead, seek]);
 
-  const playClip = useCallback(
-    (c: ReactionCluster) => {
-      clipEndRef.current = c.endMs;
-      seek(c.startMs);
+  const playRange = useCallback(
+    (startMs: number, endMs: number) => {
+      clipEndRef.current = endMs;
+      seek(startMs);
     },
     [seek]
   );
 
-  // ---- 要約生成 ----
-  const generateSummary = useCallback(async () => {
+  // ---- コメントの対象箇所をAIで特定 ----
+  const analyzeComments = useCallback(async () => {
     if (!lessonId) return;
-    setGenerating(true);
+    setAnalyzing(true);
     setError('');
     try {
-      const res = await api<FullTranscriptSummary>(`/api/lessons/${lessonId}/summarize`, {
+      const res = await api<CommentClip[]>(`/api/lessons/${lessonId}/comment-clips/analyze`, {
         method: 'POST',
         body: JSON.stringify({}),
       });
-      setSummary(res);
-      // 話速が計算できるようになったので統計を再取得
-      setStats(await api<LessonStats>(`/api/lessons/${lessonId}/stats`));
+      setCommentClips(res);
     } catch (err) {
-      setError(err instanceof Error ? err.message : '要約の生成に失敗しました');
+      setError(err instanceof Error ? err.message : '解析に失敗しました');
     } finally {
-      setGenerating(false);
+      setAnalyzing(false);
     }
   }, [lessonId]);
-
-  const transcribeClip = useCallback(
-    async (c: ReactionCluster) => {
-      if (!lessonId) return;
-      try {
-        const res = await api<{ text: string }>(`/api/lessons/${lessonId}/clips/transcribe`, {
-          method: 'POST',
-          body: JSON.stringify({ startMs: c.startMs, endMs: c.endMs }),
-        });
-        setClips((prev) =>
-          prev.map((x) => (x.id === c.id ? { ...x, transcriptText: res.text } : x))
-        );
-      } catch (err) {
-        setError(err instanceof Error ? err.message : '文字起こしに失敗しました');
-      }
-    },
-    [lessonId]
-  );
 
   const reactionMeta = useMemo(() => makeReactionMeta(lesson?.reactionButtons ?? []), [lesson]);
   const kindLabel = reactionMeta.label;
   const kindColor = reactionMeta.color;
+
+  const slideNo = useCallback(
+    (slideId: string | null) => {
+      if (!slideId || !lesson) return null;
+      const sorted = [...lesson.slides].sort((a, b) => a.position - b.position);
+      const idx = sorted.findIndex((s) => s.id === slideId);
+      return idx >= 0 ? idx + 1 : null;
+    },
+    [lesson]
+  );
 
   if (!lesson) {
     return (
@@ -255,8 +243,17 @@ export default function Review() {
     );
   }
 
-  const maxTimelineTotal = Math.max(1, ...(stats?.timeline.map((t) => t.total) ?? [1]));
-  const maxRate = Math.max(1, ...(stats?.speechRate?.map((r) => r.charsPerMin) ?? [1]));
+  // スクラバー上のマーカー（表示中のタブに対応するもの）
+  const markers =
+    tab === 'comments'
+      ? commentClips.map((c) => ({ id: c.id, at: c.clipStartMs, color: '#6b7280', start: c.clipStartMs, end: c.clipEndMs }))
+      : buttonClips.map((c) => ({
+          id: c.id,
+          at: (c.startMs + c.endMs) / 2,
+          color: kindColor(Object.keys(c.kinds)[0] ?? 'comment'),
+          start: c.startMs,
+          end: c.endMs,
+        }));
 
   return (
     <div className="review">
@@ -298,16 +295,16 @@ export default function Review() {
                 onChange={(e) => seek(Number(e.target.value), playing)}
               />
               <div className="scrubber-markers">
-                {clips.map((c) => (
+                {markers.map((m) => (
                   <button
-                    key={c.id}
+                    key={m.id}
                     className="cluster-marker"
                     style={{
-                      left: `${(c.centerMs / Math.max(durationMs, 1)) * 100}%`,
-                      background: kindColor(Object.keys(c.kinds)[0] ?? 'comment'),
+                      left: `${(m.at / Math.max(durationMs, 1)) * 100}%`,
+                      background: m.color,
                     }}
-                    title={`${fmtClock(c.centerMs)} — ${c.participantCount}人が反応`}
-                    onClick={() => playClip(c)}
+                    title={fmtClock(m.at)}
+                    onClick={() => playRange(m.start, m.end)}
                   />
                 ))}
               </div>
@@ -322,27 +319,46 @@ export default function Review() {
 
         <div className="review-right">
           <div className="tabs">
-            <button className={`btn tab ${tab === 'clips' ? 'tab-active' : ''}`} onClick={() => setTab('clips')}>
-              クリップ ({clips.length})
+            <button className={`btn tab ${tab === 'buttons' ? 'tab-active' : ''}`} onClick={() => setTab('buttons')}>
+              ボタン ({buttonClips.length})
             </button>
-            <button className={`btn tab ${tab === 'summary' ? 'tab-active' : ''}`} onClick={() => setTab('summary')}>
-              AI要約
+            <button className={`btn tab ${tab === 'comments' ? 'tab-active' : ''}`} onClick={() => setTab('comments')}>
+              コメント ({commentClips.length})
             </button>
-            <button className={`btn tab ${tab === 'stats' ? 'tab-active' : ''}`} onClick={() => setTab('stats')}>
-              統計
+            <button className={`btn tab ${tab === 'video' ? 'tab-active' : ''}`} onClick={() => setTab('video')}>
+              復習動画
             </button>
           </div>
 
-          {tab === 'clips' && (
+          {tab === 'buttons' && (
             <div className="panel-scroll">
-              {clips.length === 0 && <p className="muted">リアクションはありませんでした</p>}
-              {clips.map((c) => (
+              {stats && (
+                <div className="card">
+                  <h3>全体</h3>
+                  <p>
+                    参加者 <strong>{stats.totalParticipants}</strong>人 ・ 反応{' '}
+                    <strong>{stats.totalReactions}</strong>件
+                  </p>
+                  <div className="clip-kinds">
+                    {Object.entries(stats.countsByKind)
+                      .filter(([k]) => k !== 'comment')
+                      .map(([k, n]) => (
+                        <span key={k} className="kind-pill" style={{ background: kindColor(k) }}>
+                          {kindLabel(k)} ×{n}
+                        </span>
+                      ))}
+                  </div>
+                </div>
+              )}
+              {buttonClips.length === 0 && <p className="muted">ボタンによる反応はありませんでした</p>}
+              {buttonClips.map((c) => (
                 <div key={c.id} className="card clip-card">
                   <div className="clip-head">
-                    <button className="btn primary" onClick={() => playClip(c)}>
+                    <button className="btn primary" onClick={() => playRange(c.startMs, c.endMs)}>
                       ▶ {fmtClock(c.startMs)}〜{fmtClock(c.endMs)}
                     </button>
                     <strong>{c.participantCount}人が反応</strong>
+                    {slideNo(c.slideId) && <span className="muted">スライド {slideNo(c.slideId)}</span>}
                   </div>
                   <div className="clip-kinds">
                     {Object.entries(c.kinds).map(([k, n]) => (
@@ -351,142 +367,74 @@ export default function Review() {
                       </span>
                     ))}
                   </div>
-                  <p className="muted clip-names">
-                    {c.participants.map((p) => p.name).filter((v, i, a) => a.indexOf(v) === i).join('、')}
-                  </p>
-                  {c.participants.filter((p) => p.comment).map((p, i) => (
-                    <p key={i} className="clip-comment">
-                      💬 {p.name}: {p.comment}
-                    </p>
-                  ))}
-                  {c.transcriptText ? (
-                    <details className="clip-transcript">
-                      <summary>この区間の文字起こし{c.summaryText ? '・提案' : ''}</summary>
-                      {c.summaryText && <p className="suggestion">{c.summaryText}</p>}
-                      <p>{c.transcriptText}</p>
-                    </details>
-                  ) : (
-                    <button className="btn" onClick={() => void transcribeClip(c)}>
-                      この区間を文字起こし
+                  {/* 個々の反応時刻（薄字） */}
+                  <div className="reaction-times">
+                    {c.reactions.map((r, i) => (
+                      <span key={i} className="reaction-time" title={`${r.name} — ${kindLabel(r.kind)}`}>
+                        {fmtClock(r.tMs)} {r.name}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {tab === 'comments' && (
+            <div className="panel-scroll">
+              <div className="card">
+                <p className="muted">
+                  コメントと、その前の先生の説明をAIが照合し、コメントが向けられた発言の位置にクリップを作ります。
+                </p>
+                <button
+                  className="btn primary"
+                  onClick={() => void analyzeComments()}
+                  disabled={analyzing || commentClips.length === 0 || commentClips.every((c) => c.analyzed)}
+                >
+                  {analyzing
+                    ? '解析中...（数分かかることがあります）'
+                    : commentClips.every((c) => c.analyzed) && commentClips.length > 0
+                      ? '解析済み'
+                      : 'AIでコメントの対象箇所を特定'}
+                </button>
+              </div>
+              {commentClips.length === 0 && <p className="muted">コメントはありませんでした</p>}
+              {commentClips.map((c) => (
+                <div key={c.id} className="card clip-card">
+                  <div className="clip-head">
+                    <button className="btn primary" onClick={() => playRange(c.clipStartMs, c.clipEndMs)}>
+                      ▶ {fmtClock(c.clipStartMs)}〜{fmtClock(c.clipEndMs)}
                     </button>
+                    {!c.analyzed && <span className="muted small">暫定位置</span>}
+                    {slideNo(c.slideId) && <span className="muted">スライド {slideNo(c.slideId)}</span>}
+                  </div>
+                  <p className="clip-comment">💬 {c.participantName}: {c.text}</p>
+                  {/* コメント送信時刻（薄字） */}
+                  <div className="reaction-times">
+                    <span className="reaction-time">送信 {fmtClock(c.tMs)}</span>
+                    {c.composeStartMs < c.tMs && (
+                      <span className="reaction-time">入力開始 {fmtClock(c.composeStartMs)}</span>
+                    )}
+                  </div>
+                  {c.targetText && (
+                    <div className="clip-target">
+                      <span className="point-label">対象の発言</span>
+                      <p className="point-text">{c.targetText}</p>
+                    </div>
                   )}
                 </div>
               ))}
             </div>
           )}
 
-          {tab === 'summary' && (
-            <div className="panel-scroll">
-              {!summary && (
-                <div className="card">
-                  <p className="muted">
-                    録音全体を文字起こしして、反応が集中した箇所を中心にAIが要約します。
-                  </p>
-                  <button className="btn primary" onClick={() => void generateSummary()} disabled={generating}>
-                    {generating ? '生成中...（数分かかることがあります）' : '文字起こしと要約を生成'}
-                  </button>
-                </div>
-              )}
-              {summary && (
-                <>
-                  <div className="card">
-                    <h3>AI要約</h3>
-                    <pre className="summary-text">{summary.summary}</pre>
-                    <p className="muted">
-                      生成: {new Date(summary.createdAt).toLocaleString('ja-JP')}（{summary.provider} / {summary.model}）
-                    </p>
-                    <button className="btn" onClick={() => void generateSummary()} disabled={generating}>
-                      {generating ? '生成中...' : '再生成'}
-                    </button>
-                  </div>
-                  <details className="card">
-                    <summary>文字起こし全文</summary>
-                    <pre className="summary-text">{summary.text}</pre>
-                  </details>
-                </>
-              )}
-            </div>
-          )}
-
-          {tab === 'stats' && stats && (
+          {tab === 'video' && (
             <div className="panel-scroll">
               <div className="card">
-                <h3>全体</h3>
-                <p>
-                  参加者 <strong>{stats.totalParticipants}</strong>人 ・ 反応{' '}
-                  <strong>{stats.totalReactions}</strong>件
+                <h3>復習動画</h3>
+                <p className="muted">
+                  「ボタン」「コメント」で見つかった、生徒がつまずいた箇所をつなげて、
+                  授業に出られなかった生徒も見られる復習用の再生ページを作る機能です。現在設計中です。
                 </p>
-                <div className="clip-kinds">
-                  {Object.entries(stats.countsByKind).map(([k, n]) => (
-                    <span key={k} className="kind-pill" style={{ background: kindColor(k) }}>
-                      {kindLabel(k)} ×{n}
-                    </span>
-                  ))}
-                </div>
-              </div>
-
-              <div className="card">
-                <h3>反応の推移（1分ごと）</h3>
-                <div className="bar-chart">
-                  {stats.timeline.map((t) => (
-                    <div
-                      key={t.minute}
-                      className="bar-col"
-                      title={`${t.minute}分: ${t.total}件`}
-                      onClick={() => seek(t.minute * 60_000, false)}
-                    >
-                      <div className="bar-stack">
-                        {Object.entries(t.counts).map(([k, n]) => (
-                          <div
-                            key={k}
-                            style={{
-                              height: `${(n / maxTimelineTotal) * 100}%`,
-                              background: kindColor(k),
-                            }}
-                          />
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <p className="muted">クリックでその時刻へ移動</p>
-              </div>
-
-              <div className="card">
-                <h3>話す速さ（文字/分）と反応の相関</h3>
-                {stats.speechRate ? (
-                  <div className="bar-chart rate">
-                    {stats.speechRate.map((r) => (
-                      <div key={r.minute} className="bar-col" title={`${r.minute}分: ${r.charsPerMin}字/分`}>
-                        <div className="bar-stack">
-                          <div style={{ height: `${(r.charsPerMin / maxRate) * 100}%`, background: '#60a5fa' }} />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="muted">「AI要約」タブで文字起こしを生成すると表示されます</p>
-                )}
-              </div>
-
-              <div className="card">
-                <h3>生徒別</h3>
-                {stats.perParticipant.map((p) => (
-                  <details key={p.participantId} className="student-row">
-                    <summary>
-                      <strong>{p.name}</strong> — {p.total}件{' '}
-                      {Object.entries(p.counts)
-                        .map(([k, n]) => `${kindLabel(k)}×${n}`)
-                        .join(' / ')}
-                    </summary>
-                    {p.reactions.map((r, i) => (
-                      <p key={i} className="muted student-reaction" onClick={() => seek(r.tMs, false)}>
-                        {fmtClock(r.tMs)} {kindLabel(r.kind)}
-                        {r.comment ? `「${r.comment}」` : ''}
-                      </p>
-                    ))}
-                  </details>
-                ))}
               </div>
             </div>
           )}

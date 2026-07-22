@@ -106,6 +106,8 @@ export const reactions = pgTable(
     comment: text('comment'),
     // 反応の対象スライド（コメントは入力開始時のスライド。旧データはnull）
     slideId: text('slide_id'),
+    // コメントを入力し始めた時刻（授業開始からのms）。振り返りのクリップ位置に使う
+    composeStartMs: integer('compose_start_ms'),
     clipStartMs: integer('clip_start_ms').notNull(),
     clipEndMs: integer('clip_end_ms').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -157,6 +159,26 @@ export const reflectionPoints = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('reflection_points_lesson_idx').on(t.lessonId, t.startMs)]
+);
+
+// 授業後の「コメント」タブ: コメントが向けられた先生の発言をAIが特定した結果。
+// 文字起こし＋AI推定はコストがかかるため、一度解析したら保存して再利用する
+export const commentClips = pgTable(
+  'comment_clips',
+  {
+    id: text('id').primaryKey(),
+    lessonId: text('lesson_id')
+      .notNull()
+      .references(() => lessons.id),
+    reactionId: text('reaction_id')
+      .notNull()
+      .references(() => reactions.id),
+    clipStartMs: integer('clip_start_ms').notNull(),
+    clipEndMs: integer('clip_end_ms').notNull(),
+    targetText: text('target_text'), // 特定された先生の発言
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('comment_clips_lesson_idx').on(t.lessonId)]
 );
 
 // 文字起こし・要約（授業中のクリップ範囲 / 授業後の全体 の両方を同じ仕組みで保存）

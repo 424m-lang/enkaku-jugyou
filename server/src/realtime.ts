@@ -238,22 +238,16 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
             return cb({ ok: false });
           }
           const pid = socket.data.participantId!;
-          // 入力開始時刻は recordReaction が composing を消す前に取り出しておく
-          const compose = input.kind === 'comment' ? s.composing.get(pid) : undefined;
-          const item = await recordReaction(
+          const rec = await recordReaction(
             s,
             { id: pid, displayName: socket.data.participantName! },
             input
           );
           cb({ ok: true }); // デバウンスで集約された場合も生徒側には成功として返す
-          if (item) {
+          if (rec) {
+            const { item, composeStartMs } = rec;
             io.to(teacherRoom).emit('reaction_feed', item, s.counts);
             if (item.kind === 'comment' && item.comment) {
-              // 合図が無い/途絶えていた場合は送信直前に打ち始めたとみなす
-              const composeStartMs =
-                compose && Date.now() - compose.atEpochMs <= COMPOSING_STALE_MS
-                  ? Math.min(compose.startTMs, item.tMs)
-                  : Math.max(0, item.tMs - 5_000);
               handleCommentForInsight(io, s, {
                 reactionId: item.id,
                 text: item.comment,
@@ -263,7 +257,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
                   typeof input.slideId === 'string' && input.slideId.length <= 64
                     ? input.slideId
                     : null,
-                composeStartMs,
+                composeStartMs: composeStartMs ?? item.tMs,
               });
             }
           }

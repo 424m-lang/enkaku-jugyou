@@ -93,6 +93,30 @@ export async function judgeSameTopic(
 }
 
 /**
+ * 授業後の「コメント」タブ: コメントの手前の文字起こし（時刻つきの細切れ）から、
+ * そのコメントが先生のどの発言に向けられたものかを推定し、該当箇所の番号を返す。
+ * LLMが使えない場合や判定できない場合は null（呼び出し側で暫定範囲にフォールバック）。
+ */
+export async function locateCommentTarget(
+  segments: { startMs: number; endMs: number; text: string }[],
+  comment: string
+): Promise<number | null> {
+  if (segments.length === 0) return null;
+  const numbered = segments.map((s, i) => `${i + 1}. ${s.text.trim()}`).join('\n');
+  const result = await callSummaryLLM(
+    'あなたは授業の記録を分析するアシスタントです。番号付きの先生の発言（時系列）と、その後に生徒から届いたコメントを読み、コメントがどの発言について書かれたものかを推定してください。最も関連の深い発言の番号を、半角数字だけで出力してください。説明や記号は書かないでください。該当する発言が無い場合は 0 とだけ出力してください。',
+    `先生の発言:\n${numbered.slice(0, 30_000)}\n\n生徒のコメント:\n${comment}`,
+    8
+  );
+  if (!result) return null;
+  const m = result.text.match(/\d+/);
+  if (!m) return null;
+  const idx = Number(m[0]) - 1;
+  if (idx < 0 || idx >= segments.length) return null;
+  return idx;
+}
+
+/**
  * 授業後: 全体の文字起こしと反応集中箇所から、先生が全クリップを聞かなくても
  * 把握できる要約を作る（振り返り提案と同じ仕組みを全体範囲に適用したもの）。
  */

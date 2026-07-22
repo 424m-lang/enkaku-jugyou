@@ -1,12 +1,13 @@
 import crypto from 'node:crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { and, asc, desc, eq } from 'drizzle-orm';
-import type { LessonStats, ReactionCounts, TranscriptSegment } from '@shared';
+import { and, asc, desc, eq, ne } from 'drizzle-orm';
+import type { ButtonClip, CommentClip, LessonStats, ReactionCounts } from '@shared';
+import { config } from '../config';
 import { db, schema } from '../db';
 import { requireTeacher, teacherIdOf } from '../auth';
 import { clusterReactions } from '../live/reactions';
 import { transcribeRange } from '../ai/transcribe';
-import { summarizeLesson } from '../ai/summarize';
+import { locateCommentTarget, summarizeLesson } from '../ai/summarize';
 
 /** 自分の授業であることを確認して返す（振り返り系は先生専用） */
 async function ownLesson(
@@ -46,6 +47,55 @@ function fmtMs(ms: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
+/** コメントの行（入力開始時刻つき） */
+async function commentRows(lessonId: string) {
+  return db
+    .select({
+      id: schema.reactions.id,
+      tMs: schema.reactions.tMs,
+      comment: schema.reactions.comment,
+      slideId: schema.reactions.slideId,
+      composeStartMs: schema.reactions.composeStartMs,
+      participantName: schema.participants.displayName,
+    })
+    .from(schema.reactions)
+    .innerJoin(schema.participants, eq(schema.reactions.participantId, schema.participants.id))
+    .where(and(eq(schema.reactions.lessonId, lessonId), eq(schema.reactions.kind, 'comment')))
+    .orderBy(asc(schema.reactions.tMs));
+}
+
+/** AI未解析のときの暫定範囲: 入力を始める少し前から（何を聞いて書き始めたかが入るように） */
+function defaultCommentClipStart(composeStartMs: number): number {
+  return Math.max(0, composeStartMs - config.buttonClipBeforeMs);
+}
+
+async function listCommentClips(lessonId: string): Promise<CommentClip[]> {
+  const rows = await commentRows(lessonId);
+  const analyzed = await db
+    .select()
+    .from(schema.commentClips)
+    .where(eq(schema.commentClips.lessonId, lessonId));
+  const byReaction = new Map(analyzed.map((a) => [a.reactionId, a]));
+
+  return rows.map((r) => {
+    const composeStartMs = r.composeStartMs ?? r.tMs;
+    const a = byReaction.get(r.id);
+    const start = a ? a.clipStartMs : defaultCommentClipStart(composeStartMs);
+    return {
+      id: r.id,
+      text: r.comment ?? '',
+      participantName: r.participantName,
+      tMs: r.tMs,
+      composeStartMs,
+      slideId: r.slideId,
+      clipStartMs: start,
+      clipEndMs: a ? a.clipEndMs : Math.max(r.tMs, start + 45_000),
+      targetText: a?.targetText ?? null,
+      analyzed: !!a,
+    };
+  });
+}
+
 export async function reviewRoutes(app: FastifyInstance): Promise<void> {
   // ---- タイムライン全イベント（同期再生用） ----
   app.get('/api/lessons/:id/timeline', { preHandler: requireTeacher }, async (req, reply) => {
@@ -63,6 +113,115 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
       .where(eq(schema.timelineEvents.lessonId, id))
       .orderBy(asc(schema.timelineEvents.tMs));
     return { durationMs: lesson.audioDurationMs ?? 0, events };
+  });
+
+  // ---- 「ボタン」タブ: ボタン反応のクリップ（反応の30秒前〜15秒後、同じ事柄はまとめる） ----
+  app.get('/api/lessons/:id/button-clips', { preHandler: requireTeacher }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const lesson = await ownLesson(req, reply, id);
+    if (!lesson) return;
+
+    const rows = await db
+      .select({
+        id: schema.reactions.id,
+        tMs: schema.reactions.tMs,
+        kind: schema.reactions.kind,
+        slideId: schema.reactions.slideId,
+        participantId: schema.reactions.participantId,
+        participantName: schema.participants.displayName,
+      })
+      .from(schema.reactions)
+      .innerJoin(schema.participants, eq(schema.reactions.participantId, schema.participants.id))
+      .where(and(eq(schema.reactions.lessonId, id), ne(schema.reactions.kind, 'comment')))
+      .orderBy(asc(schema.reactions.tMs));
+
+    // 時間が近く、同じスライドへの反応は「同じ事柄への反応」とみなしてひとまとめにする
+    const groups: (typeof rows)[] = [];
+    for (const r of rows) {
+      const g = groups[groups.length - 1];
+      const prev = g?.[g.length - 1];
+      const sameTopic =
+        prev !== undefined &&
+        r.tMs - prev.tMs <= config.buttonMergeGapMs &&
+        // スライドが分かる場合は同じスライドのときだけまとめる（旧データはnullなので時間のみ）
+        (r.slideId === null || prev.slideId === null || r.slideId === prev.slideId);
+      if (sameTopic) g.push(r);
+      else groups.push([r]);
+    }
+
+    const clips: ButtonClip[] = groups.map((g) => {
+      const kinds: ReactionCounts = {};
+      const participantIds = new Set<string>();
+      for (const r of g) {
+        kinds[r.kind] = (kinds[r.kind] ?? 0) + 1;
+        participantIds.add(r.participantId);
+      }
+      return {
+        id: g[0].id,
+        startMs: Math.max(0, g[0].tMs - config.buttonClipBeforeMs),
+        endMs: g[g.length - 1].tMs + config.buttonClipAfterMs,
+        kinds,
+        participantCount: participantIds.size,
+        reactions: g.map((r) => ({ name: r.participantName, kind: r.kind, tMs: r.tMs })),
+        slideId: g[0].slideId,
+      };
+    });
+    return clips;
+  });
+
+  // ---- 「コメント」タブ: コメントごとのクリップ（AI解析済みならその位置、未解析は暫定範囲） ----
+  app.get('/api/lessons/:id/comment-clips', { preHandler: requireTeacher }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const lesson = await ownLesson(req, reply, id);
+    if (!lesson) return;
+    return listCommentClips(id);
+  });
+
+  // ---- 「コメント」タブ: コメントが向けられた発言をAIで特定してクリップ位置を決める ----
+  app.post('/api/lessons/:id/comment-clips/analyze', { preHandler: requireTeacher }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const lesson = await ownLesson(req, reply, id);
+    if (!lesson) return;
+
+    const comments = await commentRows(id);
+    const done = await db
+      .select({ reactionId: schema.commentClips.reactionId })
+      .from(schema.commentClips)
+      .where(eq(schema.commentClips.lessonId, id));
+    const doneIds = new Set(done.map((d) => d.reactionId));
+
+    for (const c of comments) {
+      if (doneIds.has(c.id) || !c.comment) continue;
+      const composeStart = c.composeStartMs ?? c.tMs;
+      // コメントの手前（入力開始の数分前〜送信時刻）を文字起こしして、対象の発言を探す
+      const from = Math.max(0, composeStart - config.commentLookbackMs);
+      const t = await transcribeRange(id, from, c.tMs);
+      const segments = t?.segments ?? null;
+      let clipStartMs = defaultCommentClipStart(composeStart);
+      let clipEndMs = Math.max(c.tMs, clipStartMs + 45_000);
+      let targetText: string | null = null;
+
+      if (segments && segments.length > 0) {
+        const idx = await locateCommentTarget(segments, c.comment);
+        if (idx !== null) {
+          const seg = segments[idx];
+          targetText = seg.text.trim();
+          // 特定した発言の少し前から、そのあと生徒が理解を確かめられる程度まで
+          clipStartMs = Math.max(0, seg.startMs - 10_000);
+          clipEndMs = Math.max(seg.endMs + 20_000, clipStartMs + 30_000);
+        }
+      }
+
+      await db.insert(schema.commentClips).values({
+        id: crypto.randomUUID(),
+        lessonId: id,
+        reactionId: c.id,
+        clipStartMs,
+        clipEndMs,
+        targetText,
+      });
+    }
+    return listCommentClips(id);
   });
 
   // ---- クリップ一覧（反応クラスタ + 既存の文字起こし/提案） ----
@@ -229,32 +388,6 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
-    // 話速（文字/分）: 全体文字起こしのセグメントから算出
-    let speechRate: LessonStats['speechRate'] = null;
-    const [fullRow] = await db
-      .select()
-      .from(schema.transcripts)
-      .where(and(eq(schema.transcripts.lessonId, id), eq(schema.transcripts.scope, 'full')))
-      .orderBy(desc(schema.transcripts.createdAt))
-      .limit(1);
-    const segments = (fullRow?.segments ?? null) as TranscriptSegment[] | null;
-    if (segments && segments.length > 0) {
-      const charsPerMinute = new Map<number, number>();
-      for (const seg of segments) {
-        // セグメントの文字数を、跨いでいる分に比例配分する
-        const durMs = Math.max(1, seg.endMs - seg.startMs);
-        for (let minute = Math.floor(seg.startMs / 60_000); minute <= Math.floor((seg.endMs - 1) / 60_000); minute++) {
-          const overlap =
-            Math.min(seg.endMs, (minute + 1) * 60_000) - Math.max(seg.startMs, minute * 60_000);
-          const chars = (seg.text.length * overlap) / durMs;
-          charsPerMinute.set(minute, (charsPerMinute.get(minute) ?? 0) + chars);
-        }
-      }
-      speechRate = [...charsPerMinute.entries()]
-        .sort((a, b) => a[0] - b[0])
-        .map(([minute, chars]) => ({ minute, charsPerMin: Math.round(chars) }));
-    }
-
     const durationMin = Math.ceil((lesson.audioDurationMs ?? 0) / 60_000);
     const timeline: LessonStats['timeline'] = [];
     for (let minute = 0; minute < Math.max(durationMin, byMinute.size > 0 ? Math.max(...byMinute.keys()) + 1 : 0); minute++) {
@@ -280,7 +413,6 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
           reactions: v.reactions,
         }))
         .sort((a, b) => b.total - a.total),
-      speechRate,
     };
     return stats;
   });
