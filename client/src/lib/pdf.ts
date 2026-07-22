@@ -56,16 +56,25 @@ export class PdfCache {
   }
 }
 
-export async function loadLessonPdf(lessonId: string): Promise<PdfCache | null> {
-  const token = sessionStorage.getItem('participantToken');
-  const res = await fetch(`/api/lessons/${lessonId}/pdf`, {
-    credentials: 'same-origin',
-    headers: token ? { 'x-participant-token': token } : {},
-  });
+async function loadPdfFrom(url: string, init?: RequestInit): Promise<PdfCache | null> {
+  const res = await fetch(url, init);
   if (!res.ok) return null;
   const data = await res.arrayBuffer();
   const doc = await pdfjs.getDocument({ data }).promise;
   const cache = new PdfCache(doc);
   void cache.preloadAll();
   return cache;
+}
+
+export async function loadLessonPdf(lessonId: string): Promise<PdfCache | null> {
+  const token = sessionStorage.getItem('participantToken');
+  return loadPdfFrom(`/api/lessons/${lessonId}/pdf`, {
+    credentials: 'same-origin',
+    headers: token ? { 'x-participant-token': token } : {},
+  });
+}
+
+/** 復習ページ（ログイン不要・公開トークン）のPDF */
+export async function loadWatchPdf(token: string): Promise<PdfCache | null> {
+  return loadPdfFrom(`/api/watch/${encodeURIComponent(token)}/pdf`);
 }

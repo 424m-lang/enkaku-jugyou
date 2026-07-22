@@ -34,6 +34,9 @@ export const lessons = pgTable('lessons', {
   anonymizeMode: boolean('anonymize_mode').notNull().default(false),
   pdfPath: text('pdf_path'),
   pdfPageCount: integer('pdf_page_count'),
+  // 復習動画（章立て再生ページ）の公開用トークン。未公開ならnull
+  reviewShareToken: text('review_share_token').unique(),
+  reviewPublishedAt: timestamp('review_published_at', { withTimezone: true }),
   audioPath: text('audio_path'),
   audioDurationMs: integer('audio_duration_ms'),
   startedAt: timestamp('started_at', { withTimezone: true }),
@@ -179,6 +182,25 @@ export const commentClips = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('comment_clips_lesson_idx').on(t.lessonId)]
+);
+
+// 復習動画の章。生徒がつまずいた箇所を核に、前後の説明も含めた再生区間を保存する
+export const reviewChapters = pgTable(
+  'review_chapters',
+  {
+    id: text('id').primaryKey(),
+    lessonId: text('lesson_id')
+      .notNull()
+      .references(() => lessons.id),
+    position: doublePrecision('position').notNull(),
+    startMs: integer('start_ms').notNull(),
+    endMs: integer('end_ms').notNull(),
+    title: text('title').notNull(),
+    description: text('description'),
+    included: boolean('included').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('review_chapters_lesson_idx').on(t.lessonId, t.position)]
 );
 
 // 文字起こし・要約（授業中のクリップ範囲 / 授業後の全体 の両方を同じ仕組みで保存）

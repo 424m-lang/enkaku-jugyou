@@ -6,6 +6,8 @@ import type {
   LessonStats,
   PointerPayload,
   ReactionButtonDef,
+  ReviewChapter,
+  ReviewVideo,
   SlideInfo,
   StrokePayload,
   TimelineEvent,
@@ -43,6 +45,9 @@ export default function Review() {
   const [playhead, setPlayhead] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
+  const [video, setVideo] = useState<ReviewVideo | null>(null);
+  const [generating, setGenerating] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [error, setError] = useState('');
 
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -55,12 +60,13 @@ export default function Review() {
     if (!lessonId) return;
     (async () => {
       try {
-        const [detail, tl, bc, cc, st] = await Promise.all([
+        const [detail, tl, bc, cc, st, rv] = await Promise.all([
           api<LessonDetail>(`/api/lessons/${lessonId}`),
           api<{ durationMs: number; events: TimelineEvent[] }>(`/api/lessons/${lessonId}/timeline`),
           api<ButtonClip[]>(`/api/lessons/${lessonId}/button-clips`),
           api<CommentClip[]>(`/api/lessons/${lessonId}/comment-clips`),
           api<LessonStats>(`/api/lessons/${lessonId}/stats`),
+          api<ReviewVideo>(`/api/lessons/${lessonId}/review-video`),
         ]);
         setLesson(detail);
         setTimeline(tl.events);
@@ -68,6 +74,7 @@ export default function Review() {
         setButtonClips(bc);
         setCommentClips(cc);
         setStats(st);
+        setVideo(rv);
         setPdf(await loadLessonPdf(lessonId));
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) navigate('/login');
@@ -220,6 +227,96 @@ export default function Review() {
       setAnalyzing(false);
     }
   }, [lessonId]);
+
+  // ---- 復習動画 ----
+  const generateChapters = useCallback(async () => {
+    if (!lessonId) return;
+    setGenerating(true);
+    setError('');
+    try {
+      const chapters = await api<ReviewChapter[]>(`/api/lessons/${lessonId}/review-video/generate`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      setVideo((prev) => ({ chapters, shareToken: prev?.shareToken ?? null, publishedAt: prev?.publishedAt ?? null }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '章の作成に失敗しました');
+    } finally {
+      setGenerating(false);
+    }
+  }, [lessonId]);
+
+  const patchChapter = useCallback(
+    async (chapterId: string, patch: Partial<Pick<ReviewChapter, 'included' | 'title'>>) => {
+      if (!lessonId) return;
+      try {
+        const chapters = await api<ReviewChapter[]>(
+          `/api/lessons/${lessonId}/review-video/chapters/${chapterId}`,
+          { method: 'PATCH', body: JSON.stringify(patch) }
+        );
+        setVideo((prev) => (prev ? { ...prev, chapters } : prev));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : '更新に失敗しました');
+      }
+    },
+    [lessonId]
+  );
+
+  const moveChapter = useCallback(
+    async (index: number, delta: number) => {
+      if (!lessonId || !video) return;
+      const ids = video.chapters.map((c) => c.id);
+      const to = index + delta;
+      if (to < 0 || to >= ids.length) return;
+      [ids[index], ids[to]] = [ids[to], ids[index]];
+      try {
+        const chapters = await api<ReviewChapter[]>(`/api/lessons/${lessonId}/review-video/reorder`, {
+          method: 'POST',
+          body: JSON.stringify({ ids }),
+        });
+        setVideo((prev) => (prev ? { ...prev, chapters } : prev));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : '並び替えに失敗しました');
+      }
+    },
+    [lessonId, video]
+  );
+
+  const setPublished = useCallback(
+    async (publish: boolean) => {
+      if (!lessonId) return;
+      setError('');
+      try {
+        const res = await api<{ shareToken: string | null; publishedAt: string | null }>(
+          `/api/lessons/${lessonId}/review-video/${publish ? 'publish' : 'unpublish'}`,
+          { method: 'POST', body: JSON.stringify({}) }
+        );
+        setVideo((prev) => (prev ? { ...prev, ...res } : prev));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : '公開設定の変更に失敗しました');
+      }
+    },
+    [lessonId]
+  );
+
+  const watchUrl = video?.shareToken ? `${window.location.origin}/watch/${video.shareToken}` : '';
+
+  const copyWatchUrl = useCallback(async () => {
+    if (!watchUrl) return;
+    try {
+      await navigator.clipboard.writeText(watchUrl);
+    } catch {
+      // クリップボードAPIが使えない環境向けのフォールバック
+      const ta = document.createElement('textarea');
+      ta.value = watchUrl;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  }, [watchUrl]);
 
   const reactionMeta = useMemo(() => makeReactionMeta(lesson?.reactionButtons ?? []), [lesson]);
   const kindLabel = reactionMeta.label;
@@ -430,12 +527,102 @@ export default function Review() {
           {tab === 'video' && (
             <div className="panel-scroll">
               <div className="card">
-                <h3>復習動画</h3>
                 <p className="muted">
-                  「ボタン」「コメント」で見つかった、生徒がつまずいた箇所をつなげて、
-                  授業に出られなかった生徒も見られる復習用の再生ページを作る機能です。現在設計中です。
+                  生徒がつまずいた箇所を中心に、話の流れが追えるよう前後の説明もつないだ章を作ります。
+                  公開すると、授業に出られなかった生徒もリンクだけで見られます。
                 </p>
+                <button className="btn primary" onClick={() => void generateChapters()} disabled={generating}>
+                  {generating
+                    ? '作成中...（数分かかることがあります）'
+                    : video && video.chapters.length > 0
+                      ? '章を作り直す'
+                      : '章を自動で作る'}
+                </button>
               </div>
+
+              {video && video.chapters.length > 0 && (
+                <div className="card">
+                  <h3>生徒への公開</h3>
+                  {video.shareToken ? (
+                    <>
+                      <div className="qr-url-row">
+                        <code className="watch-url">{watchUrl}</code>
+                        <button className="btn" onClick={() => void copyWatchUrl()}>
+                          {copied ? 'コピーしました' : 'URLをコピー'}
+                        </button>
+                      </div>
+                      <p className="muted small">
+                        公開中（{video.publishedAt && new Date(video.publishedAt).toLocaleString('ja-JP')}）。
+                        このページに生徒の名前やコメントは表示されません。
+                      </p>
+                      <button className="btn" onClick={() => void setPublished(false)}>
+                        公開を停止する
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <p className="muted small">
+                        公開すると、ログイン不要で見られるURLが作られます。
+                      </p>
+                      <button className="btn primary" onClick={() => void setPublished(true)}>
+                        公開してURLを作る
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {video?.chapters.length === 0 && (
+                <p className="muted">まだ章がありません。「章を自動で作る」を押してください</p>
+              )}
+              {video?.chapters.map((c, i) => (
+                <div key={c.id} className={`card clip-card ${c.included ? '' : 'chapter-excluded'}`}>
+                  <div className="clip-head">
+                    <button className="btn primary" onClick={() => playRange(c.startMs, c.endMs)}>
+                      ▶ {fmtClock(c.startMs)}〜{fmtClock(c.endMs)}
+                    </button>
+                    <span className="muted small">{i + 1}章</span>
+                  </div>
+                  <input
+                    className="chapter-title"
+                    value={c.title}
+                    onChange={(e) =>
+                      setVideo((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              chapters: prev.chapters.map((x) =>
+                                x.id === c.id ? { ...x, title: e.target.value } : x
+                              ),
+                            }
+                          : prev
+                      )
+                    }
+                    onBlur={(e) => void patchChapter(c.id, { title: e.target.value })}
+                  />
+                  {c.description && <p className="point-text muted">{c.description}</p>}
+                  <div className="chapter-actions">
+                    <label className="chapter-include">
+                      <input
+                        type="checkbox"
+                        checked={c.included}
+                        onChange={(e) => void patchChapter(c.id, { included: e.target.checked })}
+                      />
+                      公開する
+                    </label>
+                    <button className="btn" onClick={() => void moveChapter(i, -1)} disabled={i === 0}>
+                      ↑
+                    </button>
+                    <button
+                      className="btn"
+                      onClick={() => void moveChapter(i, 1)}
+                      disabled={i === video.chapters.length - 1}
+                    >
+                      ↓
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>

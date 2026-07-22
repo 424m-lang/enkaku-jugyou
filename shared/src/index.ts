@@ -148,6 +148,38 @@ export type CommentClip = {
   analyzed: boolean;
 };
 
+// ---- 復習動画（章立て再生ページ） ----
+// 生徒がつまずいた箇所を核に、授業の流れが追えるよう前後の説明もつないだ「章」。
+// 動画ファイルは作らず、録音とスライド・書き込みを同期再生することで動画として機能する。
+export type ReviewChapter = {
+  id: string;
+  position: number;
+  startMs: number;
+  endMs: number;
+  title: string;
+  description: string | null;
+  /** 先生が章ごとに公開する・しないを選べる */
+  included: boolean;
+};
+
+export type ReviewVideo = {
+  chapters: ReviewChapter[];
+  /** 公開URL用のトークン（未公開ならnull） */
+  shareToken: string | null;
+  publishedAt: string | null;
+};
+
+/** 生徒向け公開ページのデータ（誰が何を反応したかは一切含めない） */
+export type WatchPage = {
+  title: string;
+  chapters: ReviewChapter[];
+  slides: SlideInfo[];
+  /** スライド送り・書き込み・ポインターの再現用 */
+  events: TimelineEvent[];
+  audioParts: { file: string; startMs: number }[];
+  durationMs: number;
+};
+
 // ---- クリップ / クラスタ ----
 export type ReactionCluster = {
   id: string; // クラスタの代表reaction id

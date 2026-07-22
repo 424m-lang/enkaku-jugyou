@@ -7,6 +7,7 @@ import Screen from './pages/teacher/Screen';
 import Review from './pages/teacher/Review';
 import Join from './pages/student/Join';
 import Class from './pages/student/Class';
+import Watch from './pages/Watch';
 
 export default function App() {
   return (
@@ -20,6 +21,8 @@ export default function App() {
       <Route path="/review/:id" element={<Review />} />
       <Route path="/join" element={<Join />} />
       <Route path="/class" element={<Class />} />
+      {/* 生徒向けの復習ページ（ログイン不要・公開トークン） */}
+      <Route path="/watch/:token" element={<Watch />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

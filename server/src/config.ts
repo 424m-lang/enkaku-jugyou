@@ -37,6 +37,14 @@ export const config = {
   // 授業後「コメント」タブ: 対象の発言を探すためにコメントから遡る時間
   commentLookbackMs: 240_000,
 
+  // 復習動画: つまずいた箇所の前後にこれだけ足して、話の流れが追えるようにする
+  chapterContextBeforeMs: 60_000,
+  chapterContextAfterMs: 60_000,
+  // これだけ近い区間はひとつの章にまとめる
+  chapterMergeGapMs: 45_000,
+  // 章の頭は「そのスライドの説明の最初」まで戻す（戻しすぎないよう上限を設ける）
+  chapterSnapBackMaxMs: 180_000,
+
   // クリップ範囲（反応時刻の前後）
   clipBeforeMs: 15_000,
   clipAfterMs: 5_000,

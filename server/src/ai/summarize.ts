@@ -117,6 +117,27 @@ export async function locateCommentTarget(
 }
 
 /**
+ * 復習動画の章: その区間の文字起こしから、見出しと一言説明を作る。
+ * 生徒が見るページに出るため、誰がどう反応したかには一切触れさせない。
+ */
+export async function describeChapter(
+  transcriptText: string
+): Promise<{ title: string; description: string } | null> {
+  const result = await callSummaryLLM(
+    'あなたは授業の録画に見出しを付けるアシスタントです。渡された区間の文字起こしを読み、次の2行だけを日本語で出力してください。\n1行目: その区間の内容を表す15文字以内の見出し（記号や「見出し:」などのラベルは書かない）\n2行目: 何を説明している場面かの1文の説明\n生徒の反応・評価・提案には一切触れず、説明内容だけを書いてください。',
+    transcriptText.slice(0, 20_000),
+    200
+  );
+  if (!result) return null;
+  const lines = result.text
+    .split('\n')
+    .map((l) => l.replace(/^\s*(\d+[.)]|[-*])\s*/, '').trim())
+    .filter(Boolean);
+  if (lines.length === 0) return null;
+  return { title: lines[0].slice(0, 40), description: lines[1] ?? '' };
+}
+
+/**
  * 授業後: 全体の文字起こしと反応集中箇所から、先生が全クリップを聞かなくても
  * 把握できる要約を作る（振り返り提案と同じ仕組みを全体範囲に適用したもの）。
  */
