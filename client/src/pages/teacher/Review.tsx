@@ -513,12 +513,17 @@ export default function Review() {
                       <span className="reaction-time">入力開始 {fmtClock(c.composeStartMs)}</span>
                     )}
                   </div>
-                  {c.targetText && (
-                    <div className="clip-target">
-                      <span className="point-label">対象の発言</span>
-                      <p className="point-text">{c.targetText}</p>
-                    </div>
-                  )}
+                  {c.analyzed &&
+                    (c.targetText ? (
+                      <div className="clip-target">
+                        <span className="point-label">対象の発言</span>
+                        <p className="point-text">{c.targetText}</p>
+                      </div>
+                    ) : (
+                      <p className="muted small">
+                        このコメントの内容について、先生は授業では話していません。
+                      </p>
+                    ))}
                 </div>
               ))}
             </div>

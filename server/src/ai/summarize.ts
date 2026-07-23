@@ -54,21 +54,31 @@ async function callSummaryLLM(
   return null; // mock にフォールバック
 }
 
+/** コメントの内容を先生が授業で話していなかったときに表示する定型文 */
+export const TOPIC_NOT_COVERED_MESSAGE = 'このコメントの内容について、先生は授業では話していません。';
+
 /**
  * コメント・振り返り: 生徒のコメントと入力開始時刻周辺の音声の文字起こしから、
  * 「生徒が何についてコメントしようとしたのか」を割り出し、
  * その部分の先生の話の重要ポイントを端的に要約する。
+ * 先生が文字起こしの中でその内容に触れていない場合は、AI自身の知識で解説せず、
+ * 話していない旨だけを返す。
  */
 export async function summarizeCommentContext(
   transcriptText: string,
   comments: string[]
 ): Promise<{ text: string; provider: string }> {
   const result = await callSummaryLLM(
-    'あなたは授業中の生徒コメントを分析するアシスタントです。先生の説明音声の文字起こしと生徒のコメントを読み、コメントが先生の話のどの内容についてのものかを特定し、その部分の重要ポイントを日本語で1〜2文に端的に要約してください。要約だけを書き、評価・提案・前置きは一切書かないでください。コメントに対応する説明が文字起こしに見当たらない場合は、文字起こし全体の要点を1文で書いてください。',
+    'あなたは授業中の生徒コメントを分析するアシスタントです。先生の説明音声の文字起こしと生徒のコメントを読み、コメントが先生の話のどの内容についてのものかを特定し、その部分の重要ポイントを日本語で1〜2文に端的に要約してください。要約は必ず文字起こしに書かれている先生の発言だけに基づいて書き、あなた自身の知識でコメントの話題を解説してはいけません。コメントの内容を先生が文字起こしの中で話していない場合は、要約を書かず「NOT_COVERED」とだけ出力してください。要約する場合は要約だけを書き、評価・提案・前置きは一切書かないでください。',
     `先生の説明（文字起こし）:\n${transcriptText.slice(0, 30_000)}\n\n生徒のコメント:\n${comments.map((c, i) => `${i + 1}. ${c}`).join('\n')}`,
     300
   );
-  if (result) return result;
+  if (result) {
+    if (/^[\s"'「]*NOT_COVERED/i.test(result.text)) {
+      return { text: TOPIC_NOT_COVERED_MESSAGE, provider: result.provider };
+    }
+    return result;
+  }
   return {
     text: '（モック要約）コメントに関連する説明の要約です。SUMMARY_PROVIDER=anthropic または openai とAPIキーを設定すると実際のAI要約になります。',
     provider: 'mock',
