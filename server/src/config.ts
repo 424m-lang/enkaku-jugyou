@@ -28,6 +28,16 @@ export const config = {
   insightWindowBeforeMs: Number(process.env.INSIGHT_WINDOW_BEFORE_MS ?? 90_000),
   // 分析範囲がこの間隔以内で近接する既存カードを「同じ事柄か」の統合判定にかける
   insightMergeGapMs: Number(process.env.INSIGHT_MERGE_GAP_MS ?? 30_000),
+  // 授業中の要約: 特定した発言の前後この範囲を要約対象にする（二段構えの2段目）
+  insightFocusBeforeMs: Number(process.env.INSIGHT_FOCUS_BEFORE_MS ?? 30_000),
+  insightFocusAfterMs: Number(process.env.INSIGHT_FOCUS_AFTER_MS ?? 60_000),
+
+  // 授業中のローリング文字起こし: 裏でこの間隔ごとに新しいぶんを文字起こしして貯める
+  liveTranscribeIntervalMs: Number(process.env.LIVE_TRANSCRIBE_INTERVAL_MS ?? 300_000), // 5分
+  // 各区切りに直前のこの時間を重ねて文字起こしし、つなぎ目の欠けを防ぐ
+  liveTranscribeOverlapMs: Number(process.env.LIVE_TRANSCRIBE_OVERLAP_MS ?? 15_000),
+  // 1回の文字起こしはこの長さまで（Whisperの約13分/25MB上限より短く保つ）
+  liveTranscribeMaxChunkMs: Number(process.env.LIVE_TRANSCRIBE_MAX_CHUNK_MS ?? 600_000), // 10分
 
   // 授業後「ボタン」タブのクリップ範囲（反応の30秒前〜15秒後の45秒）
   buttonClipBeforeMs: 30_000,

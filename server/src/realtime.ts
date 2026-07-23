@@ -18,6 +18,12 @@ import {
 } from './live/liveSessions';
 import { recordReaction } from './live/reactions';
 import { handleCommentForInsight } from './live/commentInsights';
+import {
+  ensureTranscribedUntil,
+  restoreLiveTranscript,
+  startLiveTranscription,
+  stopLiveTranscription,
+} from './live/liveTranscript';
 
 /** コメント入力中の合図がこの時間途絶えたら入力をやめたとみなす */
 const COMPOSING_STALE_MS = 20_000;
@@ -117,6 +123,13 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
 
     await broadcastParticipantCount(io, room);
 
+    // サーバ再起動後などで文字起こしがまだ動いていなければ復元して再開する。
+    // タイマーを同期的に張ってから復元することで、複数接続でも二重起動しない
+    if (s.status === 'live' && s.transcribeTimer === null) {
+      startLiveTranscription(s);
+      void restoreLiveTranscript(s).catch((err) => app.log.error(err));
+    }
+
     // ================= 先生のイベント =================
     if (role === 'teacher') {
       socket.on('start_lesson', async (cb) => {
@@ -125,6 +138,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           if (s.status !== 'live') {
             await startLesson(s);
           }
+          startLiveTranscription(s); // 裏で文字起こしを貯め始める
           io.to(room).emit('lesson_started');
           io.to(room).emit('lesson_state', toLiveState(s));
           cb({ ok: true });
@@ -137,10 +151,14 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       socket.on('end_lesson', async (cb) => {
         try {
           if (s.status !== 'live') return cb({ ok: false, error: '授業中ではありません' });
+          const endMs = tMs(s);
+          stopLiveTranscription(s);
           await endLesson(s);
           io.to(room).emit('lesson_ended');
           io.to(room).emit('lesson_state', toLiveState(s));
           cb({ ok: true });
+          // 最後まで文字起こしを追いつかせる（終了間際のコメント要約のため。失敗は無視）
+          void ensureTranscribedUntil(s, endMs).catch((err) => app.log.error(err));
         } catch (err) {
           app.log.error(err);
           cb({ ok: false, error: '終了に失敗しました' });

@@ -10,6 +10,7 @@ import type {
   SlideInfo,
   TimelineEvent,
   TimelineEventType,
+  TranscriptSegment,
 } from '@shared';
 import { db, schema } from '../db';
 import { lessonDir } from '../storage';
@@ -63,6 +64,11 @@ export type LiveSession = {
   // リアクション
   lastReactionAt: Map<string, number>; // key: participantId:kind → tMs（デバウンス用）
   recentReactions: RecentReaction[]; // クリップ集約用（直近数分）
+
+  // 授業中に裏で貯めるローリング文字起こし（コメント要約が全文を参照できるように）
+  transcriptSegments: TranscriptSegment[]; // 授業タイムライン基準・startMs昇順
+  transcribedUntilMs: number; // ここまで文字起こし済み
+  transcribeTimer: ReturnType<typeof setInterval> | null;
 };
 
 const sessions = new Map<string, LiveSession>();
@@ -110,6 +116,9 @@ export async function getSession(lessonId: string): Promise<LiveSession | null> 
     audioInitSegment: null,
     lastReactionAt: new Map(),
     recentReactions: [],
+    transcriptSegments: [],
+    transcribedUntilMs: 0,
+    transcribeTimer: null,
   };
 
   // サーバ再起動後の復元: live中ならタイムラインから描画状態・現在スライドを再構成
@@ -292,6 +301,8 @@ export async function startLesson(s: LiveSession): Promise<void> {
   s.audioSeq = 0;
   s.audioInitSegment = null;
   s.currentAudioPart = null;
+  s.transcriptSegments = [];
+  s.transcribedUntilMs = 0;
   await db
     .update(schema.lessons)
     .set({ status: 'live', startedAt })
@@ -304,6 +315,10 @@ export async function startLesson(s: LiveSession): Promise<void> {
 export async function endLesson(s: LiveSession): Promise<void> {
   s.status = 'ended';
   const durationMs = tMs(s);
+  if (s.transcribeTimer) {
+    clearInterval(s.transcribeTimer);
+    s.transcribeTimer = null;
+  }
   if (s.currentAudioPart) {
     const st = s.currentAudioPart.stream;
     await new Promise<void>((resolve) => st.end(() => resolve()));

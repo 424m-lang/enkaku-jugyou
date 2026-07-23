@@ -4,9 +4,15 @@ import type { Server } from 'socket.io';
 import type { CommentInsight, InsightComment, ReactionCounts } from '@shared';
 import { config } from '../config';
 import { db, schema } from '../db';
-import { transcribeRange } from '../ai/transcribe';
-import { judgeSameTopic, summarizeCommentContext } from '../ai/summarize';
+import {
+  TOPIC_NOT_COVERED_MESSAGE,
+  judgeSameTopic,
+  locateCommentTarget,
+  summarizeCommentContext,
+} from '../ai/summarize';
+// transcribeRange は直接使わず、ローリング文字起こし(liveTranscript)経由で参照する
 import { tMs, type LiveSession } from './liveSessions';
+import { ensureTranscribedUntil, segmentsUntil } from './liveTranscript';
 
 type AnyServer = Server<any, any>;
 
@@ -180,32 +186,7 @@ async function analyze(io: AnyServer, s: LiveSession, insight: CommentInsight): 
     const kinds: ReactionCounts = {};
     for (const r of rows) kinds[r.kind] = (kinds[r.kind] ?? 0) + 1;
 
-    // 音声はコピーせず、タイムスタンプ範囲の切り出し→文字起こし（録音が無ければnull）
-    const t = await transcribeRange(s.lessonId, insight.windowStartMs, insight.windowEndMs);
-    const summary = t
-      ? (
-          await summarizeCommentContext(
-            t.text,
-            insight.comments.map((c) => c.text)
-          )
-        ).text
-      : null;
-
-    // 生成した文字起こしはtranscriptsにも保存し、授業後のクリップ表示で再利用する
-    if (t) {
-      await db.insert(schema.transcripts).values({
-        id: crypto.randomUUID(),
-        lessonId: s.lessonId,
-        scope: 'clip',
-        rangeStartMs: insight.windowStartMs,
-        rangeEndMs: insight.windowEndMs,
-        text: t.text,
-        summary,
-        segments: t.segments,
-        provider: t.provider,
-        model: null,
-      });
-    }
+    const summary = await summarizeForComment(s, insight);
 
     const ready: CommentInsight = { ...insight, kinds, summary, status: 'ready' };
     await db
@@ -225,6 +206,38 @@ async function analyze(io: AnyServer, s: LiveSession, insight: CommentInsight): 
     }
     emitInsight(io, s.lessonId, { ...insight, status: 'failed' });
   }
+}
+
+/**
+ * 二段構えでコメントに対する説明を要約する。
+ * 1段目: 授業のここまでの文字起こし全体から、コメントが向けられた発言を特定する
+ *        （授業後の「コメント」タブと同じ locateCommentTarget を共通利用）
+ * 2段目: 特定した発言の前後だけを要約する（先生が話していなければ定型文のみ）
+ * 録音がまだ無い（文字起こしできない）場合は null を返す。
+ */
+async function summarizeForComment(s: LiveSession, insight: CommentInsight): Promise<string | null> {
+  // コメント送信時刻まで文字起こしが貯まっているようにする（直近だけ追いつく）
+  await ensureTranscribedUntil(s, insight.windowEndMs);
+  const segments = segmentsUntil(s, insight.windowEndMs);
+  if (segments.length === 0) return null; // 録音なし
+
+  // 1段目: 授業全体から対象の発言を特定
+  const idx = await locateCommentTarget(segments, insight.comments[0].text);
+  if (idx === null) return TOPIC_NOT_COVERED_MESSAGE; // 先生が話していない
+
+  // 2段目: 特定した発言の前後だけを要約対象にする
+  const target = segments[idx];
+  const from = target.startMs - config.insightFocusBeforeMs;
+  const to = target.endMs + config.insightFocusAfterMs;
+  const focusText = segments
+    .filter((seg) => seg.endMs > from && seg.startMs < to)
+    .map((seg) => seg.text)
+    .join('');
+  const result = await summarizeCommentContext(
+    focusText,
+    insight.comments.map((c) => c.text)
+  );
+  return result.text;
 }
 
 /** 保存済みのコメント・振り返りを取得（先生画面の初期表示・再接続時用） */
