@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import type { TranscriptSegment } from '@shared';
 import { config } from '../config';
 import { extractRangeToWav } from './audio';
-import { lessonVocabPrompt } from './vocabPrompt';
+import { lessonVocabPrompt, stripVocabEcho } from './vocabPrompt';
 
 function fmtMs(ms: number): string {
   const s = Math.floor(ms / 1000);
@@ -97,13 +97,19 @@ async function transcribeWithWhisper(
     text: string;
     segments?: { start: number; end: number; text: string }[];
   };
+  const segments =
+    data.segments?.map((s) => ({
+      startMs: Math.round(s.start * 1000),
+      endMs: Math.round(s.end * 1000),
+      text: s.text,
+    })) ?? null;
+  if (!segments) return { text: data.text, segments };
+
+  // 無音区間でヒント文がそのまま書き出されることがあるので取り除く。
+  // 落ちたものがあれば全文も作り直す（残ったセグメントと食い違わないように）
+  const kept = stripVocabEcho(segments, vocabPrompt);
   return {
-    text: data.text,
-    segments:
-      data.segments?.map((s) => ({
-        startMs: Math.round(s.start * 1000),
-        endMs: Math.round(s.end * 1000),
-        text: s.text,
-      })) ?? null,
+    text: kept.length === segments.length ? data.text : kept.map((s) => s.text).join(''),
+    segments: kept,
   };
 }

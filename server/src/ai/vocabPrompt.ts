@@ -1,4 +1,5 @@
 import { eq } from 'drizzle-orm';
+import type { TranscriptSegment } from '@shared';
 import { db, schema } from '../db';
 
 /**
@@ -62,6 +63,40 @@ export function buildVocabPrompt(title: string, pageTexts: string[]): string {
   }
   if (picked.length === 0) return head;
   return `${head}${picked.join('、')}などの用語が出てきます。`;
+}
+
+/** ヒント文と聞き取り結果を比べるために、記号・空白を落として文字だけにする */
+function normalize(s: string): string {
+  return s.replace(/[^0-9A-Za-zぁ-んァ-ヶー一-龥々]/g, '');
+}
+
+/** これ以上の長さがヒント文と一致したら、偶然ではなくヒントの写しとみなす */
+const ECHO_MIN_CHARS = 12;
+
+/**
+ * Whisperがヒント文をそのまま書き出してしまったセグメントを取り除く。
+ *
+ * Whisperはpromptを「その音声の直前の文」と解釈するため、無音や暗騒音しか無い区間では
+ * 続きが作れず、promptをそのまま出力してくることがある。実際に、暗騒音だけの10分を
+ * 渡すとヒント文が20回並んだ。音量では暗騒音と小声の発話を区別できない
+ * （実測で暗騒音 max -36dB に対し、正しく聞き取れた小声の発話が max -32dB）ため、
+ * 事前に無音を弾くのではなく、出てきた写しを後から落とす。
+ */
+export function stripVocabEcho(
+  segments: TranscriptSegment[],
+  vocabPrompt: string
+): TranscriptSegment[] {
+  if (!vocabPrompt) return segments;
+  const hint = normalize(vocabPrompt);
+  const tail = normalize('などの用語が出てきます');
+  return segments.filter((seg) => {
+    const t = normalize(seg.text);
+    if (!t) return false;
+    if (t === hint) return false; // ヒント文そのもの
+    if (t.endsWith(tail)) return false; // ヒント文の後半（用語の羅列）
+    // ヒント文の一部をそのまま写したもの。短い一致は本当の発言かもしれないので残す
+    return !(t.length >= ECHO_MIN_CHARS && hint.includes(t));
+  });
 }
 
 // 授業ごとに1回作れば十分なのでキャッシュする（中身が空のときは次回また作り直す）
