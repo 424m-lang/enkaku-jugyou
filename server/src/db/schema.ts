@@ -34,6 +34,8 @@ export const lessons = pgTable('lessons', {
   anonymizeMode: boolean('anonymize_mode').notNull().default(false),
   pdfPath: text('pdf_path'),
   pdfPageCount: integer('pdf_page_count'),
+  // PDF各ページのテキスト（クライアントで抽出して保存）。ブロック分けのAIに渡す
+  pdfPageTexts: jsonb('pdf_page_texts').$type<string[]>(),
   // 復習動画（章立て再生ページ）の公開用トークン。未公開ならnull
   reviewShareToken: text('review_share_token').unique(),
   reviewPublishedAt: timestamp('review_published_at', { withTimezone: true }),
@@ -184,7 +186,7 @@ export const commentClips = pgTable(
   (t) => [index('comment_clips_lesson_idx').on(t.lessonId)]
 );
 
-// 復習動画の章。生徒がつまずいた箇所を核に、前後の説明も含めた再生区間を保存する
+// 復習動画のブロック。授業全体を話題の切れ目で区分けした再生区間を保存する
 export const reviewChapters = pgTable(
   'review_chapters',
   {
@@ -198,6 +200,10 @@ export const reviewChapters = pgTable(
     title: text('title').notNull(),
     description: text('description'),
     included: boolean('included').notNull().default(true),
+    // ブロックの間に説明していたスライド（概要と一緒に表示する）
+    slideIds: jsonb('slide_ids').$type<string[]>().notNull().default([]),
+    // 先生が映像内に足す補足文章
+    note: text('note'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('review_chapters_lesson_idx').on(t.lessonId, t.position)]

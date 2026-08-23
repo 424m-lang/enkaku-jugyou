@@ -44,6 +44,30 @@ export class PdfCache {
     return canvas.transferToImageBitmap();
   }
 
+  /**
+   * 全ページの本文テキスト。復習動画のブロック分けで、先生の発言と一緒に
+   * スライドの内容もAIに参考にさせるために使う（サーバへ送って保存する）。
+   */
+  async allPageTexts(): Promise<string[]> {
+    const out: string[] = [];
+    for (let i = 0; i < this.doc.numPages; i++) {
+      try {
+        const page = await this.doc.getPage(i + 1);
+        const content = await page.getTextContent();
+        out.push(
+          content.items
+            .map((it) => ('str' in it ? it.str : ''))
+            .join(' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+        );
+      } catch {
+        out.push(''); // 画像だけのページなど
+      }
+    }
+    return out;
+  }
+
   /** バックグラウンドで全ページを順に描画しておく（プリロード） */
   async preloadAll(): Promise<void> {
     for (let i = 0; i < this.doc.numPages; i++) {
@@ -71,6 +95,22 @@ export async function loadLessonPdf(lessonId: string): Promise<PdfCache | null> 
   return loadPdfFrom(`/api/lessons/${lessonId}/pdf`, {
     credentials: 'same-origin',
     headers: token ? { 'x-participant-token': token } : {},
+  });
+}
+
+/**
+ * PDF各ページの本文を抽出してサーバへ保存する（先生の画面からのみ呼ぶ）。
+ * サーバ側では、文字起こしに渡す用語のヒントと、復習動画のブロック分けに使う。
+ * 何度呼んでも同じ結果を上書きするだけなので、失敗しても無視してよい。
+ */
+export async function savePdfTexts(lessonId: string, cache: PdfCache): Promise<void> {
+  const texts = await cache.allPageTexts();
+  if (texts.every((t) => !t)) return; // 画像だけのPDFは送らない
+  await fetch(`/api/lessons/${lessonId}/pdf-text`, {
+    method: 'PUT',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ texts }),
   });
 }
 
