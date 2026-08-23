@@ -2,15 +2,26 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { and, asc, desc, eq, ne } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import type { ReviewChapter, TimelineEvent, TranscriptSegment, WatchPage } from '@shared';
-import { config } from '../config';
 import { db, schema } from '../db';
 import { requireTeacher, teacherIdOf } from '../auth';
 import { loadSlides } from '../live/liveSessions';
 import { lessonDir, pdfPath } from '../storage';
-import { transcribeRange } from '../ai/transcribe';
-import { describeChapter } from '../ai/summarize';
+import { ensureFullTranscript } from '../ai/fullTranscript';
+import { describeChapter, segmentLessonIntoBlocks } from '../ai/summarize';
+import {
+  loadSlideIntervals,
+  slideAt,
+  slideNumberMap,
+  slidesInRange,
+  type SlideInterval,
+} from '../slideTimeline';
+
+/** AIに渡す1行にまとめる長さの上限（細かすぎると行数が膨らむ） */
+const LINE_MAX_MS = 20_000;
+/** AIが使えないときのフォールバックで作るブロックの目安の長さ */
+const FALLBACK_BLOCK_MS = 240_000;
 
 /** 公開URLのトークン（推測されないだけの長さを持たせる） */
 function newShareToken(): string {
@@ -42,6 +53,8 @@ function rowToChapter(r: typeof schema.reviewChapters.$inferSelect): ReviewChapt
     title: r.title,
     description: r.description,
     included: r.included,
+    slideIds: r.slideIds ?? [],
+    note: r.note,
   };
 }
 
@@ -54,75 +67,49 @@ async function listChapters(lessonId: string): Promise<ReviewChapter[]> {
   return rows.map(rowToChapter);
 }
 
+// ---- AIに渡す発言の行 ----
+export type TranscriptLine = {
+  startMs: number;
+  endMs: number;
+  slideId: string | null;
+  text: string;
+};
+
 /**
- * 生徒がつまずいた箇所（ボタン反応・コメント）を核に、章の区間を組み立てる。
- * 話の流れが追えるよう前後を足し、近い区間はつなぎ、
- * 章の頭はそのスライドの説明の最初まで戻す。
+ * 文字起こしセグメントを、同じスライドを映している間ごとに20秒程度へまとめる。
+ * 行数を抑えつつ、ブロックの切れ目がスライド切替と揃いやすくなる。
  */
-export function buildRanges(
-  cores: { startMs: number; endMs: number }[],
-  slideChangeMs: number[],
-  durationMs: number
-): { startMs: number; endMs: number }[] {
-  if (cores.length === 0) return [];
-
-  const expanded = cores
-    .map((c) => ({
-      startMs: Math.max(0, c.startMs - config.chapterContextBeforeMs),
-      endMs: Math.min(durationMs, c.endMs + config.chapterContextAfterMs),
-    }))
-    .sort((a, b) => a.startMs - b.startMs);
-
-  const merged: { startMs: number; endMs: number }[] = [];
-  for (const r of expanded) {
-    const last = merged[merged.length - 1];
-    if (last && r.startMs - last.endMs <= config.chapterMergeGapMs) {
-      last.endMs = Math.max(last.endMs, r.endMs);
+export function buildLines(
+  segments: TranscriptSegment[],
+  intervals: SlideInterval[]
+): TranscriptLine[] {
+  const lines: TranscriptLine[] = [];
+  for (const seg of segments) {
+    const slideId = slideAt(intervals, seg.startMs);
+    const last = lines[lines.length - 1];
+    if (last && last.slideId === slideId && seg.endMs - last.startMs <= LINE_MAX_MS) {
+      last.endMs = seg.endMs;
+      last.text += seg.text;
     } else {
-      merged.push({ ...r });
+      lines.push({ startMs: seg.startMs, endMs: seg.endMs, slideId, text: seg.text });
     }
   }
-
-  // 章の頭を直前のスライド切替まで戻す（説明の途中から始まらないように）
-  for (const r of merged) {
-    let snapped = r.startMs;
-    for (const t of slideChangeMs) {
-      if (t <= r.startMs && r.startMs - t <= config.chapterSnapBackMaxMs) {
-        snapped = Math.min(snapped, t);
-      }
-    }
-    r.startMs = snapped;
-  }
-
-  // 戻した結果また重なったものを再度つなぐ
-  const final: { startMs: number; endMs: number }[] = [];
-  for (const r of merged) {
-    const last = final[final.length - 1];
-    if (last && r.startMs <= last.endMs) {
-      last.endMs = Math.max(last.endMs, r.endMs);
-    } else {
-      final.push(r);
-    }
-  }
-  return final;
+  return lines;
 }
 
-/** 章の文字起こし: 全体文字起こしがあればそこから切り出し、無ければその区間だけ文字起こしする */
-async function chapterText(
-  lessonId: string,
-  segments: TranscriptSegment[] | null,
-  startMs: number,
-  endMs: number
-): Promise<string | null> {
-  if (segments && segments.length > 0) {
-    const text = segments
-      .filter((s) => s.endMs > startMs && s.startMs < endMs)
-      .map((s) => s.text)
-      .join('');
-    return text || null;
+function fmtClock(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+/** AIが使えない・失敗したときに、スライドの切れ目を使って機械的にブロックを作る */
+export function fallbackBlockStarts(intervals: SlideInterval[], durationMs: number): number[] {
+  if (durationMs <= 0) return [];
+  const starts = [0];
+  for (const iv of intervals) {
+    if (iv.startMs - starts[starts.length - 1] >= FALLBACK_BLOCK_MS) starts.push(iv.startMs);
   }
-  const t = await transcribeRange(lessonId, startMs, endMs);
-  return t?.text ?? null;
+  return starts;
 }
 
 export async function reviewVideoRoutes(app: FastifyInstance): Promise<void> {
@@ -138,157 +125,289 @@ export async function reviewVideoRoutes(app: FastifyInstance): Promise<void> {
     };
   });
 
-  // ---- 先生: 章を自動生成（既存の章は作り直す） ----
-  app.post('/api/lessons/:id/review-video/generate', { preHandler: requireTeacher }, async (req, reply) => {
+  // ---- 先生: PDF各ページの本文を保存（クライアントで抽出したものを受け取る） ----
+  // ブロック分けのAIにスライドの内容も参考にさせるために使う
+  app.put('/api/lessons/:id/pdf-text', { preHandler: requireTeacher }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const lesson = await ownLesson(req, reply, id);
     if (!lesson) return;
-    const durationMs = lesson.audioDurationMs ?? 0;
-    if (durationMs <= 0) return reply.code(409).send({ error: '録音がありません' });
-
-    // つまずいた箇所の核: ボタン反応（の前後）と、コメントの解析済みクリップ
-    const buttonRows = await db
-      .select({ tMs: schema.reactions.tMs })
-      .from(schema.reactions)
-      .where(and(eq(schema.reactions.lessonId, id), ne(schema.reactions.kind, 'comment')))
-      .orderBy(asc(schema.reactions.tMs));
-    const commentClipRows = await db
-      .select()
-      .from(schema.commentClips)
-      .where(eq(schema.commentClips.lessonId, id));
-    const commentRows = await db
-      .select({ tMs: schema.reactions.tMs, composeStartMs: schema.reactions.composeStartMs })
-      .from(schema.reactions)
-      .where(and(eq(schema.reactions.lessonId, id), eq(schema.reactions.kind, 'comment')));
-
-    const cores = [
-      ...buttonRows.map((r) => ({
-        startMs: Math.max(0, r.tMs - config.buttonClipBeforeMs),
-        endMs: r.tMs + config.buttonClipAfterMs,
-      })),
-      ...commentClipRows.map((c) => ({ startMs: c.clipStartMs, endMs: c.clipEndMs })),
-      // 未解析のコメントは入力開始時刻を核にする
-      ...commentRows
-        .filter(() => commentClipRows.length === 0)
-        .map((r) => {
-          const base = r.composeStartMs ?? r.tMs;
-          return { startMs: Math.max(0, base - config.buttonClipBeforeMs), endMs: r.tMs };
-        }),
-    ];
-    if (cores.length === 0) {
-      return reply.code(409).send({ error: '生徒の反応が無いため章を作れません' });
+    const { texts } = (req.body ?? {}) as { texts?: unknown };
+    if (!Array.isArray(texts) || texts.some((t) => typeof t !== 'string')) {
+      return reply.code(400).send({ error: 'PDFテキストが不正です' });
     }
+    const trimmed = (texts as string[]).map((t) => t.replace(/\s+/g, ' ').trim().slice(0, 4000));
+    await db.update(schema.lessons).set({ pdfPageTexts: trimmed }).where(eq(schema.lessons.id, id));
+    return { ok: true, pages: trimmed.length };
+  });
 
-    const slideEvents = await db
-      .select({ tMs: schema.timelineEvents.tMs })
-      .from(schema.timelineEvents)
-      .where(and(eq(schema.timelineEvents.lessonId, id), eq(schema.timelineEvents.type, 'slide_change')))
-      .orderBy(asc(schema.timelineEvents.tMs));
+  // ---- 先生: 授業全体をブロックに区分けする（既存のブロックは作り直す） ----
+  app.post(
+    '/api/lessons/:id/review-video/generate',
+    { preHandler: requireTeacher },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const lesson = await ownLesson(req, reply, id);
+      if (!lesson) return;
+      const durationMs = lesson.audioDurationMs ?? 0;
+      if (durationMs <= 0) return reply.code(409).send({ error: '録音がありません' });
 
-    const ranges = buildRanges(
-      cores,
-      slideEvents.map((e) => e.tMs),
-      durationMs
-    );
+      const intervals = await loadSlideIntervals(id, durationMs);
+      const segments = await ensureFullTranscript(id, durationMs);
 
-    // 全体文字起こしがあれば使い回し、無ければ章ごとに文字起こしする
-    const [fullRow] = await db
-      .select()
-      .from(schema.transcripts)
-      .where(and(eq(schema.transcripts.lessonId, id), eq(schema.transcripts.scope, 'full')))
-      .orderBy(desc(schema.transcripts.createdAt))
-      .limit(1);
-    const segments = (fullRow?.segments ?? null) as TranscriptSegment[] | null;
+      let starts: number[] = [];
+      let described: { title: string; description: string }[] | null = null;
 
-    await db.delete(schema.reviewChapters).where(eq(schema.reviewChapters.lessonId, id));
-    const chapters: ReviewChapter[] = [];
-    for (let i = 0; i < ranges.length; i++) {
-      const r = ranges[i];
-      const text = await chapterText(id, segments, r.startMs, r.endMs);
-      const desc = text ? await describeChapter(text) : null;
+      const lines = buildLines(segments, intervals);
+      if (lines.length > 0) {
+        const slideNoOf = await slideNumberMap(id);
+        const labelled = lines.map((l) => {
+          const no = l.slideId ? slideNoOf.get(l.slideId) : undefined;
+          return `[${fmtClock(l.startMs)}]${no ? `(スライド${no})` : ''} ${l.text.trim()}`;
+        });
+        const outline = ((lesson.pdfPageTexts ?? []) as string[])
+          .map((t, i) => (t ? `--- スライド${i + 1} ---` + '\n' + t : ''))
+          .filter(Boolean)
+          .join('\n');
+        const blocks = await segmentLessonIntoBlocks(labelled, outline);
+        if (blocks) {
+          starts = blocks.map((b) => lines[b.startNo - 1].startMs);
+          described = blocks.map((b) => ({ title: b.title, description: b.description }));
+        }
+      }
+      if (starts.length === 0) starts = fallbackBlockStarts(intervals, durationMs);
+      if (starts.length === 0) return reply.code(409).send({ error: 'ブロックを作れませんでした' });
+      starts[0] = 0; // 授業の最初から切れ目なく区分けする
+
+      await db.delete(schema.reviewChapters).where(eq(schema.reviewChapters.lessonId, id));
+      const chapters: ReviewChapter[] = [];
+      for (let i = 0; i < starts.length; i++) {
+        const startMs = starts[i];
+        const endMs = i + 1 < starts.length ? starts[i + 1] : durationMs;
+        if (endMs <= startMs) continue;
+        // AIが区分けできなかった（フォールバック）ときだけ、区間ごとに見出しを作る
+        let d = described?.[i] ?? null;
+        if (!d) {
+          const text = segments
+            .filter((s) => s.endMs > startMs && s.startMs < endMs)
+            .map((s) => s.text)
+            .join('');
+          d = text ? await describeChapter(text) : null;
+        }
+        const row = {
+          id: crypto.randomUUID(),
+          lessonId: id,
+          position: i + 1,
+          startMs,
+          endMs,
+          title: d?.title || `${Math.floor(startMs / 60_000)}分ごろの説明`,
+          description: d?.description || null,
+          included: true,
+          slideIds: slidesInRange(intervals, startMs, endMs),
+          note: null,
+        };
+        await db.insert(schema.reviewChapters).values(row);
+        chapters.push(rowToChapter({ ...row, createdAt: new Date() }));
+      }
+      return chapters;
+    }
+  );
+
+  // ---- 先生: ブロックを手で足す（AIが分けなかった場所を復習に入れたいとき） ----
+  app.post(
+    '/api/lessons/:id/review-video/chapters',
+    { preHandler: requireTeacher },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const lesson = await ownLesson(req, reply, id);
+      if (!lesson) return;
+      const body = (req.body ?? {}) as { startMs?: number; endMs?: number; title?: string };
+      const startMs = Math.max(0, Math.round(Number(body.startMs)));
+      const endMs = Math.round(Number(body.endMs));
+      if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+        return reply.code(400).send({ error: '範囲が不正です' });
+      }
+      const intervals = await loadSlideIntervals(id, lesson.audioDurationMs ?? endMs);
+      const existing = await listChapters(id);
       const row = {
         id: crypto.randomUUID(),
         lessonId: id,
-        position: i + 1,
-        startMs: r.startMs,
-        endMs: r.endMs,
-        title: desc?.title || `${Math.floor(r.startMs / 60_000)}分ごろの説明`,
-        description: desc?.description || null,
+        // 開始時刻の順に並ぶ位置へ入れる
+        position: existing.filter((c) => c.startMs <= startMs).length + 0.5,
+        startMs,
+        endMs,
+        title:
+          (body.title ?? '').trim().slice(0, 80) || `${Math.floor(startMs / 60_000)}分ごろの説明`,
+        description: null,
         included: true,
+        slideIds: slidesInRange(intervals, startMs, endMs),
+        note: null,
       };
       await db.insert(schema.reviewChapters).values(row);
-      chapters.push(rowToChapter({ ...row, createdAt: new Date() }));
+      return listChapters(id);
     }
-    return chapters;
-  });
+  );
 
-  // ---- 先生: 章の編集（公開する/しない・見出し・範囲） ----
-  app.patch('/api/lessons/:id/review-video/chapters/:chapterId', { preHandler: requireTeacher }, async (req, reply) => {
-    const { id, chapterId } = req.params as { id: string; chapterId: string };
-    const lesson = await ownLesson(req, reply, id);
-    if (!lesson) return;
-    const body = (req.body ?? {}) as Partial<Pick<ReviewChapter, 'included' | 'title' | 'startMs' | 'endMs'>>;
-    const patch: Record<string, unknown> = {};
-    if (typeof body.included === 'boolean') patch.included = body.included;
-    if (typeof body.title === 'string' && body.title.trim()) patch.title = body.title.trim().slice(0, 80);
-    if (typeof body.startMs === 'number' && body.startMs >= 0) patch.startMs = Math.round(body.startMs);
-    if (typeof body.endMs === 'number' && body.endMs > 0) patch.endMs = Math.round(body.endMs);
-    if (Object.keys(patch).length === 0) return reply.code(400).send({ error: '変更内容がありません' });
+  // ---- 先生: ブロックの編集（入れる/入れない・見出し・概要・補足文章・範囲） ----
+  app.patch(
+    '/api/lessons/:id/review-video/chapters/:chapterId',
+    { preHandler: requireTeacher },
+    async (req, reply) => {
+      const { id, chapterId } = req.params as { id: string; chapterId: string };
+      const lesson = await ownLesson(req, reply, id);
+      if (!lesson) return;
+      const body = (req.body ?? {}) as Partial<
+        Pick<ReviewChapter, 'included' | 'title' | 'description' | 'note' | 'startMs' | 'endMs'>
+      >;
+      const patch: Record<string, unknown> = {};
+      if (typeof body.included === 'boolean') patch.included = body.included;
+      if (typeof body.title === 'string' && body.title.trim()) {
+        patch.title = body.title.trim().slice(0, 80);
+      }
+      if (typeof body.description === 'string') {
+        patch.description = body.description.trim().slice(0, 600) || null;
+      }
+      if (typeof body.note === 'string') patch.note = body.note.trim().slice(0, 600) || null;
+      if (typeof body.startMs === 'number' && body.startMs >= 0) {
+        patch.startMs = Math.round(body.startMs);
+      }
+      if (typeof body.endMs === 'number' && body.endMs > 0) patch.endMs = Math.round(body.endMs);
+      if (Object.keys(patch).length === 0) {
+        return reply.code(400).send({ error: '変更内容がありません' });
+      }
 
-    await db
-      .update(schema.reviewChapters)
-      .set(patch)
-      .where(and(eq(schema.reviewChapters.id, chapterId), eq(schema.reviewChapters.lessonId, id)));
-    return listChapters(id);
-  });
+      // 範囲が変わったら、説明していたスライドも取り直す
+      if (patch.startMs !== undefined || patch.endMs !== undefined) {
+        const [cur] = await db
+          .select()
+          .from(schema.reviewChapters)
+          .where(
+            and(eq(schema.reviewChapters.id, chapterId), eq(schema.reviewChapters.lessonId, id))
+          );
+        if (!cur) return reply.code(404).send({ error: 'ブロックが見つかりません' });
+        const startMs = (patch.startMs as number | undefined) ?? cur.startMs;
+        const endMs = (patch.endMs as number | undefined) ?? cur.endMs;
+        if (endMs <= startMs) return reply.code(400).send({ error: '範囲が不正です' });
+        const intervals = await loadSlideIntervals(id, lesson.audioDurationMs ?? endMs);
+        patch.slideIds = slidesInRange(intervals, startMs, endMs);
+      }
 
-  // ---- 先生: 章の並び替え（idを新しい順序で受け取る） ----
-  app.post('/api/lessons/:id/review-video/reorder', { preHandler: requireTeacher }, async (req, reply) => {
-    const { id } = req.params as { id: string };
-    const lesson = await ownLesson(req, reply, id);
-    if (!lesson) return;
-    const { ids } = (req.body ?? {}) as { ids?: unknown };
-    if (!Array.isArray(ids) || ids.some((x) => typeof x !== 'string')) {
-      return reply.code(400).send({ error: '並び順が不正です' });
-    }
-    for (let i = 0; i < ids.length; i++) {
       await db
         .update(schema.reviewChapters)
-        .set({ position: i + 1 })
-        .where(and(eq(schema.reviewChapters.id, ids[i] as string), eq(schema.reviewChapters.lessonId, id)));
+        .set(patch)
+        .where(and(eq(schema.reviewChapters.id, chapterId), eq(schema.reviewChapters.lessonId, id)));
+      return listChapters(id);
     }
-    return listChapters(id);
-  });
+  );
+
+  // ---- 先生: ブロックを削除 ----
+  app.delete(
+    '/api/lessons/:id/review-video/chapters/:chapterId',
+    { preHandler: requireTeacher },
+    async (req, reply) => {
+      const { id, chapterId } = req.params as { id: string; chapterId: string };
+      const lesson = await ownLesson(req, reply, id);
+      if (!lesson) return;
+      await db
+        .delete(schema.reviewChapters)
+        .where(and(eq(schema.reviewChapters.id, chapterId), eq(schema.reviewChapters.lessonId, id)));
+      return listChapters(id);
+    }
+  );
+
+  // ---- 先生: ブロックの見出し・概要をAIで作り直す（手で足したブロック用） ----
+  app.post(
+    '/api/lessons/:id/review-video/chapters/:chapterId/describe',
+    { preHandler: requireTeacher },
+    async (req, reply) => {
+      const { id, chapterId } = req.params as { id: string; chapterId: string };
+      const lesson = await ownLesson(req, reply, id);
+      if (!lesson) return;
+      const [cur] = await db
+        .select()
+        .from(schema.reviewChapters)
+        .where(and(eq(schema.reviewChapters.id, chapterId), eq(schema.reviewChapters.lessonId, id)));
+      if (!cur) return reply.code(404).send({ error: 'ブロックが見つかりません' });
+
+      const segments = await ensureFullTranscript(id, lesson.audioDurationMs ?? cur.endMs);
+      const text = segments
+        .filter((s) => s.endMs > cur.startMs && s.startMs < cur.endMs)
+        .map((s) => s.text)
+        .join('');
+      if (!text) return reply.code(409).send({ error: 'この範囲の文字起こしがありません' });
+      const d = await describeChapter(text);
+      if (!d) return reply.code(409).send({ error: '概要を作れませんでした' });
+      await db
+        .update(schema.reviewChapters)
+        .set({ title: d.title.slice(0, 80), description: d.description.slice(0, 600) || null })
+        .where(eq(schema.reviewChapters.id, chapterId));
+      return listChapters(id);
+    }
+  );
+
+  // ---- 先生: ブロックの並び替え（idを新しい順序で受け取る） ----
+  app.post(
+    '/api/lessons/:id/review-video/reorder',
+    { preHandler: requireTeacher },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const lesson = await ownLesson(req, reply, id);
+      if (!lesson) return;
+      const { ids } = (req.body ?? {}) as { ids?: unknown };
+      if (!Array.isArray(ids) || ids.some((x) => typeof x !== 'string')) {
+        return reply.code(400).send({ error: '並び順が不正です' });
+      }
+      for (let i = 0; i < ids.length; i++) {
+        await db
+          .update(schema.reviewChapters)
+          .set({ position: i + 1 })
+          .where(
+            and(
+              eq(schema.reviewChapters.id, ids[i] as string),
+              eq(schema.reviewChapters.lessonId, id)
+            )
+          );
+      }
+      return listChapters(id);
+    }
+  );
 
   // ---- 先生: 生徒へ公開 / 公開停止 ----
-  app.post('/api/lessons/:id/review-video/publish', { preHandler: requireTeacher }, async (req, reply) => {
-    const { id } = req.params as { id: string };
-    const lesson = await ownLesson(req, reply, id);
-    if (!lesson) return;
-    const included = (await listChapters(id)).filter((c) => c.included);
-    if (included.length === 0) {
-      return reply.code(409).send({ error: '公開する章がありません' });
+  app.post(
+    '/api/lessons/:id/review-video/publish',
+    { preHandler: requireTeacher },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const lesson = await ownLesson(req, reply, id);
+      if (!lesson) return;
+      const included = (await listChapters(id)).filter((c) => c.included);
+      if (included.length === 0) {
+        return reply.code(409).send({ error: '公開するブロックがありません' });
+      }
+      const token = lesson.reviewShareToken ?? newShareToken();
+      const publishedAt = new Date();
+      await db
+        .update(schema.lessons)
+        .set({ reviewShareToken: token, reviewPublishedAt: publishedAt })
+        .where(eq(schema.lessons.id, id));
+      return { shareToken: token, publishedAt: publishedAt.toISOString() };
     }
-    const token = lesson.reviewShareToken ?? newShareToken();
-    const publishedAt = new Date();
-    await db
-      .update(schema.lessons)
-      .set({ reviewShareToken: token, reviewPublishedAt: publishedAt })
-      .where(eq(schema.lessons.id, id));
-    return { shareToken: token, publishedAt: publishedAt.toISOString() };
-  });
+  );
 
-  app.post('/api/lessons/:id/review-video/unpublish', { preHandler: requireTeacher }, async (req, reply) => {
-    const { id } = req.params as { id: string };
-    const lesson = await ownLesson(req, reply, id);
-    if (!lesson) return;
-    // トークンは破棄する（再公開時は新しいURLになる）
-    await db
-      .update(schema.lessons)
-      .set({ reviewShareToken: null, reviewPublishedAt: null })
-      .where(eq(schema.lessons.id, id));
-    return { shareToken: null, publishedAt: null };
-  });
+  app.post(
+    '/api/lessons/:id/review-video/unpublish',
+    { preHandler: requireTeacher },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const lesson = await ownLesson(req, reply, id);
+      if (!lesson) return;
+      // トークンは破棄する（再公開時は新しいURLになる）
+      await db
+        .update(schema.lessons)
+        .set({ reviewShareToken: null, reviewPublishedAt: null })
+        .where(eq(schema.lessons.id, id));
+      return { shareToken: null, publishedAt: null };
+    }
+  );
 
   // ================= 生徒向け公開ページ（ログイン不要・トークンのみ） =================
   // 生徒の反応・コメント・氏名は一切返さない

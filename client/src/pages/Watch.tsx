@@ -201,6 +201,9 @@ export default function Watch() {
             pointer={view.pointer && view.pointer.slideId === view.slideId ? view.pointer : null}
           />
 
+          {/* 先生がこの章に足した補足文章 */}
+          {chapter?.note && <p className="watch-note">{chapter.note}</p>}
+
           <div className="player">
             <button
               className="btn primary"

@@ -148,8 +148,10 @@ export type CommentClip = {
   analyzed: boolean;
 };
 
-// ---- 復習動画（章立て再生ページ） ----
-// 生徒がつまずいた箇所を核に、授業の流れが追えるよう前後の説明もつないだ「章」。
+// ---- 復習動画（ブロック単位の再生ページ） ----
+// 先生の発言（文字起こし）とPDFの内容をAIが読み、授業全体を話題の切れ目で
+// 「ブロック」に区分けする。各ブロックはそれだけを見ても内容が分かる単位で、
+// 先生は復習させたいブロックだけを選んで公開する。
 // 動画ファイルは作らず、録音とスライド・書き込みを同期再生することで動画として機能する。
 export type ReviewChapter = {
   id: string;
@@ -158,8 +160,32 @@ export type ReviewChapter = {
   endMs: number;
   title: string;
   description: string | null;
-  /** 先生が章ごとに公開する・しないを選べる */
+  /** 先生が復習動画に入れる・入れないを選べる */
   included: boolean;
+  /** このブロックの間に説明していたスライド（概要と一緒に表示する。複数可） */
+  slideIds: string[];
+  /** 先生が映像内に足す補足文章（生徒の復習ページに表示される） */
+  note: string | null;
+};
+
+// ---- スライド一覧タブ ----
+// コメント・ボタン反応を「最も関連するであろうスライド」に振り分けた集計。
+// コメントはAIが特定した対象発言の時刻、未解析なら入力開始時のスライドに振り分ける。
+export type SlideStat = {
+  slideId: string;
+  /** 1始まりの通し番号（白紙挿入を含む授業内での並び） */
+  slideNo: number;
+  kind: 'pdf_page' | 'blank';
+  pdfPageIndex: number | null;
+  /** 表示していた時間の合計と回数（行ったり来たりした場合は合算される） */
+  shownMs: number;
+  showCount: number;
+  firstShownMs: number | null;
+  /** このスライドを説明していたブロック */
+  chapterIds: string[];
+  commentCount: number;
+  buttonCount: number;
+  kinds: ReactionCounts;
 };
 
 export type ReviewVideo = {

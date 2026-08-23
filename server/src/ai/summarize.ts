@@ -120,6 +120,85 @@ export async function locateCommentTarget(
   return idx;
 }
 
+/** LLMの返答からJSON配列を取り出す（```json フェンスや前置きが付いても拾えるように） */
+function parseJsonArray(raw: string): unknown[] | null {
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const body = fenced ? fenced[1] : raw;
+  const start = body.indexOf('[');
+  const end = body.lastIndexOf(']');
+  if (start < 0 || end <= start) return null;
+  try {
+    const parsed = JSON.parse(body.slice(start, end + 1));
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export type LessonBlock = {
+  /** このブロックが始まる発言の番号（1始まり。渡した lines の並びに対応） */
+  startNo: number;
+  title: string;
+  description: string;
+};
+
+/**
+ * 復習動画: 授業全体をブロックに区分けする。
+ * 先生の発言（時刻・表示スライド付き）とPDF各ページの本文をAIに渡し、
+ * 話題の切れ目で区切らせる。区切りの数と長さはAIに任せる（一律の時間で割らない）。
+ * それぞれのブロックだけを見ても内容が分かるよう、前提の説明を同じブロックに含めさせる。
+ */
+export async function segmentLessonIntoBlocks(
+  lines: string[],
+  slideOutline: string
+): Promise<LessonBlock[] | null> {
+  if (lines.length === 0) return null;
+  const numbered = lines.map((l, i) => `${i + 1}. ${l}`).join('\n');
+  const result = await callSummaryLLM(
+    [
+      'あなたは授業の録画を復習用に編集するアシスタントです。',
+      '番号付きの先生の発言（時系列・表示中のスライド番号つき）と、スライドPDFの本文を読み、授業全体を話題のまとまりごとのブロックに区分けしてください。',
+      '',
+      '守ること:',
+      '- 区切りは話題が切り替わる位置に置く。一定の時間で機械的に割らない。ブロックの数も長さもばらばらで構わない。',
+      '- そのブロックだけを見た生徒が内容を理解できるようにする。前提となる説明や例題の導入は、それを使う説明と同じブロックに入れる。',
+      '- 授業の最初から最後まで、すき間なく区分けする。最初のブロックは必ず1番の発言から始める。',
+      '- 見出しは15文字以内。概要は、そのブロックで何をどう説明しているかが分かる2〜3文。',
+      '- 概要は文字起こしとスライドに書かれている内容だけに基づいて書く。あなた自身の知識で話題を解説してはいけない。',
+      '- 生徒の反応・評価・改善提案には一切触れない。',
+      '',
+      '出力はJSON配列だけを返してください。各要素は {"startNo": 発言番号, "title": "見出し", "description": "概要"} の形式です。',
+    ].join('\n'),
+    `スライドPDFの本文:
+${slideOutline.slice(0, 20_000) || '(取得できませんでした)'}
+
+先生の発言:
+${numbered.slice(0, 90_000)}`,
+    4000
+  );
+  if (!result) return null;
+  const arr = parseJsonArray(result.text);
+  if (!arr) return null;
+
+  const blocks: LessonBlock[] = [];
+  for (const item of arr) {
+    const o = item as Record<string, unknown>;
+    const startNo = Number(o.startNo);
+    if (!Number.isFinite(startNo) || startNo < 1 || startNo > lines.length) continue;
+    const title = typeof o.title === 'string' ? o.title.trim().slice(0, 40) : '';
+    const description = typeof o.description === 'string' ? o.description.trim().slice(0, 400) : '';
+    if (!title) continue;
+    blocks.push({ startNo: Math.round(startNo), title, description });
+  }
+  if (blocks.length === 0) return null;
+
+  // 昇順に整え、同じ位置から始まる重複を落とし、先頭は必ず授業の最初にする
+  blocks.sort((a, b) => a.startNo - b.startNo);
+  const deduped = blocks.filter((b, i) => i === 0 || b.startNo > blocks[i - 1].startNo);
+  deduped[0].startNo = 1;
+  return deduped;
+}
+
 /**
  * 復習動画の章: その区間の文字起こしから、見出しと一言説明を作る。
  * 生徒が見るページに出るため、誰がどう反応したかには一切触れさせない。

@@ -689,6 +689,139 @@ textarea:focus {
   margin-right: auto;
 }
 
+.chapter-actions {
+  flex-wrap: wrap;
+}
+
+.chapter-trim {
+  border-top: 1px dashed var(--border);
+  padding-top: 6px;
+}
+
+.chapter-trim .btn {
+  padding: 2px 8px;
+  font-size: 0.8rem;
+}
+
+.chapter-field {
+  display: block;
+  margin-top: 6px;
+}
+
+.chapter-textarea {
+  width: 100%;
+  margin-top: 2px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 0.88rem;
+  resize: vertical;
+}
+
+/* ブロックの概要と一緒に並べる、説明していたスライド */
+.chapter-slides {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0;
+}
+
+.slide-thumb {
+  position: relative;
+  display: block;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #fff;
+  overflow: hidden;
+  line-height: 0;
+}
+
+button.slide-thumb {
+  cursor: pointer;
+}
+
+button.slide-thumb:hover {
+  border-color: var(--primary);
+}
+
+.slide-thumb-canvas {
+  display: block;
+  width: 108px;
+  height: auto;
+}
+
+.slide-thumb-no {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  padding: 0 4px;
+  background: rgba(31, 41, 55, 0.75);
+  color: #fff;
+  font-size: 0.7rem;
+  line-height: 1.4;
+}
+
+/* ---- スライド一覧タブ ---- */
+.slide-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.slide-controls label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.85rem;
+}
+
+.slide-controls select {
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 0.85rem;
+}
+
+.slide-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.slide-row-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.slide-chapters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.slide-chapter-pill {
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+/* 先生が映像に足した補足文章（生徒の復習ページ） */
+.watch-note {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-left: 3px solid var(--primary);
+  background: var(--panel);
+  border-radius: 0 6px 6px 0;
+  font-size: 0.9rem;
+  white-space: pre-wrap;
+}
+
 .watch-url {
   flex: 1;
   min-width: 0;

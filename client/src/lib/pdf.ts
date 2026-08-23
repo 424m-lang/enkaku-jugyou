@@ -44,6 +44,30 @@ export class PdfCache {
     return canvas.transferToImageBitmap();
   }
 
+  /**
+   * 全ページの本文テキスト。復習動画のブロック分けで、先生の発言と一緒に
+   * スライドの内容もAIに参考にさせるために使う（サーバへ送って保存する）。
+   */
+  async allPageTexts(): Promise<string[]> {
+    const out: string[] = [];
+    for (let i = 0; i < this.doc.numPages; i++) {
+      try {
+        const page = await this.doc.getPage(i + 1);
+        const content = await page.getTextContent();
+        out.push(
+          content.items
+            .map((it) => ('str' in it ? it.str : ''))
+            .join(' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+        );
+      } catch {
+        out.push(''); // 画像だけのページなど
+      }
+    }
+    return out;
+  }
+
   /** バックグラウンドで全ページを順に描画しておく（プリロード） */
   async preloadAll(): Promise<void> {
     for (let i = 0; i < this.doc.numPages; i++) {

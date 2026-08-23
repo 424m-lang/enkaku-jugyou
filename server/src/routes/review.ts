@@ -1,11 +1,13 @@
 import crypto from 'node:crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { and, asc, desc, eq, ne } from 'drizzle-orm';
-import type { ButtonClip, CommentClip, LessonStats, ReactionCounts } from '@shared';
+import type { ButtonClip, CommentClip, LessonStats, ReactionCounts, SlideStat } from '@shared';
 import { config } from '../config';
 import { db, schema } from '../db';
 import { requireTeacher, teacherIdOf } from '../auth';
 import { clusterReactions } from '../live/reactions';
+import { loadSlides } from '../live/liveSessions';
+import { loadSlideIntervals, slideAt } from '../slideTimeline';
 import { transcribeRange } from '../ai/transcribe';
 import { locateCommentTarget, summarizeLesson } from '../ai/summarize';
 
@@ -222,6 +224,93 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
       });
     }
     return listCommentClips(id);
+  });
+
+  // ---- 「スライド」タブ: スライドごとの表示時間・所属ブロック・反応数 ----
+  // コメントとボタン反応を「最も関連するであろうスライド」へ振り分けて集計する。
+  // コメントはAIが対象の発言を特定済みならその時刻のスライド、未解析なら入力開始時のスライド。
+  app.get('/api/lessons/:id/slide-stats', { preHandler: requireTeacher }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const lesson = await ownLesson(req, reply, id);
+    if (!lesson) return;
+
+    const durationMs = lesson.audioDurationMs ?? 0;
+    const slides = await loadSlides(id);
+    const intervals = await loadSlideIntervals(id, durationMs);
+    const chapters = await db
+      .select({ id: schema.reviewChapters.id, slideIds: schema.reviewChapters.slideIds })
+      .from(schema.reviewChapters)
+      .where(eq(schema.reviewChapters.lessonId, id));
+    const reactions = await db
+      .select({
+        tMs: schema.reactions.tMs,
+        kind: schema.reactions.kind,
+        slideId: schema.reactions.slideId,
+      })
+      .from(schema.reactions)
+      .where(eq(schema.reactions.lessonId, id));
+    const clips = await db
+      .select({
+        reactionId: schema.commentClips.reactionId,
+        clipStartMs: schema.commentClips.clipStartMs,
+        clipEndMs: schema.commentClips.clipEndMs,
+      })
+      .from(schema.commentClips)
+      .where(eq(schema.commentClips.lessonId, id));
+    const commentRowsForSlide = await db
+      .select({ id: schema.reactions.id, tMs: schema.reactions.tMs, slideId: schema.reactions.slideId })
+      .from(schema.reactions)
+      .where(and(eq(schema.reactions.lessonId, id), eq(schema.reactions.kind, 'comment')));
+    const clipByReaction = new Map(clips.map((c) => [c.reactionId, c]));
+
+    const stats = new Map<string, SlideStat>();
+    slides.forEach((s, i) => {
+      stats.set(s.id, {
+        slideId: s.id,
+        slideNo: i + 1,
+        kind: s.kind,
+        pdfPageIndex: s.pdfPageIndex,
+        shownMs: 0,
+        showCount: 0,
+        firstShownMs: null,
+        chapterIds: [],
+        commentCount: 0,
+        buttonCount: 0,
+        kinds: {},
+      });
+    });
+
+    for (const iv of intervals) {
+      const st = stats.get(iv.slideId);
+      if (!st) continue;
+      st.shownMs += iv.endMs - iv.startMs;
+      st.showCount += 1;
+      if (st.firstShownMs === null) st.firstShownMs = iv.startMs;
+    }
+    for (const ch of chapters) {
+      for (const slideId of ch.slideIds ?? []) stats.get(slideId)?.chapterIds.push(ch.id);
+    }
+
+    // ボタン反応: 記録されたスライド、無ければ押された時刻に映していたスライド
+    for (const r of reactions) {
+      if (r.kind === 'comment') continue;
+      const slideId = r.slideId ?? slideAt(intervals, r.tMs);
+      const st = slideId ? stats.get(slideId) : undefined;
+      if (!st) continue;
+      st.buttonCount += 1;
+      st.kinds[r.kind] = (st.kinds[r.kind] ?? 0) + 1;
+    }
+    // コメント: AIが特定した対象発言の位置を優先する
+    for (const c of commentRowsForSlide) {
+      const clip = clipByReaction.get(c.id);
+      const at = clip ? Math.min(clip.clipStartMs + 10_000, clip.clipEndMs) : null;
+      const slideId = (at !== null ? slideAt(intervals, at) : null) ?? c.slideId ?? slideAt(intervals, c.tMs);
+      const st = slideId ? stats.get(slideId) : undefined;
+      if (!st) continue;
+      st.commentCount += 1;
+    }
+
+    return [...stats.values()];
   });
 
   // ---- クリップ一覧（反応クラスタ + 既存の文字起こし/提案） ----
