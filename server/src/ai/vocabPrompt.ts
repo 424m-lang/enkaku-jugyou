@@ -10,10 +10,15 @@ import { db, schema } from '../db';
  * promptは長すぎると無視されたり悪影響が出るため、短く保つ。
  */
 
-/** promptに詰め込む上限（Whisperのprompt上限に対して十分に短く保つ） */
-const MAX_PROMPT_CHARS = 200;
+/**
+ * promptに詰め込む上限。
+ * ヒントは長いほど、実際の発話まで引っ張ってしまう副作用が出る
+ * （検証では「今回の授業」が、ヒントにあった「機械学習」に引かれて
+ * 「機械の授業」と誤認識された）。効く語だけを短く渡す。
+ */
+const MAX_PROMPT_CHARS = 140;
 /** 拾う用語の最大数 */
-const MAX_TERMS = 40;
+const MAX_TERMS = 15;
 
 // スライドに頻出するが認識のヒントにならない一般語（枠を専門用語に譲る）
 const STOP_WORDS = new Set([
@@ -36,12 +41,25 @@ export function extractTerms(text: string): string[] {
     const term = m[0];
     // 数字だけ・長すぎる塊・一般語は用語のヒントにならない
     if (term.length > 20 || /^[0-9ー]+$/.test(term) || STOP_WORDS.has(term)) continue;
+    if (!isWorthHinting(term)) continue;
     counts.set(term, (counts.get(term) ?? 0) + 1);
   }
   return [...counts.entries()]
     .sort((a, b) => b[1] - a[1] || b[0].length - a[0].length)
     .slice(0, MAX_TERMS)
     .map(([term]) => term);
+}
+
+/**
+ * ヒントとして渡す価値がある語か。
+ * Whisperはありふれた日本語（「基礎」「定義」「変換」）はもともと正しく聞き取るので、
+ * 渡しても精度は上がらず、実際の発話を引っ張る副作用だけが増える。
+ * 聞き間違えられやすいのは固有名詞・カタカナ語・分野特有の複合語なので、そこに絞る。
+ */
+function isWorthHinting(term: string): boolean {
+  if (/[ァ-ヶ]/.test(term)) return true; // カタカナを含む（外来語・専門語）
+  if (/[A-Za-z]/.test(term)) return true; // 英字を含む（PBL など）
+  return term.length >= 3; // 漢字だけなら3文字以上（「矩形波」は残し「基礎」は落とす）
 }
 
 /**
@@ -97,6 +115,26 @@ export function stripVocabEcho(
     // ヒント文の一部をそのまま写したもの。短い一致は本当の発言かもしれないので残す
     return !(t.length >= ECHO_MIN_CHARS && hint.includes(t));
   });
+}
+
+/** 同じ文がこの回数以上くり返されたら、聞き取りではなくWhisperの空回りとみなす */
+const LOOP_MIN_REPEATS = 3;
+/** くり返し判定にかける最短の長さ（「はい」などの短い相づちは本当にくり返される） */
+const LOOP_MIN_CHARS = 8;
+
+/**
+ * 同じ文がくり返し出力されたセグメントを取り除く。
+ * Whisperは声の無い区間でしばしば空回りし、同じ文を延々と並べる
+ * （検証では暗騒音10分に対して同じ文が20回並んだ）。
+ * 授業で同じ文をそのまま3回以上くり返すことはまず無いので、安全に落とせる。
+ */
+export function dropLoopedSegments(segments: TranscriptSegment[]): TranscriptSegment[] {
+  const counts = new Map<string, number>();
+  for (const seg of segments) {
+    const t = normalize(seg.text);
+    if (t.length >= LOOP_MIN_CHARS) counts.set(t, (counts.get(t) ?? 0) + 1);
+  }
+  return segments.filter((seg) => (counts.get(normalize(seg.text)) ?? 0) < LOOP_MIN_REPEATS);
 }
 
 // 授業ごとに1回作れば十分なのでキャッシュする（中身が空のときは次回また作り直す）
