@@ -98,6 +98,22 @@ export async function loadLessonPdf(lessonId: string): Promise<PdfCache | null> 
   });
 }
 
+/**
+ * PDF各ページの本文を抽出してサーバへ保存する（先生の画面からのみ呼ぶ）。
+ * サーバ側では、文字起こしに渡す用語のヒントと、復習動画のブロック分けに使う。
+ * 何度呼んでも同じ結果を上書きするだけなので、失敗しても無視してよい。
+ */
+export async function savePdfTexts(lessonId: string, cache: PdfCache): Promise<void> {
+  const texts = await cache.allPageTexts();
+  if (texts.every((t) => !t)) return; // 画像だけのPDFは送らない
+  await fetch(`/api/lessons/${lessonId}/pdf-text`, {
+    method: 'PUT',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ texts }),
+  });
+}
+
 /** 復習ページ（ログイン不要・公開トークン）のPDF */
 export async function loadWatchPdf(token: string): Promise<PdfCache | null> {
   return loadPdfFrom(`/api/watch/${encodeURIComponent(token)}/pdf`);

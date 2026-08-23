@@ -11,6 +11,7 @@ import { api, ApiError } from '../../lib/api';
 import { startAudioBroadcast } from '../../lib/audio';
 import { applyDrawingEvent } from '../../lib/strokes';
 import { useLessonLive } from '../../lib/useLessonLive';
+import { savePdfTexts } from '../../lib/pdf';
 import { fmtClock } from '../../lib/format';
 import { makeReactionMeta } from '../../lib/reactionMeta';
 import SlideCanvas, { type DrawingTool } from '../../components/SlideCanvas';
@@ -163,6 +164,15 @@ export default function Teach() {
       disposed = true;
     };
   }, [lessonId, navigate, setTitle, setButtons, setStatus]);
+
+  // スライドの本文をサーバへ渡しておく。授業中の文字起こしに用語のヒントとして使われ、
+  // 専門用語の認識が崩れにくくなる（授業後の復習動画のブロック分けにも使う）
+  useEffect(() => {
+    if (!lessonId || !pdf) return;
+    void savePdfTexts(lessonId, pdf).catch(() => {
+      /* テキストを持たないPDFもあるので失敗は無視 */
+    });
+  }, [lessonId, pdf]);
 
   // 画面を離れるときはマイクを止める
   useEffect(() => {

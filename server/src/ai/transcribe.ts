@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import type { TranscriptSegment } from '@shared';
 import { config } from '../config';
 import { extractRangeToWav } from './audio';
+import { lessonVocabPrompt } from './vocabPrompt';
 
 function fmtMs(ms: number): string {
   const s = Math.floor(ms / 1000);
@@ -28,7 +29,9 @@ export async function transcribeRange(
     const wavPath = await extractRangeToWav(lessonId, startMs, endMs);
     if (!wavPath) return null;
     try {
-      const { text, segments } = await transcribeWithWhisper(wavPath);
+      // スライドの用語をヒントとして渡し、その授業の専門用語が崩れにくくする
+      const vocab = await lessonVocabPrompt(lessonId);
+      const { text, segments } = await transcribeWithWhisper(wavPath, vocab);
       // Whisperのタイムスタンプは切り出し範囲の先頭基準 → 授業タイムラインへ補正
       const adjusted = segments?.map((s) => ({
         startMs: s.startMs + startMs,
@@ -67,15 +70,20 @@ export async function transcribeRange(
 }
 
 async function transcribeWithWhisper(
-  wavPath: string
+  wavPath: string,
+  vocabPrompt = ''
 ): Promise<{ text: string; segments: TranscriptSegment[] | null }> {
   if (!config.openaiApiKey) throw new Error('OPENAI_API_KEY が設定されていません');
   const form = new FormData();
   const buf = await fs.promises.readFile(wavPath);
   form.append('file', new Blob([buf], { type: 'audio/wav' }), 'clip.wav');
+  // 発言ごとのタイムスタンプ（segments）が返るのは whisper-1 だけ。
+  // このアプリはコメントの位置特定・ブロックの区切り・スライドとの対応付けを
+  // すべてこのタイムスタンプに依存しているため、他の文字起こしモデルには替えられない
   form.append('model', 'whisper-1');
   form.append('language', 'ja');
   form.append('response_format', 'verbose_json');
+  if (vocabPrompt) form.append('prompt', vocabPrompt);
 
   const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
     method: 'POST',

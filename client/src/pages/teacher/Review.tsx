@@ -14,7 +14,7 @@ import type {
   TimelineEvent,
 } from '@shared';
 import { api, ApiError } from '../../lib/api';
-import { loadLessonPdf, type PdfCache } from '../../lib/pdf';
+import { loadLessonPdf, savePdfTexts, type PdfCache } from '../../lib/pdf';
 import { applyDrawingEvent, type StrokesBySlide } from '../../lib/strokes';
 import { fmtClock } from '../../lib/format';
 import { makeReactionMeta } from '../../lib/reactionMeta';
@@ -104,18 +104,11 @@ export default function Review() {
         const cache = await loadLessonPdf(lessonId);
         setPdf(cache);
         // ブロック分けのAIにスライドの内容も渡せるよう、本文を抽出して保存しておく
+        // （授業中に保存済みなら上書きするだけ。過去の授業のための取りこぼし対策）
         if (cache) {
-          void cache
-            .allPageTexts()
-            .then((texts) =>
-              api(`/api/lessons/${lessonId}/pdf-text`, {
-                method: 'PUT',
-                body: JSON.stringify({ texts }),
-              })
-            )
-            .catch(() => {
-              /* テキストを持たないPDFもあるので失敗は無視 */
-            });
+          void savePdfTexts(lessonId, cache).catch(() => {
+            /* テキストを持たないPDFもあるので失敗は無視 */
+          });
         }
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) navigate('/login');
