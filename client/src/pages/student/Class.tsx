@@ -11,6 +11,13 @@ import SlideCanvas from '../../components/SlideCanvas';
 import TaskBar from '../../components/TaskBar';
 import PollBar, { PollResultView } from '../../components/PollBar';
 
+/**
+ * 音声チャンクがこの時間届かなければ「届いていない」と判断する。
+ * チャンクは0.5秒ごとに来るので余裕はあるが、短すぎると一瞬の詰まりで
+ * 警告が点滅して落ち着かないため、数秒待ってから出す。
+ */
+const AUDIO_STALL_MS = 5000;
+
 export default function Class() {
   const navigate = useNavigate();
   const lessonId = sessionStorage.getItem('lessonId');
@@ -23,6 +30,9 @@ export default function Class() {
   const [audioAllowed, setAudioAllowed] = useState<AudioMode>('on');
   // この端末が先生の音声形式を再生できない場合。無音の原因が分かるように表に出す
   const [mediaUnsupported, setMediaUnsupported] = useState(false);
+  // 音声を有効にしたのに届いていない状態
+  const [audioStalled, setAudioStalled] = useState(false);
+  const lastAudioAtRef = useRef<number | null>(null);
 
   // スライドを見ているだけの時間が長く、触らないので端末が自動ロックされやすい
   useWakeLock();
@@ -95,8 +105,14 @@ export default function Class() {
       });
       socket.on('pointer', (p) => setPointer(p));
       socket.on('slide_change', () => setPointer(null));
-      socket.on('audio_init', (chunk, _seq, mime) => playerRef.current?.reset(chunk, mime));
-      socket.on('audio_chunk', (chunk) => playerRef.current?.push(chunk));
+      socket.on('audio_init', (chunk, _seq, mime) => {
+        lastAudioAtRef.current = Date.now();
+        playerRef.current?.reset(chunk, mime);
+      });
+      socket.on('audio_chunk', (chunk) => {
+        lastAudioAtRef.current = Date.now();
+        playerRef.current?.push(chunk);
+      });
       socket.on('audio_permission', (p) => setAudioAllowed(p.audio));
 
       // カメラ映像は、先生が「遠隔の生徒にも送る」を選んだときだけ届く
@@ -122,6 +138,26 @@ export default function Class() {
       videoPlayerRef.current?.dispose();
     };
   }, []);
+
+  // ---- 音声が本当に届いているかの監視 ----
+  // 先生のマイクが許可されなかった場合、先生画面には「マイクエラー」が出るが
+  // 生徒側は無言のまま無音になり、原因が分からない。マイク不調でも通信の問題でも
+  // 生徒にとっては同じ「届いていない」なので、受信が途切れたことをそのまま伝える。
+  useEffect(() => {
+    const watching = status === 'live' && audioAllowed === 'on' && audioEnabled && !mediaUnsupported;
+    if (!watching) {
+      setAudioStalled(false);
+      return;
+    }
+    // 有効にした時点を起点にする（一度も届かない場合もここから数える）
+    if (lastAudioAtRef.current === null) lastAudioAtRef.current = Date.now();
+    const timer = setInterval(() => {
+      const last = lastAudioAtRef.current;
+      // 切断中は「再接続中...」が出ているので、そちらに任せて二重に出さない
+      setAudioStalled(!!last && connected && Date.now() - last > AUDIO_STALL_MS);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [status, audioAllowed, audioEnabled, mediaUnsupported, connected]);
 
   // 音声の出し分け。映像が届いているときは映像側の音を鳴らし、音声のみの
   // ストリームはミュートする（同じ声が二重に鳴らないように）。
@@ -237,6 +273,11 @@ export default function Class() {
           {status === 'live' && audioAllowed === 'on' && mediaUnsupported && (
             <span className="chip chip-warn" title="この端末のブラウザが対応していません">
               ⚠ この端末では音声を再生できません
+            </span>
+          )}
+          {status === 'live' && audioAllowed === 'on' && audioStalled && (
+            <span className="chip chip-warn" title="先生のマイクか、通信の問題と思われます">
+              ⚠ 先生の音声が届いていません
             </span>
           )}
           {status === 'live' && audioAllowed === 'on' && !audioEnabled && !mediaUnsupported && (
