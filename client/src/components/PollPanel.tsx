@@ -6,6 +6,8 @@ type Props = {
   polls: Poll[];
   results: Record<string, PollResults>;
   openPollId: string | null;
+  /** いま生徒に結果を見せている設問（無ければ null） */
+  revealedPollId: string | null;
   status: LessonStatus;
   onSave: (p: {
     id?: string;
@@ -19,27 +21,34 @@ type Props = {
   onOpen: (pollId: string) => void;
   /** 同じ質問をもう一度聞く。前回の回答を上書きせず、別の回として集計する */
   onRepeat: (poll: Poll) => void;
-  onClose: (pollId: string, reveal: boolean) => void;
+  onClose: (pollId: string) => void;
+  /** 締め切ったあとに結果を出す・引っ込める */
+  onReveal: (pollId: string, reveal: boolean) => void;
 };
 
 const TYPES: PollType[] = ['single', 'multiple', 'scale', 'text'];
 
 /**
- * 先生画面のアンケートパネル（動作確認できる最小限。表示の作り込みは後で調整する）。
+ * 先生画面のアンケートパネル。
  *
  * 集計は横棒で出し、未回答をグレーとして必ず含める。円グラフだと「回答済みの内訳」
  * しか描けず、12人中3人しか答えていない状態の67%を見誤るため。
+ *
+ * 締め切りと「結果を見せる」を分けてあるのは、見せるかどうかは集計を見てからでないと
+ * 決められないため。割れ方によっては見せないほうがよい質問がある。
  */
 export default function PollPanel({
   polls,
   results,
   openPollId,
+  revealedPollId,
   status,
   onSave,
   onDelete,
   onOpen,
   onRepeat,
   onClose,
+  onReveal,
 }: Props) {
   const [editing, setEditing] = useState(false);
   const [question, setQuestion] = useState('');
@@ -77,9 +86,9 @@ export default function PollPanel({
   };
 
   return (
-    <div className="card poll-panel">
+    <div className="poll-panel">
       <div className="task-panel-head">
-        <h3>アンケート</h3>
+        <span className="classroom-label">設問</span>
         <button className="btn-link" onClick={() => (editing ? reset() : setEditing(true))}>
           {editing ? 'やめる' : '＋ 設問を作る'}
         </button>
@@ -167,6 +176,7 @@ export default function PollPanel({
         {polls.map((p) => {
           const r = results[p.id];
           const isOpen = p.id === openPollId;
+          const isRevealed = p.id === revealedPollId;
           return (
             <li key={p.id} className={isOpen ? 'poll-item open' : 'poll-item'}>
               <div className="poll-item-head">
@@ -176,14 +186,9 @@ export default function PollPanel({
 
               <div className="poll-item-actions">
                 {isOpen ? (
-                  <>
-                    <button className="btn" onClick={() => onClose(p.id, false)}>
-                      締め切る
-                    </button>
-                    <button className="btn primary" onClick={() => onClose(p.id, true)}>
-                      結果を見せて締め切る
-                    </button>
-                  </>
+                  <button className="btn primary" onClick={() => onClose(p.id)}>
+                    締め切る
+                  </button>
                 ) : (
                   <>
                     <button
@@ -200,12 +205,32 @@ export default function PollPanel({
                     >
                       {p.status === 'closed' ? 'もう一度聞く' : '開始'}
                     </button>
+                    {p.status === 'closed' && p.type !== 'text' && (
+                      <button
+                        className={isRevealed ? 'btn' : 'btn primary'}
+                        onClick={() => onReveal(p.id, !isRevealed)}
+                        disabled={status !== 'live'}
+                        title={
+                          status !== 'live'
+                            ? '授業中だけ生徒の画面に出せます'
+                            : '生徒の画面に集計の棒グラフを出します'
+                        }
+                      >
+                        {isRevealed ? '結果を引っ込める' : '結果を生徒に見せる'}
+                      </button>
+                    )}
                     <button className="btn-link danger" onClick={() => onDelete(p.id)}>
                       削除
                     </button>
                   </>
                 )}
               </div>
+              {p.status === 'closed' && p.type === 'text' && (
+                <p className="muted small">
+                  自由記述は誰が書いたか分かってしまうため、生徒には見せられません
+                </p>
+              )}
+              {isRevealed && <p className="muted small">いま生徒の画面に結果が出ています</p>}
 
               {r && (r.answered > 0 || isOpen) && (
                 <>

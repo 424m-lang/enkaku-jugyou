@@ -8,7 +8,7 @@ import type {
   PollResults,
   PublicPoll,
 } from '@shared';
-import { applyTaskChange } from '@shared';
+import { applyTaskChange, visibleReactionButtons } from '@shared';
 import { LiveAudioPlayer } from '../../lib/audio';
 import { LiveVideoPlayer } from '../../lib/camera';
 import { useWakeLock } from '../../lib/useWakeLock';
@@ -29,6 +29,9 @@ const AUDIO_STALL_MS = 5000;
 /** ライブのバンドは直近しか出さないので、手元に持つ行数も少なくてよい */
 const CAPTION_KEEP_LINES = 20;
 
+/** 字幕を消したかどうかの記憶。端末ごとの好みなので授業を跨いで残す */
+const CAPTIONS_HIDDEN_KEY = 'captionsHidden';
+
 export default function Class() {
   const navigate = useNavigate();
   const lessonId = sessionStorage.getItem('lessonId');
@@ -44,10 +47,21 @@ export default function Class() {
   // 音声を有効にしたのに届いていない状態
   const [audioStalled, setAudioStalled] = useState(false);
   const lastAudioAtRef = useRef<number | null>(null);
-  // 自動字幕。先生がONにしていても、生徒が自分で消せる（画面が狭いため）
+  // 自動字幕。先生がONにしていても、出すかどうかは生徒が自分で決める。
+  // 選んだ結果はこの端末に覚えさせる（読み込み直すたびに選び直させない）
   const [captionLines, setCaptionLines] = useState<{ tMs: number; text: string }[]>([]);
   const [captionInterim, setCaptionInterim] = useState('');
-  const [captionsHidden, setCaptionsHidden] = useState(false);
+  const [captionsHidden, setCaptionsHidden] = useState(
+    () => localStorage.getItem(CAPTIONS_HIDDEN_KEY) === '1'
+  );
+  const setCaptionsHiddenPersisted = useCallback((hidden: boolean) => {
+    setCaptionsHidden(hidden);
+    try {
+      localStorage.setItem(CAPTIONS_HIDDEN_KEY, hidden ? '1' : '0');
+    } catch {
+      /* プライベートモードなどで保存できなくても、いまの表示は切り替わる */
+    }
+  }, []);
 
   // スライドを見ているだけの時間が長く、触らないので端末が自動ロックされやすい
   useWakeLock();
@@ -107,6 +121,10 @@ export default function Class() {
       socket.on('poll_closed', (p) => {
         const poll = openPollRef.current;
         setRevealed(p.results && poll?.id === p.pollId ? { poll, results: p.results } : null);
+      });
+      // 締め切ったあとに先生が出し入れする集計（設問も一緒に届くので単体で表示できる）
+      socket.on('poll_reveal', (p) => {
+        setRevealed(p.poll && p.results ? { poll: p.poll, results: p.results } : null);
       });
       // 生徒画面だけが受け取るイベント
       queueRef.current = new ReactionQueue(lessonId!, socket);
@@ -289,6 +307,9 @@ export default function Class() {
     [socketRef, tasks, taskMode]
   );
 
+  // 先生が隠したボタンは出さない（定義は残るので、戻せばまた出る）
+  const shownButtons = visibleReactionButtons(buttons);
+
   if (!lessonId) return null;
 
   return (
@@ -316,7 +337,7 @@ export default function Class() {
             </span>
           )}
           {status === 'live' && captionsEnabled && captionsHidden && (
-            <button className="btn" onClick={() => setCaptionsHidden(false)}>
+            <button className="btn" onClick={() => setCaptionsHiddenPersisted(false)}>
               字幕を出す
             </button>
           )}
@@ -328,7 +349,10 @@ export default function Class() {
         </div>
       </header>
 
-      <div className="class-main">
+      {/* 縦向きは下、横向きは右へ操作をまとめる。横向きのスマホは高さが足りず、
+          下に積むとスライドが潰れてしまうため（切り替えはCSSだけで行う） */}
+      <div className="class-body">
+        <div className="class-main">
         {status === 'draft' && (
           <div className="page-center">
             <p>授業の開始を待っています...</p>
@@ -357,12 +381,12 @@ export default function Class() {
             lines={captionLines}
             interim={captionInterim}
             loadHistory={loadCaptionHistory}
-            onHide={() => setCaptionsHidden(true)}
+            onHide={() => setCaptionsHiddenPersisted(true)}
           />
         )}
       </div>
 
-      <footer className="reaction-bar">
+        <footer className="reaction-bar">
         {flash && <div className="flash">{flash}</div>}
         {status === 'live' && tasksActive && (
           <TaskBar
@@ -390,9 +414,9 @@ export default function Class() {
           />
         )}
         {/* ボタンを使わない授業では行ごと出さない（空の行が場所を取らないように） */}
-        {reactionsEnabled && buttons.length > 0 && (
+        {reactionsEnabled && shownButtons.length > 0 && (
           <div className="reaction-buttons">
-            {buttons.map((b) => (
+            {shownButtons.map((b) => (
               <button
                 key={b.key}
                 className="reaction-btn"
@@ -424,7 +448,8 @@ export default function Class() {
             送信
           </button>
         </div>
-      </footer>
+        </footer>
+      </div>
 
       {/* 音声再生用（非表示） */}
       <audio ref={audioElRef} style={{ display: 'none' }} />

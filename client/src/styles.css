@@ -331,17 +331,29 @@ textarea:focus {
   margin: 0 0 10px;
 }
 
-.button-editor-row {
+/* PDFを選ぶボタン。ブラウザ標準の入力欄は、選んだ後も「選択されていません」を
+   出したままになるので隠し、選んだPDFは下の一覧だけで見せる */
+.pdf-picker {
   display: flex;
-  gap: 8px;
-  align-items: center;
-  margin: 6px 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
 }
 
-.button-editor-row input[type='color'] {
-  width: 44px;
-  height: 38px;
-  padding: 2px;
+.pdf-picker > span {
+  font-size: 0.9rem;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .lesson-grid {
@@ -455,6 +467,8 @@ textarea:focus {
 .slide-container {
   flex: 1;
   min-height: 0;
+  /* 横に並べたときに、中のcanvasの幅が親を押し広げないようにする */
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -509,8 +523,47 @@ textarea:focus {
   color: var(--muted);
 }
 
+/* ブラウザ標準のつまみは、目盛りの端に寄せても余白が残って「端まで動いていない」
+   ように見える。トラックとつまみを自前で描いて、端に着いたことを見えるようにする */
 .size-slider input[type='range'] {
-  width: 90px;
+  -webkit-appearance: none;
+  appearance: none;
+  width: 110px;
+  height: 18px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.size-slider input[type='range']::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+}
+
+.size-slider input[type='range']::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+}
+
+.size-slider input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  border: none;
+  border-radius: 50%;
+  background: var(--primary);
+}
+
+.size-slider input[type='range']::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: none;
+  border-radius: 50%;
+  background: var(--primary);
 }
 
 .size-preview {
@@ -550,11 +603,14 @@ textarea:focus {
   white-space: nowrap;
 }
 
+/* 収まらないぶんはサイドバーの中でスクロールさせる。
+   これが無いと、下に置いたカードが画面外へ切り取られて存在ごと見えなくなる */
 .sidebar {
   display: flex;
   flex-direction: column;
   gap: 12px;
   min-height: 0;
+  overflow-y: auto;
 }
 
 .sidebar h3 {
@@ -918,7 +974,7 @@ button.slide-thumb:hover {
   }
 }
 
-/* ---- 教室スクリーン（大画面投影） ---- */
+/* ---- 教室モニター（教室モニターへの投影） ---- */
 .screen-page {
   position: relative;
   height: 100vh;
@@ -944,7 +1000,7 @@ button.slide-thumb:hover {
   font-size: 2rem;
 }
 
-/* 開始前の大画面に出す参加案内（QR・コード・URL） */
+/* 開始前の教室モニターに出す参加案内（QR・コード・URL） */
 .screen-join {
   display: flex;
   align-items: center;
@@ -1045,7 +1101,7 @@ button.slide-thumb:hover {
   font-size: 0.8rem;
 }
 
-/* ---- 先生画面: 教室の大画面の操作 ---- */
+/* ---- 先生画面: 教室モニターの操作 ---- */
 .classroom-card {
   display: flex;
   flex-direction: column;
@@ -1611,12 +1667,14 @@ button.slide-thumb:hover {
   background: var(--ok);
 }
 
+/* 緑は「終わった」の色。取り組み中を緑にすると完了と見分けがつかないので、
+   進行中は青にする（急かす色にはしない） */
 .task-dot.current {
   width: 20px;
   height: 20px;
-  background: #dcfce7;
-  border: 2px solid var(--ok);
-  color: #14532d;
+  background: #dbeafe;
+  border: 2px solid var(--primary);
+  color: #1e3a8a;
   font-size: 0.7rem;
   font-weight: 700;
   display: flex;
@@ -1751,13 +1809,17 @@ button.slide-thumb:hover {
 }
 
 .task-list-row.current {
-  background: #dcfce7;
-  color: #14532d;
+  background: #dbeafe;
+  color: #1e3a8a;
 }
 
 .task-list-mark {
   flex-shrink: 0;
   color: var(--ok);
+}
+
+.task-list-row.current .task-list-mark {
+  color: var(--primary);
 }
 
 .task-list-label {
@@ -2280,19 +2342,6 @@ button.slide-thumb:hover {
   }
 }
 
-.reactions-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 0.9rem;
-  margin-bottom: 6px;
-}
-
-.reactions-toggle input {
-  width: 16px;
-  height: 16px;
-}
-
 /* 音声を再生できない端末の警告。教室のモニターが無音のまま気づかれないのを防ぐ */
 .screen-audio-error {
   position: absolute;
@@ -2565,7 +2614,7 @@ button.slide-thumb:hover {
   color: #f9fafb;
 }
 
-/* 教室の大画面。後ろの席から読めるよう大きく、映像の上に重ねる */
+/* 教室モニター。後ろの席から読めるよう大きく、映像の上に重ねる */
 .caption-bar-large {
   position: absolute;
   left: 3%;
@@ -2631,4 +2680,492 @@ button.slide-thumb:hover {
   border-top: 1px solid var(--border, #e5e7eb);
   font-size: 12px;
   color: var(--muted, #6b7280);
+}
+
+/* ================= 書いた文字の枠（先生画面） ================= */
+/* 「移動」つまみを本体の外に置いてあるので、ペンやポインターの操作を奪わずに動かせる。
+   枠そのものはクリックを通す（pointer-events: none） */
+.text-frame {
+  position: absolute;
+  border: 2px dashed var(--primary);
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.text-frame-move,
+.text-frame-size {
+  position: absolute;
+  pointer-events: auto;
+  border: none;
+  background: var(--primary);
+  color: #fff;
+  font: inherit;
+  padding: 0;
+}
+
+.text-frame-move {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px 0 6px;
+  min-height: 28px;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: move;
+  touch-action: none;
+}
+
+/* 置ける側に寄せる。はみ出すと画面の縁で切り取られて掴めなくなる */
+.text-frame-move-left {
+  right: 100%;
+  top: -2px;
+  bottom: -2px;
+  margin-right: 6px;
+}
+
+.text-frame-move-right {
+  left: 100%;
+  top: -2px;
+  bottom: -2px;
+  margin-left: 6px;
+}
+
+.text-frame-move-top {
+  bottom: 100%;
+  left: -2px;
+  margin-bottom: 6px;
+}
+
+.text-frame-size-inside {
+  right: 1px;
+}
+
+/* つまめることが分かるドット。装飾なので読み上げからは外してある */
+.text-frame-grip {
+  width: 8px;
+  height: 14px;
+  background-image: radial-gradient(#fff 40%, transparent 41%);
+  background-size: 4px 5px;
+  opacity: 0.85;
+}
+
+.text-frame-size {
+  right: -9px;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  margin-top: -8px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+/* ================= 先生画面の道具の窓 ================= */
+.float-window {
+  position: fixed;
+  z-index: 40;
+  max-height: calc(100vh - 120px);
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(17, 24, 39, 0.22);
+}
+
+/* 閉じている間もDOMには残す（書きかけの設問やタスク名を失わないため） */
+.float-window-closed {
+  display: none;
+}
+
+.float-window-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 8px 8px 14px;
+  border-bottom: 1px solid var(--border);
+  cursor: move;
+  touch-action: none;
+  user-select: none;
+}
+
+.float-window-close {
+  border: none;
+  background: transparent;
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.float-window-close:hover {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.float-window-body {
+  padding: 12px 14px 14px;
+  overflow-y: auto;
+}
+
+.header-action-on {
+  border-color: var(--primary);
+  color: var(--primary);
+  font-weight: 700;
+}
+
+/* スライド操作の行の右側。3つの窓を開くボタンは大きさを揃える */
+.tool-windows {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.tool-window-btn {
+  min-width: 120px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  padding: 7px 10px;
+}
+
+.tool-window-badge {
+  background: var(--primary);
+  color: #fff;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 1px 7px;
+}
+
+/* ================= 教室モニター設定 ================= */
+.monitor-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+/* URL・QR・別ウィンドウは同じ「開き方の選択肢」なので、同じ大きさで横に並べる */
+.monitor-open {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 12px;
+  align-items: start;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.monitor-open-col {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.monitor-open-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.monitor-url {
+  font-size: 0.75rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  overflow-wrap: anywhere;
+}
+
+.monitor-qr {
+  width: 116px;
+  height: 116px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+/* 見せ方の見本。言葉だけでは伝わらないので、いま映っているカメラで縮図にする */
+.layout-choices {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0 4px;
+}
+
+.layout-choice {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 6px;
+  background: var(--panel);
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.layout-choice-on {
+  border-color: var(--primary);
+  background: #eff6ff;
+}
+
+.layout-choice-label {
+  font-weight: 700;
+}
+
+.lp {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #111827;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.lp-main {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lp-sub {
+  position: absolute;
+  right: 5%;
+  bottom: 7%;
+  width: 34%;
+  aspect-ratio: 16 / 9;
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  border-radius: 2px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lp-slide {
+  background: #f8fafc;
+  color: var(--muted);
+  font-size: 0.65rem;
+}
+
+.lp-cam {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: #374151;
+}
+
+.lp-cam video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.lp-cam-off {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #d1d5db;
+  font-size: 0.65rem;
+}
+
+/* ================= リアクションボタンの窓 ================= */
+.reaction-edit-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 6px 0;
+}
+
+.reaction-edit-row input:not([type='color']) {
+  flex: 1;
+  min-width: 0;
+}
+
+.reaction-edit-row input[type='color'] {
+  width: 44px;
+  height: 38px;
+  padding: 2px;
+  flex-shrink: 0;
+}
+
+/* 隠しているボタンは、消したのではなく戻せることが分かる見た目にする */
+.reaction-edit-row.hidden-row {
+  opacity: 0.55;
+}
+
+/* ================= 参加用リンク ================= */
+.join-modal {
+  max-width: 720px;
+}
+
+.join-main {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+  text-align: left;
+  margin: 12px 0 16px;
+}
+
+.join-col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.join-qr {
+  width: 100%;
+  max-width: 220px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.feed-count {
+  margin-left: 8px;
+  background: var(--primary);
+  color: #fff;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  padding: 1px 8px;
+}
+
+/* ================= 端末チェック ================= */
+.check-back {
+  margin-bottom: 10px;
+}
+
+.check-page kbd {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 0.85em;
+}
+
+/* ================= 生徒画面のレイアウト ================= */
+.class-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 横向きのスマホ・小さいタブレットでは、操作を右の列へ寄せる。
+   下に積むと高さを取られてスライドが潰れるが、横に置けばその分スライドが広がる */
+@media (orientation: landscape) and (max-height: 620px) {
+  .class-body {
+    flex-direction: row;
+  }
+
+  .class-body .reaction-bar {
+    width: 200px;
+    flex-shrink: 0;
+    border-top: none;
+    border-left: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+  }
+
+  .class-body .reaction-buttons {
+    flex-direction: column;
+  }
+
+  .class-body .comment-row {
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .class-page .app-header {
+    padding: 4px 10px;
+  }
+
+  .class-page .app-header h1 {
+    font-size: 0.95rem;
+  }
+}
+
+/* 画面が小さいほど、余白よりスライドの大きさを優先する */
+@media (max-width: 700px) {
+  .class-main {
+    padding: 4px;
+  }
+
+  .class-page .app-header {
+    padding: 6px 10px;
+    gap: 8px;
+  }
+
+  .class-page .app-header h1 {
+    font-size: 1rem;
+    max-width: 45vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .class-body .reaction-bar {
+    padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+    gap: 6px;
+  }
+
+  .reaction-btn {
+    font-size: 0.95rem;
+    padding: 11px 6px;
+  }
+}
+
+/* 窓は画面が狭いと置き場所が無いので、幅いっぱいに寝かせる */
+@media (max-width: 760px) {
+  .float-window {
+    left: 8px !important;
+    right: 8px;
+    width: auto !important;
+  }
+
+  .monitor-open {
+    grid-template-columns: 1fr;
+  }
+
+  .join-main {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* コメントがどのスライドを見ながら書かれたか（戻って説明し直す判断に使う） */
+.insight-slide {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+/* 窓の中では右寄せにしない（並びの意味が変わってしまうため） */
+.float-window .recent-reactions {
+  margin-left: 0;
 }

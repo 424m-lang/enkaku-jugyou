@@ -16,7 +16,7 @@ import { loadLessonPdf, type PdfCache } from './pdf';
 import { rebuildStrokes, applyDrawingEvent, type StrokesBySlide } from './strokes';
 
 type Options = {
-  /** 教室の大画面として接続する場合のトークン（先生のログイン不要） */
+  /** 教室モニターとして接続する場合のトークン（先生のログイン不要） */
   screenToken?: string;
   /** lesson_state 受信時の追加処理（集計の反映など） */
   onLessonState?: (st: LiveLessonState) => void;
@@ -45,7 +45,7 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
   const [strokes, setStrokes] = useState<StrokesBySlide>({});
   const [remoteProgress, setRemoteProgress] = useState<Record<string, StrokePayload>>({});
   const [pdf, setPdf] = useState<PdfCache | null>(null);
-  // 教室スクリーン（大画面）まわり。3画面すべてが同じ状態を見る必要がある
+  // 教室モニターまわり。3画面すべてが同じ状態を見る必要がある
   const [audioDefault, setAudioDefault] = useState<AudioMode>('on');
   const [cameraOn, setCameraOn] = useState(false);
   const [avHasAudio, setAvHasAudio] = useState(false);
@@ -56,6 +56,8 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
   const [taskMode, setTaskMode] = useState<TaskMode>('sequential');
   const [tasksActive, setTasksActive] = useState(false);
   const [captionsEnabled, setCaptionsEnabled] = useState(false);
+  // 教室モニターに字幕の帯を出すか（遠隔の生徒は各自の端末で出し入れする）
+  const [captionsOnScreen, setCaptionsOnScreen] = useState(true);
   // いま開いているアンケート（開始・締め切りは全画面が同じ状態を見る）
   const [openPoll, setOpenPoll] = useState<PublicPoll | null>(null);
 
@@ -88,6 +90,7 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
       setTaskMode(st.taskMode);
       setTasksActive(st.tasksActive);
       setCaptionsEnabled(st.captionsEnabled);
+      setCaptionsOnScreen(st.captionsOnScreen);
       setOpenPoll(st.openPoll);
       optionsRef.current.onLessonState?.(st);
     });
@@ -176,6 +179,7 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
     taskMode,
     tasksActive,
     captionsEnabled,
+    captionsOnScreen,
     openPoll,
   };
 }

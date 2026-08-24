@@ -5,7 +5,17 @@ export type ReactionButtonDef = {
   key: string;
   label: string;
   color: string;
+  /**
+   * 生徒画面に出さない。
+   * 消すのではなく隠すのは、過去の反応のラベル・色を授業後の集計で引けるようにするため
+   */
+  hidden?: boolean;
 };
+
+/** 生徒に出すボタンだけを取り出す */
+export function visibleReactionButtons(buttons: ReactionButtonDef[]): ReactionButtonDef[] {
+  return buttons.filter((b) => !b.hidden);
+}
 
 export const DEFAULT_REACTION_BUTTONS: ReactionButtonDef[] = [
   { key: 'understood', label: 'わかった', color: '#16a34a' },
@@ -418,16 +428,16 @@ export type CommentInsight = {
   status: 'pending' | 'ready' | 'failed';
 };
 
-// ---- 教室スクリーン（大画面投影） ----
+// ---- 教室モニター（教室モニターへの投影） ----
 
 /**
  * 生徒端末で先生の音声を鳴らすかどうか。
- * 教室の大画面から音を出す授業では、各端末が同じ音を鳴らすと反響してしまうため
+ * 教室モニターから音を出す授業では、各端末が同じ音を鳴らすと反響してしまうため
  * 既定を 'off' にし、遠隔で受けている生徒だけ 'on' に切り替える。
  */
 export type AudioMode = 'on' | 'off';
 
-/** 大画面のレイアウト（先生が切り替える） */
+/** 教室モニターのレイアウト（先生が切り替える） */
 export type ScreenLayout =
   | 'slide' // スライド主体・カメラ映像は小窓
   | 'video' // カメラ映像主体・スライドは小窓（実演を見せるとき）
@@ -474,11 +484,11 @@ export interface ServerToClientEvents {
    */
   audio_init: (header: ArrayBuffer, seq: number, mime: string) => void;
 
-  // カメラ映像（音声込みの1本のストリーム。大画面と遠隔の生徒にだけ届く）
+  // カメラ映像（音声込みの1本のストリーム。教室モニターと遠隔の生徒にだけ届く）
   av_chunk: (chunk: ArrayBuffer, seq: number) => void;
   /** 映像の先頭。mime の扱いは audio_init と同じ */
   av_init: (header: ArrayBuffer, seq: number, mime: string) => void;
-  /** カメラのON/OFF、大画面のレイアウト、遠隔の生徒へ映像を送るか */
+  /** カメラのON/OFF、教室モニターのレイアウト、遠隔の生徒へ映像を送るか */
   av_state: (p: {
     cameraOn: boolean;
     layout: ScreenLayout;
@@ -496,7 +506,7 @@ export interface ServerToClientEvents {
   /** その端末で音声を鳴らしてよいか（生徒ごとに異なるため個別に届く） */
   audio_permission: (p: { audio: AudioMode }) => void;
 
-  // 教室スクリーンの接続台数（先生向け。0なら大画面が映っていない）
+  // 教室モニターの接続台数（先生向け。0なら教室モニターが映っていない）
   screen_count: (count: number) => void;
   // 参加者一覧（先生向け。音声の個別切替に使う）
   participants: (list: ParticipantInfo[]) => void;
@@ -531,6 +541,12 @@ export interface ServerToClientEvents {
    * 自由記述は他の生徒に見せないので、その場合も results.texts は空で届く
    */
   poll_closed: (p: { pollId: string; results: PollResults | null }) => void;
+  /**
+   * 締め切ったあとの結果の出し入れ。
+   * 締め切りと結果表示を切り離してあるので、結果を見てから見せるかを決められる。
+   * poll が null なら「引っ込める」
+   */
+  poll_reveal: (p: { pollId: string; poll: PublicPoll | null; results: PollResults | null }) => void;
   /** 自分の回答（生徒向け。再接続時の復元と、送信後の確定に使う） */
   my_poll_answer: (p: { pollId: string; answer: PollAnswer }) => void;
   /** 集計（先生向け。回答が届くたびに更新される） */
@@ -548,15 +564,19 @@ export interface ClientToServerEvents {
   camera_state: (p: { on: boolean; hasAudio?: boolean }) => void;
   /** 先生の端末のブラウザ音声認識の結果 */
   caption: (p: { text: string; final: boolean }) => void;
-  /** 自動字幕のON/OFF（先生） */
+  /**
+   * 自動字幕の切り替え（先生）。指定した項目だけが変わる。
+   * - enabled: 字幕を作るかどうか（生徒の端末に出るかはこれで決まる。表示/非表示は生徒が各自で選ぶ）
+   * - onScreen: 教室モニターに字幕の帯を出すかどうか（教室モニターが未接続なら意味を持たない）
+   */
   set_captions: (
-    p: { enabled: boolean },
+    p: { enabled?: boolean; onScreen?: boolean },
     cb: (res: { ok: boolean; error?: string }) => void
   ) => void;
-  /** 字幕の履歴を取り出す（生徒・大画面が開いたときだけ呼ぶ） */
+  /** 字幕の履歴を取り出す（生徒・教室モニターが開いたときだけ呼ぶ） */
   get_captions: (cb: (res: { lines: CaptionLine[] }) => void) => void;
   /**
-   * 大画面のレイアウトと、遠隔の生徒へ映像を送るかの切り替え。
+   * 教室モニターのレイアウトと、遠隔の生徒へ映像を送るかの切り替え。
    * 映像は通信量が大きいため生徒への配信は既定でOFFにし、実演を見せるときだけONにする
    */
   set_av_config: (p: { layout?: ScreenLayout; videoToStudents?: boolean }) => void;
@@ -590,6 +610,14 @@ export interface ClientToServerEvents {
     p: { enabled: boolean },
     cb: (res: { ok: boolean }) => void
   ) => void;
+  /**
+   * リアクションボタンの追加・編集・並べ替え・非表示。
+   * key はそのまま保つこと（授業後の集計が過去の反応と結びつかなくなるため）
+   */
+  set_reaction_buttons: (
+    p: { buttons: ReactionButtonDef[] },
+    cb: (res: { ok: boolean; error?: string }) => void
+  ) => void;
   /** タスクの進め方の切替と、生徒画面にタスクバーを出すかどうか */
   set_task_config: (
     p: { mode?: TaskMode; active?: boolean },
@@ -611,10 +639,15 @@ export interface ClientToServerEvents {
   delete_poll: (p: { pollId: string }, cb: (res: { ok: boolean }) => void) => void;
   /** 開始（同時に開けるのは1問だけ。他が開いていれば締め切られる） */
   open_poll: (p: { pollId: string }, cb: (res: { ok: boolean; error?: string }) => void) => void;
-  /** 締め切り。reveal を立てると集計結果が生徒にも届く */
+  /** 締め切り。reveal を立てると集計結果が生徒にも届く（締め切り後に reveal_poll でも出せる） */
   close_poll: (
     p: { pollId: string; reveal?: boolean },
     cb: (res: { ok: boolean }) => void
+  ) => void;
+  /** 締め切ったアンケートの結果を、生徒に見せる／引っ込める */
+  reveal_poll: (
+    p: { pollId: string; reveal: boolean },
+    cb: (res: { ok: boolean; error?: string }) => void
   ) => void;
 
   // 生徒
@@ -660,7 +693,7 @@ export type LiveLessonState = {
   // 現時点までの描画状態を再構成するためのイベント（stroke/clearのみ）
   drawingEvents: TimelineEvent[];
   counts: ReactionCounts;
-  /** 生徒端末の音声の既定（教室の大画面から音を出す授業では 'off'） */
+  /** 生徒端末の音声の既定（教室モニターから音を出す授業では 'off'） */
   audioDefault: AudioMode;
   cameraOn: boolean;
   screenLayout: ScreenLayout;
@@ -672,6 +705,11 @@ export type LiveLessonState = {
   tasksActive: boolean;
   /** 先生が自動字幕を有効にしているか */
   captionsEnabled: boolean;
+  /**
+   * 教室モニターに字幕の帯を出すか。
+   * 遠隔の生徒は各自の端末で出し入れできるので、先生が決めるのは共有画面のぶんだけ
+   */
+  captionsOnScreen: boolean;
   /**
    * いま開いているアンケート（無ければ null）。
    * 開いている1問だけなので、途中参加・再接続の生徒にそのまま渡してよい

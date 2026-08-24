@@ -12,13 +12,16 @@ import { useLessonLive } from '../../lib/useLessonLive';
 import SlideCanvas from '../../components/SlideCanvas';
 
 /**
- * 教室のスクリーン（大画面）に投影する表示専用ページ。
+ * 教室モニター（教室の大画面）に投影する表示専用ページ。
  *
- * プロジェクタに繋いだ教室の端末で開く想定なので、先生のログインは要らず、
- * URLのトークンだけで表示できる。教室ではこの1台だけが音を鳴らし、
- * 生徒の端末はミュートにしておく（同じ音が何台からも鳴ると反響するため）。
+ * モニター・電子黒板・プロジェクタに繋いだ教室の端末で開く想定なので、
+ * 先生のログインは要らず、URLのトークンだけで表示できる。
+ * 教室ではこの1台だけが音を鳴らし、生徒の端末はミュートにしておく
+ * （同じ音が何台からも鳴ると反響するため）。
  *
  * 先生のPCの拡張ディスプレイへドラッグして使うこともできる（その場合はトークン不要）。
+ * そのときは先生画面から self=1 付きで開かれる。生徒に見せる参加用QRも、
+ * 教室のスピーカーを鳴らすボタンも、先生自身の端末では意味がないので出さない。
  */
 
 /** 操作バーを自動で隠すまでの時間。投影中に不要なUIが映り込まないようにする */
@@ -27,12 +30,14 @@ const CONTROLS_HIDE_MS = 3_000;
 export default function Screen() {
   const { id: lessonId } = useParams<{ id: string }>();
   const screenToken = screenTokenFromUrl() ?? undefined;
+  // 先生自身の端末で開いた（先生画面の「別ウィンドウで開く」から来た）投影用の窓
+  const isSelfWindow = new URLSearchParams(window.location.search).get('self') === '1';
 
   const [pointer, setPointer] = useState<PointerPayload | null>(null);
   const [soundOn, setSoundOn] = useState(false);
   // この端末のブラウザが先生の音声形式を再生できない場合の形式名（対応時は null）
   const [unsupportedAudio, setUnsupportedAudio] = useState<string | null>(null);
-  // 自動字幕。後ろの席で音が聞き取りにくい生徒には、各端末より大画面のほうが効く
+  // 自動字幕。後ろの席で音が聞き取りにくい生徒には、各端末より教室モニターのほうが効く
   const [captionLines, setCaptionLines] = useState<{ tMs: number; text: string }[]>([]);
   const [captionInterim, setCaptionInterim] = useState('');
   const [volume, setVolume] = useState(1);
@@ -52,6 +57,7 @@ export default function Screen() {
     socketRef,
     connected,
     captionsEnabled,
+    captionsOnScreen,
     title,
     status,
     currentSlideId,
@@ -108,7 +114,7 @@ export default function Screen() {
     };
   }, []);
 
-  // 参加コード（開始前の大画面にQRを出して、生徒がその場で参加できるように）
+  // 参加コード（開始前の教室モニターにQRを出して、生徒がその場で参加できるように）
   useEffect(() => {
     if (!lessonId) return;
     let disposed = false;
@@ -245,7 +251,7 @@ export default function Screen() {
             ) : (
               <>
                 <p>授業の開始を待っています</p>
-                {qrDataUrl && (
+                {!isSelfWindow && qrDataUrl && (
                   <div className="screen-join">
                     <img className="screen-qr" src={qrDataUrl} alt="参加用QRコード" />
                     <div className="screen-join-text">
@@ -261,7 +267,7 @@ export default function Screen() {
         )}
       </div>
 
-      {inLesson && captionsEnabled && (
+      {inLesson && captionsEnabled && captionsOnScreen && (
         <CaptionBar
           lines={captionLines}
           interim={captionInterim}
@@ -281,7 +287,7 @@ export default function Screen() {
       )}
 
       <div className={`screen-controls ${controlsVisible ? '' : 'screen-controls-hidden'}`}>
-        {!soundOn ? (
+        {isSelfWindow ? null : !soundOn ? (
           <button className="btn primary" onClick={enableSound}>
             ♪ 教室のスピーカーで音を鳴らす
           </button>

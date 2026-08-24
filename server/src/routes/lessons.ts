@@ -63,7 +63,7 @@ async function authorizeLessonAccess(
     const unsigned = req.unsignCookie(teacherCookie);
     if (unsigned.valid && unsigned.value === lesson.teacherId) return lesson;
   }
-  // 教室の大画面（表示専用。スライドを描くためにPDFと授業情報だけ読めればよい）
+  // 教室モニター（表示専用。スライドを描くためにPDFと授業情報だけ読めればよい）
   const screenToken = req.headers['x-screen-token'];
   if (
     lesson.screenToken &&
@@ -215,10 +215,10 @@ export async function lessonRoutes(app: FastifyInstance): Promise<void> {
   });
 
   /**
-   * 教室スクリーン（大画面）用のURLトークン。
-   * 大画面は先生のPCとは別の端末で開く（音声をそこから鳴らすため）ので、
+   * 教室モニター用のURLトークン。
+   * 教室モニターは先生のPCとは別の端末で開く（音声をそこから鳴らすため）ので、
    * 先生のログイン無しに表示だけできるトークンを発行する。
-   * この接続は表示専用で、大画面側から授業へ何かを送ることはできない。
+   * この接続は表示専用で、教室モニター側から授業へ何かを送ることはできない。
    */
   app.get('/api/lessons/:id/screen-token', { preHandler: requireTeacher }, async (req, reply) => {
     const { id } = req.params as { id: string };

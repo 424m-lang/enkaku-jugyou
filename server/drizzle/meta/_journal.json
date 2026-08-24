@@ -99,6 +99,13 @@
       "when": 1790000300000,
       "tag": "0013_captions",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1790000400000,
+      "tag": "0014_captions_on_screen",
+      "breakpoints": true
     }
   ]
 }

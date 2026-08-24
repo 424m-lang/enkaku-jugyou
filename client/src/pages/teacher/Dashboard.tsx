@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { DEFAULT_REACTION_BUTTONS, type LessonSummary, type ReactionButtonDef } from '@shared';
+import { DEFAULT_REACTION_BUTTONS, type LessonSummary } from '@shared';
 import { api, ApiError, type Teacher } from '../../lib/api';
 
 const STATUS_LABEL: Record<string, string> = {
@@ -101,18 +101,18 @@ export default function Dashboard() {
   );
 }
 
+/**
+ * 新しい授業の作成。
+ *
+ * 聞くのはタイトルとスライドだけにしてある。リアクションボタンは授業画面の
+ * 「リアクションボタン」から、授業中でも足したり隠したりできるので、
+ * 作るときに決めさせる意味がない（作成前に何を聞きたいかは決まっていない）。
+ */
 function CreateLessonForm({ onCreated }: { onCreated: (l: LessonSummary) => void }) {
   const [title, setTitle] = useState('');
   const [files, setFiles] = useState<File[]>([]);
-  const [buttons, setButtons] = useState<ReactionButtonDef[]>(DEFAULT_REACTION_BUTTONS);
-  // タスク・アンケートで生徒の状況が分かるので、ボタンを使わない授業も選べる
-  const [useReactions, setUseReactions] = useState(true);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-
-  function updateButton(i: number, patch: Partial<ReactionButtonDef>) {
-    setButtons((prev) => prev.map((b, j) => (j === i ? { ...b, ...patch } : b)));
-  }
 
   function moveFile(i: number, delta: number) {
     setFiles((prev) => {
@@ -135,13 +135,9 @@ function CreateLessonForm({ onCreated }: { onCreated: (l: LessonSummary) => void
     try {
       const fd = new FormData();
       fd.append('title', title);
-      fd.append(
-        'reactionButtons',
-        JSON.stringify(
-          buttons.map((b, i) => ({ ...b, key: b.key || `btn_${i}` })).filter((b) => b.label.trim())
-        )
-      );
-      fd.append('reactionsEnabled', String(useReactions));
+      // ボタンの中身は既定のまま作り、授業画面で必要に応じて編集する
+      fd.append('reactionButtons', JSON.stringify(DEFAULT_REACTION_BUTTONS));
+      fd.append('reactionsEnabled', 'true');
       for (const f of files) fd.append('pdf', f, f.name);
       const res = await fetch('/api/lessons', { method: 'POST', body: fd });
       if (!res.ok) {
@@ -164,9 +160,13 @@ function CreateLessonForm({ onCreated }: { onCreated: (l: LessonSummary) => void
           授業タイトル
           <input value={title} onChange={(e) => setTitle(e.target.value)} required maxLength={100} />
         </label>
-        <label>
-          スライドPDF（複数選択できます。上から順につながって1つのスライドになります）
+        <div className="pdf-picker">
+          <span>スライドPDF（複数選べます。上から順につながって1つのスライドになります）</span>
+          {/* ブラウザ標準の入力欄は、選んだ後も「選択されていません」と出したままになる。
+              選んだPDFは下の一覧で見せるので、入力欄自体は隠してボタンだけ置く */}
           <input
+            id="pdf-input"
+            className="visually-hidden"
             type="file"
             accept="application/pdf"
             multiple
@@ -176,7 +176,11 @@ function CreateLessonForm({ onCreated }: { onCreated: (l: LessonSummary) => void
               e.target.value = ''; // 同じファイルを選び直せるようにリセット
             }}
           />
-        </label>
+          <label className="btn" htmlFor="pdf-input">
+            {files.length === 0 ? 'PDFを選ぶ' : 'PDFを追加する'}
+          </label>
+          {files.length === 0 && <span className="muted small">まだ選ばれていません</span>}
+        </div>
         {files.length > 0 && (
           <div className="pdf-file-list">
             {files.map((f, i) => (
@@ -205,63 +209,9 @@ function CreateLessonForm({ onCreated }: { onCreated: (l: LessonSummary) => void
             ))}
           </div>
         )}
-        <div>
-          <label className="reactions-toggle">
-            <input
-              type="checkbox"
-              checked={useReactions}
-              onChange={(e) => setUseReactions(e.target.checked)}
-            />
-            リアクションボタンを使う
-          </label>
-          {!useReactions && (
-            <p className="muted">
-              生徒画面にボタンは出ません。タスクやアンケートで反応を集める授業向けです（授業中に切り替えられます）
-            </p>
-          )}
-          {useReactions && (
-          <>
-          <span className="muted">リアクションボタン（生徒が押すボタン。最大6個）</span>
-          {buttons.map((b, i) => (
-            <div key={i} className="button-editor-row">
-              <input
-                value={b.label}
-                maxLength={20}
-                placeholder="ラベル"
-                onChange={(e) => updateButton(i, { label: e.target.value })}
-              />
-              <input
-                type="color"
-                value={b.color}
-                onChange={(e) => updateButton(i, { color: e.target.value })}
-              />
-              <button
-                type="button"
-                className="btn"
-                disabled={buttons.length <= 1}
-                onClick={() => setButtons((prev) => prev.filter((_, j) => j !== i))}
-              >
-                削除
-              </button>
-            </div>
-          ))}
-          {buttons.length < 6 && (
-            <button
-              type="button"
-              className="btn"
-              onClick={() =>
-                setButtons((prev) => [
-                  ...prev,
-                  { key: `btn_${Date.now()}`, label: '', color: '#2563eb' },
-                ])
-              }
-            >
-              ＋ ボタンを追加
-            </button>
-          )}
-          </>
-          )}
-        </div>
+        <p className="muted small">
+          リアクションボタン・タスク・アンケートは、授業画面から授業中でも設定できます。
+        </p>
         {error && <p className="error">{error}</p>}
         <button type="submit" className="btn primary" disabled={busy}>
           {busy ? '作成中...' : '授業を作成'}

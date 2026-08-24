@@ -18,7 +18,7 @@ type Props = {
 };
 
 /**
- * 先生画面のタスクパネル（動作確認できる最小限。表示の作り込みは後で調整する）。
+ * 先生画面のタスクパネル。
  *
  * 集計の読み方はモードで変わる:
  * - 順番通り: 完了は累積するので上から下へ必ず短くなる。落差の大きい段が難所
@@ -74,9 +74,9 @@ export default function TaskPanel({
   };
 
   return (
-    <div className="card task-panel">
+    <div className="task-panel">
       <div className="task-panel-head">
-        <h3>タスク</h3>
+        <span className="classroom-label">生徒画面のタスクバー</span>
         <button
           className={active ? 'btn' : 'btn primary'}
           onClick={() => onSetConfig({ active: !active })}
@@ -156,6 +156,11 @@ export default function TaskPanel({
         </p>
       ) : (
         <>
+          <p className="muted small">
+            {mode === 'sequential'
+              ? 'そのタスクまで終わった人の割合です（上から下へ必ず短くなります）'
+              : 'タスクごとに、終わった人の割合です'}
+          </p>
           <ul className="task-funnel">
             {tasks.map((t, i) => {
               const n = counts.get(t.id) ?? 0;
@@ -164,7 +169,6 @@ export default function TaskPanel({
                 <li key={t.id}>
                   <span className="funnel-label" title={t.label}>
                     {i + 1}. {t.label}
-                    {mode === 'sequential' ? ' まで' : ''}
                   </span>
                   <span className="funnel-track">
                     <span className="funnel-fill" style={{ width: `${pct}%` }} />

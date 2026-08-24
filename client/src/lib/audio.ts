@@ -65,7 +65,7 @@ export async function startAudioBroadcast(socket: AppSocket): Promise<{ stop: ()
   };
 }
 
-/** 生徒・大画面側: 音声のみのライブストリームを再生する */
+/** 生徒・教室モニター側: 音声のみのライブストリームを再生する */
 export class LiveAudioPlayer extends LiveMediaPlayer {
   constructor(el: HTMLAudioElement) {
     super(el);

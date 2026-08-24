@@ -24,7 +24,7 @@ type Props = {
   loadHistory: () => Promise<CaptionLine[]>;
   /** 字幕を閉じる（生徒が自分で切れるようにする） */
   onHide?: () => void;
-  /** 教室の大画面用。文字を大きくする */
+  /** 教室モニター用。文字を大きくする */
   large?: boolean;
 };
 
