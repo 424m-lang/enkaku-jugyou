@@ -40,6 +40,14 @@ const FONT_SIZE_PER_WIDTH = 15; // テキストの文字サイズ = 線の太さ
 // ポインターは単色の点のみ（ハローなし）。彩度を抑えたやわらかい赤で目に刺さらないように
 const POINTER_COLOR = '#d9534f';
 const POINTER_RADIUS = 7;
+/** 文字の枠を出す（移動・サイズ変更ができる）ツール。ペン・消しゴム中は描画を邪魔しない */
+const TEXT_FRAME_TOOLS: DrawingTool[] = ['none', 'pointer', 'text'];
+/** サイズつまみ: スライド幅の何割ドラッグしたら何倍になるか */
+const SIZE_DRAG_GAIN = 3;
+const FONT_SIZE_MIN = 0.02;
+const FONT_SIZE_MAX = 0.3;
+/** 「移動」つまみを横に置くのに必要な幅（px）。足りなければ上に置く */
+const GRIP_SPACE = 78;
 
 function textLines(s: StrokePayload): string[] {
   return (s.text ?? '').split('\n');
@@ -231,14 +239,36 @@ type TextEditState = {
   originalText: string; // 変更有無の判定用（新規は ''）
 };
 
-type TextDrag = {
+/**
+ * 文字を掴んでいる間の状態。
+ *
+ * 移動もサイズ変更も「元を消して新しく置く」1操作なので、確定するまでは
+ * preview を描いて元は描かない。掴んだだけで動かさなかった場合は何も起きない。
+ */
+type TextManip = {
+  kind: 'move' | 'size';
   stroke: StrokePayload;
   startX: number;
   startY: number;
-  dx: number;
-  dy: number;
+  preview: StrokePayload;
   moved: boolean;
 };
+
+/** 文字の枠（移動つまみ・サイズつまみ）の位置。ピクセル座標 */
+function textFrameBox(
+  ctx: CanvasRenderingContext2D,
+  s: StrokePayload,
+  W: number,
+  H: number
+): { left: number; top: number; width: number; height: number } {
+  const m = textMetrics(ctx, s, W, H);
+  return { left: m.x, top: m.y, width: Math.max(m.w, 12), height: Math.max(m.h, 12) };
+}
+
+function scaleFontSize(base: number, dx: number): number {
+  const scaled = base * (1 + dx * SIZE_DRAG_GAIN);
+  return Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, scaled));
+}
 
 /**
  * スライド1枚の表示（PDFページ or 白紙）＋ 書き込みオーバーレイ ＋ ポインターレイヤ。
@@ -271,7 +301,12 @@ export default function SlideCanvas({ pdf, slide, strokes, progressStrokes, poin
   const textEditRef = useRef(textEdit);
   textEditRef.current = textEdit;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const textDragRef = useRef<TextDrag | null>(null);
+  // 掴んでいる間は枠も一緒に動くので、canvasだけでなくReactの再描画も要る
+  const [manip, setManip] = useState<TextManip | null>(null);
+  const manipRef = useRef(manip);
+  manipRef.current = manip;
+  const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
+  const [hoverTextId, setHoverTextId] = useState<string | null>(null);
   const editProgressSentRef = useRef(false);
   const eraseActiveRef = useRef(false);
 
@@ -353,19 +388,18 @@ export default function SlideCanvas({ pdf, slide, strokes, progressStrokes, poin
     // 確定版の代わりにその状態を描く（二重表示を避ける）
     const progressIds = new Set((progressStrokes ?? []).map((p) => p.strokeId));
     const editingId = textEdit?.strokeId ?? null;
-    const drag = textDragRef.current;
+    const held = manipRef.current;
     for (const s of strokes) {
       if (s.strokeId === editingId) continue;
       if (progressIds.has(s.strokeId)) continue;
-      if (drag && s.strokeId === drag.stroke.strokeId) continue;
+      if (held && s.strokeId === held.stroke.strokeId) continue;
       drawStroke(ctx, s, size.w, size.h);
     }
     for (const s of progressStrokes ?? []) drawStroke(ctx, s, size.w, size.h);
     if (localStrokeRef.current) drawStroke(ctx, localStrokeRef.current, size.w, size.h);
-    if (drag && drag.moved) {
-      drawStroke(ctx, shiftStroke(drag.stroke, drag.dx, drag.dy), size.w, size.h);
-    }
-  }, [size, strokes, progressStrokes, textEdit]);
+    if (held) drawStroke(ctx, held.preview, size.w, size.h);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [size, strokes, progressStrokes, textEdit, manip]);
 
   useEffect(() => {
     drawOverlay();
@@ -507,13 +541,122 @@ export default function SlideCanvas({ pdf, slide, strokes, progressStrokes, poin
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [textEdit?.strokeId]);
 
+  // 文字の枠を出してよいツールか。ペン・消しゴム中は描く操作と取り合いになるので出さない
+  const textFrameActive = !!drawing && TEXT_FRAME_TOOLS.includes(drawing.tool);
+
+  // スライドを移ったら選択は解除する（見えていないものを掴んだままにしない）
+  useEffect(() => {
+    setSelectedTextId(null);
+    setHoverTextId(null);
+    setManip(null);
+  }, [slide?.id]);
+
   // ---- 描画入力（先生） ----
-  const getPos = (e: React.PointerEvent): { x: number; y: number } => {
+  const posFromClient = (clientX: number, clientY: number): { x: number; y: number } => {
     const rect = overlayRef.current!.getBoundingClientRect();
     return {
-      x: Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width)),
-      y: Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height)),
+      x: Math.min(1, Math.max(0, (clientX - rect.left) / rect.width)),
+      y: Math.min(1, Math.max(0, (clientY - rect.top) / rect.height)),
     };
+  };
+
+  const getPos = (e: React.PointerEvent): { x: number; y: number } =>
+    posFromClient(e.clientX, e.clientY);
+
+  /** その位置にある文字（上に描かれたものを優先） */
+  const hitTextAt = (x: number, y: number): StrokePayload | null => {
+    const ctx = overlayRef.current?.getContext('2d');
+    if (!ctx) return null;
+    for (let i = strokes.length - 1; i >= 0; i--) {
+      const st = strokes[i];
+      if (st.tool !== 'text') continue;
+      if (hitStroke(ctx, st, x * size.w, y * size.h, size.w, size.h)) return st;
+    }
+    return null;
+  };
+
+  const beginManip = (kind: 'move' | 'size', stroke: StrokePayload, x: number, y: number) => {
+    setSelectedTextId(stroke.strokeId);
+    setManip({ kind, stroke, startX: x, startY: y, preview: stroke, moved: false });
+  };
+
+  const updateManip = (x: number, y: number) => {
+    const m = manipRef.current;
+    const d = drawingRef.current;
+    if (!m || !d) return;
+    const dx = x - m.startX;
+    const dy = y - m.startY;
+    let moved = m.moved;
+    let preview = m.stroke;
+    if (m.kind === 'move') {
+      if (Math.abs(dx) + Math.abs(dy) > 0.004) moved = true;
+      if (moved) preview = shiftStroke(m.stroke, dx, dy);
+    } else {
+      if (Math.abs(dx) > 0.004) moved = true;
+      if (moved) {
+        preview = { ...m.stroke, fontSize: scaleFontSize(m.stroke.fontSize ?? TEXT_FONT_SIZE, dx) };
+      }
+    }
+    setManip({ ...m, preview, moved });
+    if (!moved) return;
+    // 生徒・教室モニターにも動かしている途中を見せる（確定を待つと飛んで見えるため）
+    const now = performance.now();
+    if (now - lastProgressSentRef.current > 66) {
+      lastProgressSentRef.current = now;
+      d.onProgress(preview);
+    }
+  };
+
+  const endManip = () => {
+    const m = manipRef.current;
+    const d = drawingRef.current;
+    setManip(null);
+    if (!m || !d) return;
+    if (m.moved) {
+      // 削除→追加の到着順が入れ替わっても壊れないよう、確定版は必ず新しいIDにする
+      const next: StrokePayload = { ...m.preview, strokeId: crypto.randomUUID() };
+      d.onReplace(m.stroke.slideId, [m.stroke.strokeId], next);
+      setSelectedTextId(next.strokeId);
+      return;
+    }
+    // 掴んだだけで動かさなかった → その場で内容を編集する
+    editProgressSentRef.current = false;
+    setTextEdit({
+      strokeId: m.stroke.strokeId,
+      slideId: m.stroke.slideId,
+      x: m.stroke.points[0],
+      y: m.stroke.points[1],
+      text: m.stroke.text ?? '',
+      color: m.stroke.color,
+      fontSize: m.stroke.fontSize ?? TEXT_FONT_SIZE,
+      width: m.stroke.width,
+      isNew: false,
+      originalText: m.stroke.text ?? '',
+    });
+  };
+
+  /** 枠のつまみ（移動・サイズ）を掴んだときの一連の処理 */
+  const handleGrip = (kind: 'move' | 'size', stroke: StrokePayload) => (e: React.PointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const el = e.currentTarget as HTMLElement;
+    try {
+      el.setPointerCapture(e.pointerId);
+    } catch {
+      /* 取れなくてもドラッグ自体は動く */
+    }
+    const { x, y } = posFromClient(e.clientX, e.clientY);
+    beginManip(kind, stroke, x, y);
+  };
+
+  const gripMove = (e: React.PointerEvent) => {
+    if (!manipRef.current) return;
+    const { x, y } = posFromClient(e.clientX, e.clientY);
+    updateManip(x, y);
+  };
+
+  const gripUp = () => {
+    if (manipRef.current) endManip();
   };
 
   const capturePointer = (e: React.PointerEvent) => {
@@ -536,49 +679,59 @@ export default function SlideCanvas({ pdf, slide, strokes, progressStrokes, poin
 
   const onPointerDown = (e: React.PointerEvent) => {
     const d = drawingRef.current;
-    if (!d || !slide || d.tool === 'none') return;
-    e.preventDefault();
+    if (!d || !slide) return;
     const { x, y } = getPos(e);
+
+    // ---- 書いた文字の選択・移動・編集 ----
+    // 「文字」ツール中でなくても掴めるようにしてある。ペン・消しゴム中だけは
+    // 描く操作と取り合いになるので、枠を出さず素通りさせる
+    if (textFrameActive) {
+      if (textEditRef.current) {
+        // 編集中に枠外をクリック → 確定のみ（誤って新規作成しない）
+        e.preventDefault();
+        commitTextEdit();
+        return;
+      }
+      const hit = hitTextAt(x, y);
+      if (hit) {
+        setSelectedTextId(hit.strokeId);
+        // ポインター中は本体のクリックを譲る（枠の「移動」つまみからは動かせる）
+        if (d.tool !== 'pointer') {
+          e.preventDefault();
+          capturePointer(e);
+          beginManip('move', hit, x, y);
+          return;
+        }
+      } else {
+        setSelectedTextId(null);
+        if (d.tool === 'text') {
+          e.preventDefault();
+          editProgressSentRef.current = false;
+          setTextEdit({
+            strokeId: crypto.randomUUID(),
+            slideId: slide.id,
+            x,
+            y,
+            text: '',
+            color: d.color,
+            fontSize: Math.min(0.2, Math.max(0.02, d.lineWidth * FONT_SIZE_PER_WIDTH)),
+            width: d.lineWidth,
+            isNew: true,
+            originalText: '',
+          });
+          return;
+        }
+      }
+    }
+
+    if (d.tool === 'none' || d.tool === 'text') return;
+    e.preventDefault();
 
     if (d.tool === 'pointer') {
       localPtrRef.current = { x, y };
       drawPointerLayer();
       lastPointerSentRef.current = performance.now();
       d.onPointer(x, y, true);
-      return;
-    }
-
-    if (d.tool === 'text') {
-      if (textEditRef.current) {
-        // 編集中に枠外をクリック → 確定のみ（誤って新規作成しない）
-        commitTextEdit();
-        return;
-      }
-      const ctx = overlayRef.current?.getContext('2d');
-      const hit = ctx
-        ? [...strokes]
-            .reverse()
-            .find((s) => s.tool === 'text' && hitStroke(ctx, s, x * size.w, y * size.h, size.w, size.h))
-        : undefined;
-      if (hit) {
-        // 既存テキスト: ドラッグで移動、動かさず離すと編集
-        capturePointer(e);
-        textDragRef.current = { stroke: hit, startX: x, startY: y, dx: 0, dy: 0, moved: false };
-      } else {
-        editProgressSentRef.current = false;
-        setTextEdit({
-          strokeId: crypto.randomUUID(),
-          slideId: slide.id,
-          x,
-          y,
-          text: '',
-          color: d.color,
-          fontSize: Math.min(0.2, Math.max(0.02, d.lineWidth * FONT_SIZE_PER_WIDTH)),
-          width: d.lineWidth,
-          isNew: true,
-          originalText: '',
-        });
-      }
       return;
     }
 
@@ -603,8 +756,21 @@ export default function SlideCanvas({ pdf, slide, strokes, progressStrokes, poin
 
   const onPointerMove = (e: React.PointerEvent) => {
     const d = drawingRef.current;
-    if (!d || !slide || d.tool === 'none') return;
+    if (!d || !slide) return;
     const { x, y } = getPos(e);
+
+    if (manipRef.current) {
+      updateManip(x, y);
+      return;
+    }
+
+    // 掴める文字の上に来たら枠を出す（何が動かせるのかを触る前に見せる）
+    if (textFrameActive && !localStrokeRef.current) {
+      const id = hitTextAt(x, y)?.strokeId ?? null;
+      setHoverTextId((prev) => (prev === id ? prev : id));
+    }
+
+    if (d.tool === 'none') return;
 
     if (d.tool === 'pointer') {
       localPtrRef.current = { x, y };
@@ -617,22 +783,7 @@ export default function SlideCanvas({ pdf, slide, strokes, progressStrokes, poin
       return;
     }
 
-    if (d.tool === 'text') {
-      const drag = textDragRef.current;
-      if (!drag) return;
-      drag.dx = x - drag.startX;
-      drag.dy = y - drag.startY;
-      if (Math.abs(drag.dx) + Math.abs(drag.dy) > 0.004) drag.moved = true;
-      if (drag.moved) {
-        drawOverlay();
-        const now = performance.now();
-        if (now - lastProgressSentRef.current > 66) {
-          lastProgressSentRef.current = now;
-          d.onProgress(shiftStroke(drag.stroke, drag.dx, drag.dy));
-        }
-      }
-      return;
-    }
+    if (d.tool === 'text') return;
 
     if (d.tool === 'eraser') {
       if (eraseActiveRef.current) eraseAt(x, y);
@@ -672,35 +823,11 @@ export default function SlideCanvas({ pdf, slide, strokes, progressStrokes, poin
 
   const onPointerUp = (_e: React.PointerEvent) => {
     const d = drawingRef.current;
-    if (d?.tool === 'pointer') return; // ポインターは押している間だけでなく移動中も表示
-
-    if (d?.tool === 'text') {
-      const drag = textDragRef.current;
-      if (!drag || !slide) return;
-      textDragRef.current = null;
-      if (drag.moved) {
-        // 移動を確定: 元を削除して新しいIDで追加（到着順が入れ替わっても安全）
-        const moved = { ...shiftStroke(drag.stroke, drag.dx, drag.dy), strokeId: crypto.randomUUID() };
-        d.onReplace(drag.stroke.slideId, [drag.stroke.strokeId], moved);
-      } else {
-        // 動かさずに離した → その場で内容を編集
-        editProgressSentRef.current = false;
-        setTextEdit({
-          strokeId: drag.stroke.strokeId,
-          slideId: drag.stroke.slideId,
-          x: drag.stroke.points[0],
-          y: drag.stroke.points[1],
-          text: drag.stroke.text ?? '',
-          color: drag.stroke.color,
-          fontSize: drag.stroke.fontSize ?? TEXT_FONT_SIZE,
-          width: drag.stroke.width,
-          isNew: false,
-          originalText: drag.stroke.text ?? '',
-        });
-      }
-      drawOverlay();
+    if (manipRef.current) {
+      endManip();
       return;
     }
+    if (d?.tool === 'pointer') return; // ポインターは押している間だけでなく移動中も表示
 
     if (d?.tool === 'eraser') {
       eraseActiveRef.current = false;
@@ -712,6 +839,7 @@ export default function SlideCanvas({ pdf, slide, strokes, progressStrokes, poin
 
   const onPointerLeave = () => {
     const d = drawingRef.current;
+    setHoverTextId(null);
     if (d?.tool === 'pointer') {
       localPtrRef.current = null;
       drawPointerLayer();
@@ -720,6 +848,8 @@ export default function SlideCanvas({ pdf, slide, strokes, progressStrokes, poin
   };
 
   const cursorFor = (tool: DrawingTool): string => {
+    // 掴める文字の上では、押せば動くことが分かるようにする
+    if (textFrameActive && hoverTextId && tool !== 'pointer') return 'move';
     switch (tool) {
       case 'pointer':
         return 'none'; // 自分のポインターの点がカーソル代わりになる
@@ -762,6 +892,29 @@ export default function SlideCanvas({ pdf, slide, strokes, progressStrokes, poin
     };
   }
 
+  // 枠を出す対象。掴んでいる間はその途中の姿に合わせて枠も動かす
+  const frameStroke: StrokePayload | null = (() => {
+    if (!textFrameActive || textEdit) return null;
+    if (manip) return manip.preview;
+    const id = selectedTextId ?? hoverTextId;
+    if (!id) return null;
+    return strokes.find((s) => s.strokeId === id && s.tool === 'text') ?? null;
+  })();
+  let frameBox: { left: number; top: number; width: number; height: number } | null = null;
+  if (frameStroke) {
+    const ctx = overlayRef.current?.getContext('2d');
+    if (ctx) frameBox = textFrameBox(ctx, frameStroke, size.w, size.h);
+  }
+  // つまみはスライドの外へはみ出すと切り取られて掴めなくなるので、置ける側へ寄せる
+  const gripSide = !frameBox
+    ? 'left'
+    : frameBox.left >= GRIP_SPACE
+      ? 'left'
+      : frameBox.left + frameBox.width + GRIP_SPACE <= size.w
+        ? 'right'
+        : 'top';
+  const sizeInside = !!frameBox && frameBox.left + frameBox.width + 12 > size.w;
+
   return (
     <div ref={containerRef} className="slide-container">
       <div className="slide-frame" style={{ width: size.w, height: size.h }}>
@@ -785,6 +938,42 @@ export default function SlideCanvas({ pdf, slide, strokes, progressStrokes, poin
           className="slide-pointer"
           style={{ width: size.w, height: size.h }}
         />
+        {frameStroke && frameBox && (
+          /* 選んだ文字の枠。移動つまみを別に置いてあるので、ペンやポインターの
+             操作を奪わずに動かせる。右端の丸は文字の大きさ */
+          <div
+            className="text-frame"
+            style={{
+              left: frameBox.left,
+              top: frameBox.top,
+              width: frameBox.width,
+              height: frameBox.height,
+            }}
+          >
+            <button
+              type="button"
+              className={`text-frame-move text-frame-move-${gripSide}`}
+              title="ドラッグして動かす（押して離すと編集）"
+              onPointerDown={handleGrip('move', frameStroke)}
+              onPointerMove={gripMove}
+              onPointerUp={gripUp}
+              onPointerCancel={gripUp}
+            >
+              <span className="text-frame-grip" aria-hidden="true" />
+              移動
+            </button>
+            <button
+              type="button"
+              className={sizeInside ? 'text-frame-size text-frame-size-inside' : 'text-frame-size'}
+              title="ドラッグして文字の大きさを変える"
+              aria-label="文字の大きさを変える"
+              onPointerDown={handleGrip('size', frameStroke)}
+              onPointerMove={gripMove}
+              onPointerUp={gripUp}
+              onPointerCancel={gripUp}
+            />
+          </div>
+        )}
         {textEdit && editorStyle && (
           <textarea
             ref={textareaRef}
