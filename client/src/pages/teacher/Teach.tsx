@@ -14,7 +14,8 @@ import type {
   TaskProgressEntry,
 } from '@shared';
 import { api, ApiError } from '../../lib/api';
-import { startAudioBroadcast } from '../../lib/audio';
+import { startAudioBroadcast, supportedAudioMime } from '../../lib/audio';
+import { useWakeLock } from '../../lib/useWakeLock';
 import { applyDrawingEvent } from '../../lib/strokes';
 import { useLessonLive } from '../../lib/useLessonLive';
 import { savePdfTexts } from '../../lib/pdf';
@@ -72,6 +73,15 @@ export default function Teach() {
   const [participants, setParticipants] = useState<ParticipantInfo[]>([]);
   const [screenCount, setScreenCount] = useState(0);
   const [audioState, setAudioState] = useState<'off' | 'on' | 'error'>('off');
+
+  // 操作の合間に暗転すると配信の状態が見えなくなる
+  useWakeLock();
+
+  // この端末が配信に使う形式。WebM系だとSafari（iPad・Apple TV）とテレビで音が出ないため、
+  // 授業を始める前に気づけるよう警告する。Chrome・Edge・SafariならAAC/MP4が選ばれる
+  const broadcastMime = supportedAudioMime();
+  const opusOnly = !!broadcastMime && !broadcastMime.includes('mp4');
+  const [formatWarnClosed, setFormatWarnClosed] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [showQr, setShowQr] = useState(false);
 
@@ -588,6 +598,22 @@ export default function Teach() {
           )}
         </div>
       </header>
+
+      {opusOnly && !formatWarnClosed && (
+        <div className="teach-format-warn" role="alert">
+          <div>
+            <strong>この端末はOpus形式で配信します</strong>
+            <span>
+              iPad・iPhone・Mac・Apple TV・テレビ内蔵ブラウザでは音が出ません。
+              教室の大画面や生徒がこれらの端末なら、Chrome・Edge で開き直してください。
+              各端末での可否は <a href="/check" target="_blank" rel="noreferrer">/check</a> で確認できます。
+            </span>
+          </div>
+          <button className="btn-link" onClick={() => setFormatWarnClosed(true)} title="閉じる">
+            ×
+          </button>
+        </div>
+      )}
 
       {showQr && <JoinQrModal joinCode={joinCode} onClose={() => setShowQr(false)} />}
 

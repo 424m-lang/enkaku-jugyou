@@ -319,8 +319,9 @@ export async function lessonRoutes(app: FastifyInstance): Promise<void> {
     const lesson = await authorizeLessonAccess(req, reply, id);
     if (!lesson) return;
 
-    // パストラバーサル防止: レッスンディレクトリ直下の audio_*.webm のみ許可
-    if (!/^audio_\d+\.webm$/.test(file)) {
+    // パストラバーサル防止: レッスンディレクトリ直下の audio_*.webm / audio_*.mp4 のみ許可
+    // （録音の形式は先生の環境によってWebMにもMP4にもなる）
+    if (!/^audio_\d+\.(webm|mp4)$/.test(file)) {
       return reply.code(400).send({ error: '不正なファイル名です' });
     }
     const filePath = path.join(lessonDir(id), file);
@@ -329,7 +330,7 @@ export async function lessonRoutes(app: FastifyInstance): Promise<void> {
     const stat = await fs.promises.stat(filePath);
     const range = req.headers.range;
     reply.header('Accept-Ranges', 'bytes');
-    reply.header('Content-Type', 'audio/webm');
+    reply.header('Content-Type', file.endsWith('.mp4') ? 'audio/mp4' : 'audio/webm');
 
     if (range) {
       const m = /^bytes=(\d*)-(\d*)$/.exec(range);

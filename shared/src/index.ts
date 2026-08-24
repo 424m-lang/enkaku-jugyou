@@ -443,11 +443,16 @@ export interface ServerToClientEvents {
 
   // 音声
   audio_chunk: (chunk: ArrayBuffer, seq: number) => void;
-  audio_init: (header: ArrayBuffer, seq: number) => void;
+  /**
+   * 録音の先頭。mime は先生の環境が実際に使った形式（AAC/MP4かOpus/WebM）。
+   * 受け手はこれを見てデコーダを作るので、固定値を前提にしてはいけない
+   */
+  audio_init: (header: ArrayBuffer, seq: number, mime: string) => void;
 
   // カメラ映像（音声込みの1本のストリーム。大画面と遠隔の生徒にだけ届く）
   av_chunk: (chunk: ArrayBuffer, seq: number) => void;
-  av_init: (header: ArrayBuffer, seq: number) => void;
+  /** 映像の先頭。mime の扱いは audio_init と同じ */
+  av_init: (header: ArrayBuffer, seq: number, mime: string) => void;
   /** カメラのON/OFF、大画面のレイアウト、遠隔の生徒へ映像を送るか */
   av_state: (p: {
     cameraOn: boolean;
@@ -505,9 +510,10 @@ export interface ClientToServerEvents {
   // 先生
   start_lesson: (cb: (res: { ok: boolean; error?: string }) => void) => void;
   end_lesson: (cb: (res: { ok: boolean; error?: string }) => void) => void;
-  audio_chunk: (chunk: ArrayBuffer) => void;
+  /** mime は MediaRecorder が実際に使った形式。受け手のデコーダ生成に必要 */
+  audio_chunk: (chunk: ArrayBuffer, mime?: string) => void;
   /** カメラ映像（音声込み）。文字起こしには使わず、保存もしない */
-  av_chunk: (chunk: ArrayBuffer) => void;
+  av_chunk: (chunk: ArrayBuffer, mime?: string) => void;
   camera_state: (p: { on: boolean; hasAudio?: boolean }) => void;
   /**
    * 大画面のレイアウトと、遠隔の生徒へ映像を送るかの切り替え。

@@ -2292,3 +2292,215 @@ button.slide-thumb:hover {
   width: 16px;
   height: 16px;
 }
+
+/* 音声を再生できない端末の警告。教室のモニターが無音のまま気づかれないのを防ぐ */
+.screen-audio-error {
+  position: absolute;
+  left: 50%;
+  top: 24px;
+  transform: translateX(-50%);
+  z-index: 30;
+  max-width: min(720px, 90vw);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 20px;
+  border-radius: 10px;
+  background: #7f1d1d;
+  color: #fff;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 35%);
+  text-align: center;
+}
+.screen-audio-error strong {
+  font-size: 20px;
+}
+.screen-audio-error span {
+  font-size: 14px;
+  opacity: 0.9;
+}
+
+.chip-warn {
+  background: #fef3c7;
+  color: #92400e;
+  border-color: #fcd34d;
+}
+
+/* ---- 現地確認ページ (/check) ---- */
+.check-page {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 24px 16px 64px;
+}
+.check-page h1 {
+  margin: 0 0 4px;
+  font-size: 24px;
+}
+.check-page h2 {
+  font-size: 16px;
+  margin: 28px 0 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+}
+.check-verdict {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 16px 0 8px;
+  padding: 16px 18px;
+  border-radius: 10px;
+  border-left: 6px solid;
+}
+.check-verdict strong {
+  font-size: 20px;
+}
+.check-verdict span {
+  font-size: 14px;
+  line-height: 1.6;
+}
+.check-verdict.check-ok {
+  background: #ecfdf5;
+  border-color: #059669;
+  color: #065f46;
+}
+.check-verdict.check-warn {
+  background: #fffbeb;
+  border-color: #d97706;
+  color: #92400e;
+}
+.check-verdict.check-ng {
+  background: #fef2f2;
+  border-color: #dc2626;
+  color: #991b1b;
+}
+.check-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.check-row {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 8px 0;
+  border-bottom: 1px dotted var(--border, #e5e7eb);
+}
+.check-mark {
+  flex: 0 0 1.4em;
+  font-weight: 700;
+  font-size: 18px;
+  text-align: center;
+}
+.check-row.check-ok .check-mark {
+  color: #059669;
+}
+.check-row.check-warn .check-mark {
+  color: #d97706;
+}
+.check-row.check-ng .check-mark {
+  color: #dc2626;
+}
+.check-row.check-pending .check-mark {
+  color: #9ca3af;
+}
+.check-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.check-detail {
+  font-size: 12px;
+  color: var(--muted, #6b7280);
+  word-break: break-all;
+}
+.check-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 10px 0;
+}
+.check-note {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--muted, #6b7280);
+  margin: 8px 0 0;
+}
+.check-ok-text {
+  color: #059669;
+  font-weight: 600;
+}
+.check-ng-text {
+  color: #dc2626;
+  font-weight: 600;
+}
+.check-ua {
+  margin-top: 32px;
+  font-size: 12px;
+  color: var(--muted, #6b7280);
+}
+.check-ua p {
+  word-break: break-all;
+  margin: 6px 0;
+}
+
+/* 先生画面: 配信形式がWebM系のときの警告（Apple系・テレビで音が出ない） */
+.teach-format-warn {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 8px 12px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  background: #fffbeb;
+  border-left: 5px solid #d97706;
+  color: #92400e;
+}
+.teach-format-warn > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+}
+.teach-format-warn strong {
+  font-size: 15px;
+}
+.teach-format-warn span {
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* 端末チェック: 役割の選択 */
+.check-roles {
+  margin: 16px 0 4px;
+}
+.check-roles-label {
+  display: block;
+  font-size: 13px;
+  color: var(--muted, #6b7280);
+  margin-bottom: 6px;
+}
+.check-roles-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 8px;
+}
+.check-roles-row .btn.tool {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 10px 12px;
+  text-align: left;
+  height: auto;
+  line-height: 1.4;
+}
+.check-role-hint {
+  font-size: 11px;
+  opacity: 0.75;
+  font-weight: 400;
+}
+.check-row.check-skip .check-mark {
+  color: #d1d5db;
+}
+.check-row.check-skip .check-label {
+  color: var(--muted, #9ca3af);
+}

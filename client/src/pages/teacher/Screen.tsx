@@ -4,7 +4,8 @@ import QRCode from 'qrcode';
 import type { LessonSummary, PointerPayload } from '@shared';
 import { api } from '../../lib/api';
 import { LiveAudioPlayer } from '../../lib/audio';
-import { LiveVideoPlayer, playableVideoMime } from '../../lib/camera';
+import { LiveVideoPlayer } from '../../lib/camera';
+import { useWakeLock } from '../../lib/useWakeLock';
 import { screenTokenFromUrl } from '../../lib/screenToken';
 import { useLessonLive } from '../../lib/useLessonLive';
 import SlideCanvas from '../../components/SlideCanvas';
@@ -28,6 +29,8 @@ export default function Screen() {
 
   const [pointer, setPointer] = useState<PointerPayload | null>(null);
   const [soundOn, setSoundOn] = useState(false);
+  // この端末のブラウザが先生の音声形式を再生できない場合の形式名（対応時は null）
+  const [unsupportedAudio, setUnsupportedAudio] = useState<string | null>(null);
   const [volume, setVolume] = useState(1);
   const [videoLive, setVideoLive] = useState(false);
   const [joinCode, setJoinCode] = useState('');
@@ -61,16 +64,20 @@ export default function Screen() {
 
       if (audioElRef.current) {
         audioPlayerRef.current = new LiveAudioPlayer(audioElRef.current);
+        // 教室のモニターが無音のまま放置されるのが最悪なので、必ず画面に出す
+        audioPlayerRef.current.onUnsupported = (mime) => setUnsupportedAudio(mime);
       }
-      socket.on('audio_init', (chunk) => audioPlayerRef.current?.reset(chunk));
+      socket.on('audio_init', (chunk, _seq, mime) => audioPlayerRef.current?.reset(chunk, mime));
       socket.on('audio_chunk', (chunk) => audioPlayerRef.current?.push(chunk));
 
-      const videoMime = playableVideoMime();
-      if (videoElRef.current && videoMime) {
-        videoPlayerRef.current = new LiveVideoPlayer(videoElRef.current, videoMime);
+      // 再生できる形式かは init が届くまで分からないので、プレイヤーは先に作っておく
+      if (videoElRef.current) {
+        videoPlayerRef.current = new LiveVideoPlayer(videoElRef.current);
+        // 映像が駄目でも授業は続くので、映像だけ下ろしてスライドに切り替える
+        videoPlayerRef.current.onUnsupported = () => setVideoLive(false);
       }
-      socket.on('av_init', (chunk) => {
-        videoPlayerRef.current?.reset(chunk);
+      socket.on('av_init', (chunk, _seq, mime) => {
+        videoPlayerRef.current?.reset(chunk, mime);
         setVideoLive(true);
       });
       socket.on('av_chunk', (chunk) => videoPlayerRef.current?.push(chunk));
@@ -150,38 +157,8 @@ export default function Screen() {
     setSoundOn(true);
   }, []);
 
-  // ---- 画面のスリープ防止 ----
   // 投影中に教室PCの画面が暗くなると授業が止まるため、可能な環境では抑止する
-  useEffect(() => {
-    type WakeLockLike = { release: () => Promise<void> };
-    const nav = navigator as Navigator & {
-      wakeLock?: { request: (type: 'screen') => Promise<WakeLockLike> };
-    };
-    const wakeLock = nav.wakeLock;
-    if (!wakeLock) return;
-    let lock: WakeLockLike | null = null;
-    let disposed = false;
-    const acquire = async () => {
-      try {
-        const next = await wakeLock.request('screen');
-        if (disposed) void next.release().catch(() => {});
-        else lock = next;
-      } catch {
-        /* 権限やブラウザの制限で取れないことがある。取れなくても投影は続く */
-      }
-    };
-    void acquire();
-    // タブが裏に回るとロックは自動的に解除されるので、戻ったら取り直す
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') void acquire();
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => {
-      disposed = true;
-      document.removeEventListener('visibilitychange', onVisible);
-      void lock?.release().catch(() => {});
-    };
-  }, []);
+  useWakeLock();
 
   // ---- 全画面 ----
   useEffect(() => {
@@ -259,6 +236,16 @@ export default function Screen() {
           </div>
         )}
       </div>
+
+      {unsupportedAudio && (
+        <div className="screen-audio-error" role="alert">
+          <strong>この端末では音声を再生できません</strong>
+          <span>
+            ブラウザが {unsupportedAudio} に対応していません。
+            別の端末（Windows／Chromebook／Android）でこの画面を開いてください。
+          </span>
+        </div>
+      )}
 
       <div className={`screen-controls ${controlsVisible ? '' : 'screen-controls-hidden'}`}>
         {!soundOn ? (

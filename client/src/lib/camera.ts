@@ -9,8 +9,18 @@ import { LiveMediaPlayer } from './liveMedia';
  * これとは別に動き続けており、こちらは録音・保存もしない（ライブ限定）。
  */
 
-// MSEで再生できる組み合わせを優先順に試す（VP8は対応が最も広い）
+/**
+ * 送信に使う組み合わせを、受け手の対応が広い順に並べる。
+ *
+ * H.264/AAC のMP4を先頭にしているのは、Safari（iPad・Mac・Apple TV）と
+ * テレビ内蔵ブラウザのMSEがWebMを再生できないため。Chrome系はどちらも再生できるので、
+ * MP4で送れる環境ならMP4で送るのが最も多くの端末に届く。
+ * baseline profile（avc1.42E01E）は最も対応の広いプロファイル。
+ */
 const VIDEO_MIME_CANDIDATES = [
+  'video/mp4;codecs="avc1.42E01E,mp4a.40.2"',
+  'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+  'video/mp4',
   'video/webm;codecs="vp8,opus"',
   'video/webm;codecs="vp9,opus"',
   'video/webm',
@@ -20,20 +30,17 @@ const CHUNK_MS = 500;
 /** 授業の実演が見える範囲で通信量を抑える（720pの動きの少ない映像を想定） */
 const VIDEO_BITS_PER_SECOND = 900_000;
 
-/** 送受信の両方で使える形式。無ければこの環境では映像を扱えない */
+/**
+ * この環境で送信に使える形式。無ければこの端末からは映像を配信できない。
+ *
+ * 以前は「送信と再生の両方ができる形式」を選んでいたが、再生するのは受け手であって
+ * 先生の端末ではない。先生の環境でたまたま再生できるかどうかで形式を決めると、
+ * 受け手にとって不利な形式を選んでしまうため、送信できるかだけで判断する。
+ */
 export function supportedVideoMime(): string | null {
+  if (typeof MediaRecorder === 'undefined') return null;
   for (const mime of VIDEO_MIME_CANDIDATES) {
-    const canSend = typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(mime);
-    const canPlay = typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported(mime);
-    if (canSend && canPlay) return mime;
-  }
-  return null;
-}
-
-/** 再生だけできれば良い側（大画面・生徒）の判定 */
-export function playableVideoMime(): string | null {
-  for (const mime of VIDEO_MIME_CANDIDATES) {
-    if (typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported(mime)) return mime;
+    if (MediaRecorder.isTypeSupported(mime)) return mime;
   }
   return null;
 }
@@ -102,9 +109,11 @@ export async function startCameraBroadcast(
     videoBitsPerSecond: VIDEO_BITS_PER_SECOND,
     audioBitsPerSecond: 48_000,
   });
+  // ブラウザが指定と違う形式を選ぶことがあるため、宣言ではなく実物を受け手に伝える
+  const actualMime = recorder.mimeType || mime;
   recorder.ondataavailable = (e) => {
     if (e.data.size > 0) {
-      void e.data.arrayBuffer().then((buf) => socket.emit('av_chunk', buf));
+      void e.data.arrayBuffer().then((buf) => socket.emit('av_chunk', buf, actualMime));
     }
   };
   recorder.start(CHUNK_MS);
@@ -121,7 +130,7 @@ export async function startCameraBroadcast(
 
 /** 大画面・遠隔の生徒側: カメラ映像（音声込み）を再生する */
 export class LiveVideoPlayer extends LiveMediaPlayer {
-  constructor(el: HTMLVideoElement, mime: string) {
-    super(el, mime);
+  constructor(el: HTMLVideoElement) {
+    super(el);
   }
 }

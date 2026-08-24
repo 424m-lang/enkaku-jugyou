@@ -193,15 +193,16 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
     });
 
     // 参加直後に現在のライブ状態のスナップショットを送る
+    // （形式未申告の相手には従来のWebMを既定にしておく）
     socket.emit('lesson_state', toLiveState(s));
     socket.emit('av_state', avState());
     // 音声配信中で、この接続が音声を受け取る対象なら、デコーダ初期化用のヘッダチャンクを送る
     if (s.audioInitSegment && s.status === 'live' && socket.rooms.has(audioRoom)) {
-      socket.emit('audio_init', toArrayBuffer(s.audioInitSegment), s.audioSeq);
+      socket.emit('audio_init', toArrayBuffer(s.audioInitSegment), s.audioSeq, audioMimeOf(s));
     }
     // カメラ配信中で、この接続が映像を受け取る対象なら同じくヘッダを送る
     if (s.avInitSegment && s.cameraOn && socket.rooms.has(avRoom)) {
-      socket.emit('av_init', toArrayBuffer(s.avInitSegment), s.avSeq);
+      socket.emit('av_init', toArrayBuffer(s.avInitSegment), s.avSeq, avMimeOf(s));
     }
 
     await broadcastParticipantCount(io, room);
@@ -255,23 +256,26 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
 
       // 音声（文字起こし用の録音と共通）。教室で受けている生徒には音が要らないので、
       // 大画面と、音声を鳴らす設定の生徒だけに中継する
-      socket.on('audio_chunk', async (chunk) => {
+      socket.on('audio_chunk', async (chunk, mime) => {
         if (s.status !== 'live') return;
         try {
           const buf = Buffer.from(chunk as ArrayBuffer);
-          const { isInit, seq } = await handleAudioChunk(s, buf);
-          io.to(audioRoom).emit(isInit ? 'audio_init' : 'audio_chunk', chunk, seq);
+          const { isInit, seq } = await handleAudioChunk(s, buf, mime);
+          // 先頭チャンクだけは形式を添える（受け手はこれを見てデコーダを作る）
+          if (isInit) io.to(audioRoom).emit('audio_init', chunk, seq, audioMimeOf(s));
+          else io.to(audioRoom).emit('audio_chunk', chunk, seq);
         } catch (err) {
           app.log.error(err);
         }
       });
 
       // カメラ映像（音声込み）。保存はせず、大画面と対象の生徒にだけ中継する
-      socket.on('av_chunk', (chunk) => {
+      socket.on('av_chunk', (chunk, mime) => {
         if (!s.cameraOn) return;
         try {
-          const { isInit, seq } = handleAvChunk(s, Buffer.from(chunk as ArrayBuffer));
-          io.to(avRoom).emit(isInit ? 'av_init' : 'av_chunk', chunk, seq);
+          const { isInit, seq } = handleAvChunk(s, Buffer.from(chunk as ArrayBuffer), mime);
+          if (isInit) io.to(avRoom).emit('av_init', chunk, seq, avMimeOf(s));
+          else io.to(avRoom).emit('av_chunk', chunk, seq);
         } catch (err) {
           app.log.error(err);
         }
@@ -662,6 +666,19 @@ function shouldReceiveVideo(s: LiveSession, participantId: string): boolean {
  * 教室で受けている（ミュートの）生徒には音声も映像も送らないので通信量を使わない。
  * 音声の設定を変えると両方の対象が変わるため、常にまとめて更新する。
  */
+/**
+ * 中継する音声・映像の形式。
+ * 先生の環境がAAC/MP4を選べばそれを、選べなければWebM/Opusを配る。
+ * 形式が届いていない場合（古いクライアント）は従来のWebMとみなす。
+ */
+function audioMimeOf(s: LiveSession): string {
+  return s.audioMime ?? 'audio/webm;codecs=opus';
+}
+
+function avMimeOf(s: LiveSession): string {
+  return s.avMime ?? 'video/webm;codecs="vp8,opus"';
+}
+
 async function syncStudentAv(
   io: TypedServer,
   s: LiveSession,
@@ -680,7 +697,7 @@ async function syncStudentAv(
       sock.join(audioRoom);
       // 途中から音声を受け取り始める端末にはデコーダ初期化用のヘッダが要る
       if (s.audioInitSegment && s.status === 'live') {
-        sock.emit('audio_init', toArrayBuffer(s.audioInitSegment), s.audioSeq);
+        sock.emit('audio_init', toArrayBuffer(s.audioInitSegment), s.audioSeq, audioMimeOf(s));
       }
     } else if (!wantsAudio && sock.rooms.has(audioRoom)) {
       sock.leave(audioRoom);
@@ -690,7 +707,7 @@ async function syncStudentAv(
     if (wantsVideo && !sock.rooms.has(avRoom)) {
       sock.join(avRoom);
       if (s.avInitSegment && s.cameraOn) {
-        sock.emit('av_init', toArrayBuffer(s.avInitSegment), s.avSeq);
+        sock.emit('av_init', toArrayBuffer(s.avInitSegment), s.avSeq, avMimeOf(s));
       }
     } else if (!wantsVideo && sock.rooms.has(avRoom)) {
       sock.leave(avRoom);
