@@ -7,10 +7,13 @@ services:
     runtime: docker
     plan: starter # 永続ディスクとWebSocketのため（freeはディスク不可）
     healthCheckPath: /api/health
+    # ディスクは後から増やせるが減らせないので、小さく始めて必要になったら足す。
+    # 内訳の目安: 音声録音が1授業あたり約32MB（48kbps×90分）、PDFが数MB、
+    # 文字起こし用の一時WAVが一時的に最大200MBほど。3GBで50授業前後は入る
     disk:
       name: data
       mountPath: /data
-      sizeGB: 10
+      sizeGB: 3
     envVars:
       - key: DATA_DIR
         value: /data
