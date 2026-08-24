@@ -3,9 +3,10 @@ import type { FastifyInstance } from 'fastify';
 import type { Server, Socket } from 'socket.io';
 import { eq } from 'drizzle-orm';
 import type { ClientToServerEvents, PollType, ScreenLayout, ServerToClientEvents } from '@shared';
-import { MAX_TASKS } from '@shared';
+import { MAX_CAPTION_CHARS, MAX_TASKS } from '@shared';
 import { db, schema } from './db';
 import { verifyParticipantToken } from './auth';
+import { captionHistory } from './live/captions';
 import {
   getSession,
   toLiveState,
@@ -21,6 +22,7 @@ import {
   endLesson,
   insertBlankSlide,
   touchParticipants,
+  setCaptionsEnabled,
   setReactionsEnabled,
   setTasks,
   setTaskConfig,
@@ -425,6 +427,38 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         }
       });
 
+      // ---- 自動字幕 ----
+      // 先生の端末のブラウザ音声認識の結果を、そのまま参加者へ配る。
+      // 音声の中継とは別経路で、遅延1秒未満で届く（音声はサーバ側の文字起こしを
+      // 待つと10秒以上遅れ、耳の不自由な生徒には使えないため）。
+      socket.on('caption', async (p) => {
+        if (s.status !== 'live' || !s.captionsEnabled) return;
+        const text = String(p?.text ?? '').trim().slice(0, MAX_CAPTION_CHARS);
+        if (!text) return;
+        const t = tMs(s);
+        io.to(room).emit('caption', { text, final: !!p.final, tMs: t });
+        // 記録するのは確定ぶんだけ。暫定は同じ発話が何度も届くので残さない
+        if (p.final) {
+          try {
+            await recordEvent(s, 'caption', { text }, t);
+          } catch (err) {
+            app.log.error(err);
+          }
+        }
+      });
+
+      socket.on('set_captions', async (p, cb) => {
+        try {
+          if (typeof p?.enabled !== 'boolean') return cb({ ok: false });
+          await setCaptionsEnabled(s, p.enabled);
+          io.to(room).emit('lesson_state', toLiveState(s));
+          cb({ ok: true });
+        } catch (err) {
+          app.log.error(err);
+          cb({ ok: false });
+        }
+      });
+
       // ---- アンケート ----
       // 設問一覧は先生にだけ配る（生徒に配ると次に聞く質問が見えてしまう）
       socket.on('save_poll', async (p, cb) => {
@@ -603,6 +637,16 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         }
       });
     }
+
+    // 字幕の履歴。開いたときだけ取りに来るので、常時配らない
+    socket.on('get_captions', async (cb) => {
+      try {
+        cb({ lines: await captionHistory(s) });
+      } catch (err) {
+        app.log.error(err);
+        cb({ lines: [] });
+      }
+    });
 
     socket.on('disconnect', async () => {
       await broadcastParticipantCount(io, room);
