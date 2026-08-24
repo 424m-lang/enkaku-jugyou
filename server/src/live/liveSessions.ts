@@ -4,6 +4,7 @@ import path from 'node:path';
 import { asc, eq, inArray } from 'drizzle-orm';
 import type {
   AudioMode,
+  LessonTask,
   LiveLessonState,
   LessonStatus,
   ParticipantInfo,
@@ -11,10 +12,14 @@ import type {
   ReactionCounts,
   ScreenLayout,
   SlideInfo,
+  TaskMode,
+  TaskProgressEntry,
+  TaskProgressPayload,
   TimelineEvent,
   TimelineEventType,
   TranscriptSegment,
 } from '@shared';
+import { MAX_TASKS, applyTaskChange } from '@shared';
 import { db, schema } from '../db';
 import { lessonDir } from '../storage';
 
@@ -51,6 +56,16 @@ export type LiveSession = {
   /** 途中参加者が描画状態を再構成するための stroke / clear_slide イベント */
   drawingEvents: TimelineEvent[];
   counts: ReactionCounts;
+
+  // ---- タスク ----
+  tasks: LessonTask[];
+  taskMode: TaskMode;
+  /** 生徒画面にタスクバーを出しているか */
+  tasksActive: boolean;
+  /** participantId → 完了したタスクidの集合。task_progress イベントの畳み込み結果 */
+  taskProgress: Map<string, Set<string>>;
+  /** participantId → 最後に進捗が動いた tMs（止まっている生徒の検知に使う） */
+  taskUpdatedAt: Map<string, number>;
 
   /**
    * コメント入力中の生徒（participantId → 入力対象スライド・入力開始時刻・最終合図時刻）。
@@ -133,6 +148,11 @@ export async function getSession(lessonId: string): Promise<LiveSession | null> 
     currentSlideId: slides[0]?.id ?? null,
     drawingEvents: [],
     counts: {},
+    tasks: lesson.tasks ?? [],
+    taskMode: lesson.taskMode,
+    tasksActive: lesson.tasksActive,
+    taskProgress: new Map(),
+    taskUpdatedAt: new Map(),
     composing: new Map(),
     currentAudioPart: null,
     audioSeq: 0,
@@ -225,16 +245,27 @@ export function applyEventToState(s: LiveSession, ev: TimelineEvent): void {
       });
       break;
     }
+    case 'task_progress': {
+      // 差分ではなくその時点の完了一覧なので、最後のものがそのまま現在の状態になる
+      const p = ev.payload as TaskProgressPayload;
+      s.taskProgress.set(p.participantId, new Set(p.taskIds));
+      s.taskUpdatedAt.set(p.participantId, ev.tMs);
+      break;
+    }
     // reflection_start / reflection_end は旧機能のイベント（無視して読み飛ばす）
   }
 }
 
-/** イベントをDBに永続化しつつライブ状態へ反映 */
+/**
+ * イベントをDBに永続化しつつライブ状態へ反映。
+ * actor は既定で 'teacher'。生徒が起こしたイベント（タスク進捗）は participantId を渡す
+ */
 export async function recordEvent(
   s: LiveSession,
   type: TimelineEventType,
   payload: unknown,
-  eventTMs?: number
+  eventTMs?: number,
+  actor = 'teacher'
 ): Promise<TimelineEvent> {
   const ev: TimelineEvent = {
     id: crypto.randomUUID(),
@@ -248,7 +279,7 @@ export async function recordEvent(
     lessonId: s.lessonId,
     tMs: ev.tMs,
     type,
-    actor: 'teacher',
+    actor,
     payload: payload as object,
   });
   return ev;
@@ -292,7 +323,104 @@ export function toLiveState(s: LiveSession): LiveLessonState {
     audioDefault: s.audioDefault,
     cameraOn: s.cameraOn,
     screenLayout: s.screenLayout,
+    tasks: s.tasks,
+    taskMode: s.taskMode,
+    tasksActive: s.tasksActive,
   };
+}
+
+// ---- タスク ----
+
+/**
+ * タスク一覧を差し替える（授業前の設定も授業中の追加も同じ経路）。
+ * id が付いているものは既存タスクとして維持し、id 無しを新規として採番する。
+ * 授業中に増えたタスクには追加時刻を記録しておく（0%の意味が「未着手」ではなく
+ * 「まだ存在していなかった」であることを、授業後の集計で区別できるように）。
+ */
+export async function setTasks(
+  s: LiveSession,
+  input: { id?: string; label: string }[]
+): Promise<LessonTask[]> {
+  const now = s.startedAtEpochMs ? tMs(s) : null;
+  const existing = new Map(s.tasks.map((t) => [t.id, t]));
+  const next: LessonTask[] = [];
+  for (const item of input.slice(0, MAX_TASKS)) {
+    const label = item.label.trim().slice(0, 40);
+    if (!label) continue;
+    const prev = item.id ? existing.get(item.id) : undefined;
+    next.push(
+      prev ? { ...prev, label } : { id: crypto.randomUUID(), label, addedAtMs: now }
+    );
+  }
+  s.tasks = next;
+  await db.update(schema.lessons).set({ tasks: next }).where(eq(schema.lessons.id, s.lessonId));
+
+  // 消えたタスクの完了記録は畳んだ状態からも外す（残すと達成率の分子がずれる）
+  const alive = new Set(next.map((t) => t.id));
+  for (const [pid, done] of s.taskProgress) {
+    for (const id of done) if (!alive.has(id)) done.delete(id);
+    if (done.size === 0) s.taskProgress.delete(pid);
+  }
+  return next;
+}
+
+export async function setTaskConfig(
+  s: LiveSession,
+  p: { mode?: TaskMode; active?: boolean }
+): Promise<void> {
+  const patch: { taskMode?: TaskMode; tasksActive?: boolean } = {};
+  if (p.mode === 'sequential' || p.mode === 'free') {
+    s.taskMode = p.mode;
+    patch.taskMode = p.mode;
+  }
+  if (typeof p.active === 'boolean') {
+    s.tasksActive = p.active;
+    patch.tasksActive = p.active;
+  }
+  if (Object.keys(patch).length === 0) return;
+  await db.update(schema.lessons).set(patch).where(eq(schema.lessons.id, s.lessonId));
+}
+
+/**
+ * 生徒1人のタスク完了・取り消しを適用して記録する。
+ * 順番通りモードの補完はここ（applyTaskChange）だけで行い、生徒側には持たせない。
+ * 変化が無ければ null を返す（同じ状態の再送でイベントを増やさない）。
+ */
+export async function setTaskProgress(
+  s: LiveSession,
+  participantId: string,
+  taskId: string,
+  done: boolean
+): Promise<string[] | null> {
+  const current = s.tasks
+    .filter((t) => s.taskProgress.get(participantId)?.has(t.id))
+    .map((t) => t.id);
+  const next = applyTaskChange(s.tasks, current, taskId, done, s.taskMode);
+  if (next.length === current.length && next.every((id, i) => id === current[i])) return null;
+
+  const payload: TaskProgressPayload = { participantId, taskIds: next };
+  await recordEvent(s, 'task_progress', payload, undefined, participantId);
+  return next;
+}
+
+export function taskProgressOf(s: LiveSession, participantId: string): string[] {
+  const done = s.taskProgress.get(participantId);
+  if (!done) return [];
+  return s.tasks.filter((t) => done.has(t.id)).map((t) => t.id);
+}
+
+/** 先生画面に出す全員分の進捗。まだ何もしていない参加者も 0件として含める */
+export async function listTaskProgress(s: LiveSession): Promise<TaskProgressEntry[]> {
+  const rows = await db
+    .select({ id: schema.participants.id, displayName: schema.participants.displayName })
+    .from(schema.participants)
+    .where(eq(schema.participants.lessonId, s.lessonId));
+  return rows.map((r) => ({
+    participantId: r.id,
+    participantName: r.displayName,
+    taskIds: taskProgressOf(s, r.id),
+    updatedAtMs: s.taskUpdatedAt.get(r.id) ?? 0,
+  }));
 }
 
 // ---- 生徒端末の音声 ----

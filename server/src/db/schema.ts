@@ -8,7 +8,7 @@ import {
   doublePrecision,
   index,
 } from 'drizzle-orm/pg-core';
-import type { InsightComment, ReactionButtonDef, ReactionCounts } from '@shared';
+import type { InsightComment, LessonTask, ReactionButtonDef, ReactionCounts } from '@shared';
 
 export const teachers = pgTable('teachers', {
   id: text('id').primaryKey(),
@@ -40,6 +40,14 @@ export const lessons = pgTable('lessons', {
   audioDefault: text('audio_default', { enum: ['on', 'off'] })
     .notNull()
     .default('on'),
+  // 授業中に生徒へ出すタスク（事前設定・授業中の追加のどちらも同じ配列に入る）
+  tasks: jsonb('tasks').$type<LessonTask[]>().notNull().default([]),
+  // タスクの進め方。sequential=順番通り（既定）、free=順不同
+  taskMode: text('task_mode', { enum: ['sequential', 'free'] })
+    .notNull()
+    .default('sequential'),
+  // 生徒画面にタスクバーを出しているか（先生が授業中に開始・終了する）
+  tasksActive: boolean('tasks_active').notNull().default(false),
   // 教室スクリーン（大画面）を先生のログイン無しで開くためのトークン
   screenToken: text('screen_token').unique(),
   // 復習動画（章立て再生ページ）の公開用トークン。未公開ならnull

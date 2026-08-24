@@ -2,11 +2,13 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
   AudioMode,
   LessonStatus,
+  LessonTask,
   LiveLessonState,
   ReactionButtonDef,
   ScreenLayout,
   SlideInfo,
   StrokePayload,
+  TaskMode,
 } from '@shared';
 import { connectLessonSocket, type AppSocket } from './socket';
 import { loadLessonPdf, type PdfCache } from './pdf';
@@ -46,6 +48,10 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
   const [avHasAudio, setAvHasAudio] = useState(false);
   const [screenLayout, setScreenLayout] = useState<ScreenLayout>('slide');
   const [videoToStudents, setVideoToStudents] = useState(false);
+  // タスク。誰がどこまで進んだかはここには入らない（進捗は画面ごとに別イベントで受ける）
+  const [tasks, setTasks] = useState<LessonTask[]>([]);
+  const [taskMode, setTaskMode] = useState<TaskMode>('sequential');
+  const [tasksActive, setTasksActive] = useState(false);
 
   useEffect(() => {
     if (!lessonId) return;
@@ -71,6 +77,9 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
       setCurrentSlideId((cur) => st.currentSlideId ?? cur ?? st.slides[0]?.id ?? null);
       setStrokes(rebuildStrokes(st.drawingEvents));
       setAudioDefault(st.audioDefault);
+      setTasks(st.tasks);
+      setTaskMode(st.taskMode);
+      setTasksActive(st.tasksActive);
       optionsRef.current.onLessonState?.(st);
     });
 
@@ -151,5 +160,8 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
     avHasAudio,
     screenLayout,
     videoToStudents,
+    tasks,
+    taskMode,
+    tasksActive,
   };
 }

@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import type { Server, Socket } from 'socket.io';
 import { eq } from 'drizzle-orm';
 import type { ClientToServerEvents, ScreenLayout, ServerToClientEvents } from '@shared';
+import { MAX_TASKS } from '@shared';
 import { db, schema } from './db';
 import { verifyParticipantToken } from './auth';
 import {
@@ -20,6 +21,11 @@ import {
   endLesson,
   insertBlankSlide,
   touchParticipants,
+  setTasks,
+  setTaskConfig,
+  setTaskProgress,
+  taskProgressOf,
+  listTaskProgress,
   tMs,
   type LiveSession,
 } from './live/liveSessions';
@@ -151,8 +157,13 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
     if (role === 'student' && socket.data.participantId) {
       const pid = socket.data.participantId;
       socket.emit('audio_permission', { audio: effectiveAudio(s, pid) });
+      // 自分の進捗だけを返す（他の生徒がどこまで進んだかは生徒には見せない）
+      socket.emit('my_task_progress', { taskIds: taskProgressOf(s, pid) });
       if (shouldReceiveAudio(s, pid)) await socket.join(audioRoom);
       if (shouldReceiveVideo(s, pid)) await socket.join(avRoom);
+    }
+    if (role === 'teacher') {
+      socket.emit('task_progress_all', await listTaskProgress(s));
     }
 
     const avState = () => ({
@@ -177,6 +188,9 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
     await broadcastParticipantCount(io, room);
     await broadcastScreenCount(io, room, teacherRoom);
     await broadcastParticipants(io, s, room, teacherRoom);
+    // 途中参加で分母（参加者数）が変わるため、達成率を配り直す。
+    // これを忘れると「12人中3人」がいつまでも「2人中1人」のまま見え、判断を誤らせる
+    if (role === 'student') io.to(teacherRoom).emit('task_progress_all', await listTaskProgress(s));
 
     // サーバ再起動後などで文字起こしがまだ動いていなければ復元して再開する。
     // タイマーを同期的に張ってから復元することで、複数接続でも二重起動しない
@@ -340,6 +354,42 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         }
       });
 
+      // タスク一覧の設定。授業前の事前設定と授業中の追加が同じ経路を通る
+      socket.on('set_tasks', async (p, cb) => {
+        try {
+          if (!Array.isArray(p?.tasks)) return cb({ ok: false, error: '入力が不正です' });
+          if (p.tasks.length > MAX_TASKS) {
+            return cb({ ok: false, error: `タスクは${MAX_TASKS}個までです` });
+          }
+          if (p.tasks.some((t) => typeof t?.label !== 'string')) {
+            return cb({ ok: false, error: '入力が不正です' });
+          }
+          const tasks = await setTasks(s, p.tasks);
+          io.to(room).emit('lesson_state', toLiveState(s));
+          // タスクが消えると完了記録も外れるので、先生側の集計を配り直す
+          io.to(teacherRoom).emit('task_progress_all', await listTaskProgress(s));
+          cb({ ok: true, tasks });
+        } catch (err) {
+          app.log.error(err);
+          cb({ ok: false });
+        }
+      });
+
+      socket.on('set_task_config', async (p, cb) => {
+        try {
+          if (p?.mode !== undefined && p.mode !== 'sequential' && p.mode !== 'free') {
+            return cb({ ok: false });
+          }
+          if (p?.active !== undefined && typeof p.active !== 'boolean') return cb({ ok: false });
+          await setTaskConfig(s, p ?? {});
+          io.to(room).emit('lesson_state', toLiveState(s));
+          cb({ ok: true });
+        } catch (err) {
+          app.log.error(err);
+          cb({ ok: false });
+        }
+      });
+
     }
 
     // ================= 生徒のイベント =================
@@ -399,6 +449,31 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           cb({ ok: false });
         }
       });
+
+      // タスクの完了・取り消し
+      socket.on('task_set', async (p, cb) => {
+        try {
+          if (s.status !== 'live' || !s.tasksActive) return cb({ ok: false });
+          if (typeof p?.taskId !== 'string' || typeof p?.done !== 'boolean') {
+            return cb({ ok: false });
+          }
+          const pid = socket.data.participantId!;
+          const taskIds = await setTaskProgress(s, pid, p.taskId, p.done);
+          cb({ ok: true });
+          if (!taskIds) return; // 変化なし（同じ状態の再送）
+          socket.emit('my_task_progress', { taskIds });
+          io.to(teacherRoom).emit('task_progress', {
+            participantId: pid,
+            participantName: socket.data.participantName!,
+            taskIds,
+            updatedAtMs: tMs(s),
+          });
+        } catch (err) {
+          app.log.error(err);
+          cb({ ok: false });
+        }
+      });
+
     }
 
     socket.on('disconnect', async () => {
@@ -410,6 +485,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       }
       if (socket.data.role === 'student') {
         await broadcastParticipants(io, s, room, teacherRoom);
+        io.to(teacherRoom).emit('task_progress_all', await listTaskProgress(s));
       }
     });
   });
@@ -418,6 +494,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
 function isScreenLayout(v: string): v is ScreenLayout {
   return v === 'slide' || v === 'video' || v === 'slide-only';
 }
+
 
 /** Buffer をコピーせず ArrayBuffer として渡す（Socket.IOのバイナリ送信用） */
 function toArrayBuffer(buf: Buffer): ArrayBuffer {

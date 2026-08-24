@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { AudioMode, PointerPayload } from '@shared';
+import { applyTaskChange } from '@shared';
 import { LiveAudioPlayer } from '../../lib/audio';
 import { LiveVideoPlayer, playableVideoMime } from '../../lib/camera';
 import { ReactionQueue } from '../../lib/reactionQueue';
 import { useLessonLive } from '../../lib/useLessonLive';
 import SlideCanvas from '../../components/SlideCanvas';
+import TaskBar from '../../components/TaskBar';
 
 export default function Class() {
   const navigate = useNavigate();
@@ -21,6 +23,8 @@ export default function Class() {
   const [comment, setComment] = useState('');
   const [queuedCount, setQueuedCount] = useState(0);
   const [flash, setFlash] = useState<string | null>(null);
+  // 自分が完了したタスク。他の生徒の進捗は届かない
+  const [myTaskIds, setMyTaskIds] = useState<string[]>([]);
 
   const audioElRef = useRef<HTMLAudioElement>(null);
   const videoElRef = useRef<HTMLVideoElement>(null);
@@ -47,8 +51,13 @@ export default function Class() {
     currentProgress,
     pdf,
     avHasAudio,
+    tasks,
+    taskMode,
+    tasksActive,
   } = useLessonLive(lessonId && hasToken ? lessonId : null, {
     setup: (socket) => {
+      // 自分の進捗（再接続時もサーバの値で上書きされる）
+      socket.on('my_task_progress', (p) => setMyTaskIds(p.taskIds));
       // 生徒画面だけが受け取るイベント
       queueRef.current = new ReactionQueue(lessonId!, socket);
       setQueuedCount(queueRef.current.pendingCount);
@@ -162,6 +171,16 @@ export default function Class() {
     await sendReaction('comment', text, slideId);
   }, [comment, sendReaction, currentSlideId]);
 
+  // タスクの完了・取り消し。押した瞬間に手元へ反映し、サーバの結果で上書きする
+  // （順番通りモードの「前のタスクもまとめて完了」は同じ関数がサーバ側でも走る）
+  const setTask = useCallback(
+    (taskId: string, done: boolean) => {
+      setMyTaskIds((prev) => applyTaskChange(tasks, prev, taskId, done, taskMode));
+      socketRef.current?.emit('task_set', { taskId, done }, () => {});
+    },
+    [socketRef, tasks, taskMode]
+  );
+
   if (!lessonId) return null;
 
   return (
@@ -214,6 +233,15 @@ export default function Class() {
 
       <footer className="reaction-bar">
         {flash && <div className="flash">{flash}</div>}
+        {status === 'live' && tasksActive && (
+          <TaskBar
+            tasks={tasks}
+            mode={taskMode}
+            doneIds={myTaskIds}
+            disabled={status !== 'live'}
+            onSet={setTask}
+          />
+        )}
         <div className="reaction-buttons">
           {buttons.map((b) => (
             <button

@@ -7,6 +7,8 @@ import type {
   ReactionButtonDef,
   ReactionFeedItem,
   StrokePayload,
+  TaskMode,
+  TaskProgressEntry,
 } from '@shared';
 import { api, ApiError } from '../../lib/api';
 import { startAudioBroadcast } from '../../lib/audio';
@@ -18,6 +20,7 @@ import { makeReactionMeta } from '../../lib/reactionMeta';
 import SlideCanvas, { type DrawingTool } from '../../components/SlideCanvas';
 import JoinQrModal from '../../components/JoinQrModal';
 import ClassroomPanel from '../../components/ClassroomPanel';
+import TaskPanel from '../../components/TaskPanel';
 
 // 黒 ＋ カラーユニバーサルデザイン（Okabe-Ito）の3色。色覚の違いがあっても見分けやすい
 const COLORS: { value: string; label: string }[] = [
@@ -58,6 +61,7 @@ export default function Teach() {
   const [joinCode, setJoinCode] = useState('');
   const [reactions, setReactions] = useState<ReactionFeedItem[]>([]);
   const [insights, setInsights] = useState<CommentInsight[]>([]);
+  const [taskProgress, setTaskProgress] = useState<TaskProgressEntry[]>([]);
   const [participantCount, setParticipantCount] = useState(0);
   const [participants, setParticipants] = useState<ParticipantInfo[]>([]);
   const [screenCount, setScreenCount] = useState(0);
@@ -104,6 +108,9 @@ export default function Teach() {
     cameraOn,
     screenLayout,
     videoToStudents,
+    tasks,
+    taskMode,
+    tasksActive,
   } = useLessonLive(lessonId, {
     onLessonState: (st) => {
       lessonClockRef.current = {
@@ -133,6 +140,17 @@ export default function Teach() {
       // 既存カードへ統合されて不要になったカードを取り除く
       socket.on('comment_insight_removed', (id) => {
         setInsights((prev) => prev.filter((x) => x.id !== id));
+      });
+      // タスクの進捗（接続直後に全件、以後は動いた生徒の分だけ届く）
+      socket.on('task_progress_all', (list) => setTaskProgress(list));
+      socket.on('task_progress', (entry) => {
+        setTaskProgress((prev) => {
+          const i = prev.findIndex((p) => p.participantId === entry.participantId);
+          if (i < 0) return [...prev, entry];
+          const next = [...prev];
+          next[i] = entry;
+          return next;
+        });
       });
     },
   });
@@ -413,6 +431,27 @@ export default function Teach() {
     return counts;
   }, [reactions, nowTick]);
 
+  // 授業タイムライン上の現在時刻（タスクの滞留時間の計算に使う）
+  const lessonNowMs = useMemo(() => {
+    const clock = lessonClockRef.current;
+    if (!clock.startedAtEpochMs) return null;
+    return nowTick + clock.offsetMs - clock.startedAtEpochMs;
+  }, [nowTick]);
+
+  const setTasksRemote = useCallback(
+    (list: { id?: string; label: string }[]) => {
+      socketRef.current?.emit('set_tasks', { tasks: list }, () => {});
+    },
+    [socketRef]
+  );
+
+  const setTaskConfigRemote = useCallback(
+    (p: { mode?: TaskMode; active?: boolean }) => {
+      socketRef.current?.emit('set_task_config', p, () => {});
+    },
+    [socketRef]
+  );
+
   if (loadError) {
     return (
       <div className="page-center">
@@ -611,6 +650,16 @@ export default function Teach() {
               videoToStudents={videoToStudents}
             />
           )}
+          <TaskPanel
+            tasks={tasks}
+            mode={taskMode}
+            active={tasksActive}
+            progress={taskProgress}
+            status={status}
+            nowMs={lessonNowMs}
+            onSetTasks={setTasksRemote}
+            onSetConfig={setTaskConfigRemote}
+          />
           <div className="card feed-card">
             <h3>コメント・振り返り</h3>
             <div className="insight-list">

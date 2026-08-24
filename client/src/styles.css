@@ -1568,3 +1568,355 @@ button.slide-thumb:hover {
     min-height: 0;
   }
 }
+
+/* ---- タスク（生徒画面のタスクバー） ---- */
+/* 先生がタスクモードを開始している間だけ出る1行。スマホ横向きでも既存の2行に
+   足して収まるよう、高さを固定してスライド領域に場所を譲る */
+.task-bar {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #f9fafb;
+  overflow: hidden;
+}
+
+/* 授業中にタスクが増えたときだけ光らせる（全部終えた生徒が変化に気づけるように） */
+.task-bar-new {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+}
+
+.task-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 4px 8px;
+}
+
+.task-dots {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.task-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--border);
+}
+
+.task-dot.done {
+  background: var(--ok);
+}
+
+.task-dot.current {
+  width: 20px;
+  height: 20px;
+  background: #dcfce7;
+  border: 2px solid var(--ok);
+  color: #14532d;
+  font-size: 0.7rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 現在地の表示。押すと一覧が開く（押し忘れ・誤操作をここから直す） */
+.task-label {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--text);
+  background: none;
+  border: none;
+  padding: 6px 2px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.task-label-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-caret {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.task-done-btn {
+  flex-shrink: 0;
+  font: inherit;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #fff;
+  background: var(--ok);
+  border: none;
+  border-radius: 10px;
+  padding: 9px 20px;
+  cursor: pointer;
+}
+
+.task-undo {
+  flex-shrink: 0;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--muted);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+
+/* 順不同モード: 「次」が決まらないので名前のチップを直接押して切り替える */
+.task-chips {
+  display: flex;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.task-chips::-webkit-scrollbar {
+  display: none;
+}
+
+.task-chip {
+  flex-shrink: 0;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 8px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.task-chip.done {
+  background: #dcfce7;
+  border-color: var(--ok);
+  color: #14532d;
+}
+
+.task-count {
+  flex-shrink: 0;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--muted);
+  background: none;
+  border: none;
+  padding: 6px 4px;
+  cursor: pointer;
+}
+
+.task-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--border);
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.task-list-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font: inherit;
+  font-size: 0.88rem;
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  padding: 10px 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.task-list-row.done {
+  color: var(--text);
+}
+
+.task-list-row.current {
+  background: #dcfce7;
+  color: #14532d;
+}
+
+.task-list-mark {
+  flex-shrink: 0;
+  color: var(--ok);
+}
+
+.task-list-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-list-hint {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+/* ---- タスク（先生画面のパネル） ---- */
+.task-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.task-panel-head h3 {
+  margin: 0;
+}
+
+.task-mode-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0;
+  flex-wrap: wrap;
+}
+
+.chip-on {
+  background: #dbeafe;
+  border-color: #93c5fd;
+  color: #1e40af;
+}
+
+.btn-link {
+  font: inherit;
+  font-size: 0.8rem;
+  color: var(--primary);
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.btn-link.danger {
+  color: var(--danger);
+  text-decoration: none;
+  font-size: 1rem;
+}
+
+.task-edit {
+  margin-bottom: 10px;
+}
+
+.task-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.task-edit-row input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+/* 達成率。順番通りは上から下へ必ず短くなり、落差の大きい段が難所を示す */
+.task-funnel {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.task-funnel li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.funnel-label {
+  width: 38%;
+  flex-shrink: 0;
+  font-size: 0.8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.funnel-track {
+  flex: 1;
+  height: 12px;
+  background: var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.funnel-fill {
+  display: block;
+  height: 100%;
+  background: var(--ok);
+  transition: width 0.2s;
+}
+
+.funnel-num {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  width: 74px;
+  text-align: right;
+}
+
+/* 止まっている生徒。対面の机間巡視で気づいていたことを補う */
+.task-watch {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 8px 0 0;
+  border-top: 1px solid var(--border);
+}
+
+.task-watch li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+  padding: 3px 0;
+}
+
+.task-watch li.stalled .watch-idle {
+  background: #fee2e2;
+  color: #991b1b;
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
+.watch-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.watch-idle {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+

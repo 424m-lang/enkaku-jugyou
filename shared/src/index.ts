@@ -12,6 +12,68 @@ export const DEFAULT_REACTION_BUTTONS: ReactionButtonDef[] = [
   { key: 'confused', label: 'わからない', color: '#dc2626' },
 ];
 
+// ---- タスク（授業中の進捗確認） ----
+export type LessonTask = {
+  id: string;
+  label: string;
+  /**
+   * 授業中に追加された場合の追加時刻（授業開始からのms）。事前に設定したものは null。
+   * 「途中で追加したタスクの0%」を「誰もやっていない」と読み違えないために持つ
+   */
+  addedAtMs: number | null;
+};
+
+/**
+ * タスクの進め方。
+ * - sequential（既定）: タスクNを完了にすると、それより前も完了になる（取り消すと後ろが外れる）。
+ *   進捗が必ず「先頭からの連続」になるので「どのタスクまで進んだか」として集計できる
+ * - free: 各タスクを個別にオン/オフする。完了が累積しないので、集計はタスクごとの達成率になる
+ */
+export type TaskMode = 'sequential' | 'free';
+
+export const MAX_TASKS = 12;
+
+/** 先生画面に届く、生徒1人分の進捗 */
+export type TaskProgressEntry = {
+  participantId: string;
+  participantName: string;
+  taskIds: string[];
+  /** 最後に進捗が動いた時刻（授業開始からのms）。止まっている生徒の検知に使う */
+  updatedAtMs: number;
+};
+
+/**
+ * 完了タスクの集合に1回の操作を適用する。順番通りと順不同の違いはこの関数だけに閉じている。
+ * サーバの結果が正だが、生徒画面で押した瞬間に反映するためクライアントでも同じ関数を使う。
+ * 返り値は tasks の並び順に整列された配列。
+ */
+export function applyTaskChange(
+  tasks: LessonTask[],
+  current: string[],
+  taskId: string,
+  done: boolean,
+  mode: TaskMode
+): string[] {
+  const index = tasks.findIndex((t) => t.id === taskId);
+  if (index < 0) return current;
+  const next = new Set(current);
+  if (mode === 'sequential') {
+    // 押したタスクまで一気に完了 / 押したタスク以降をまとめて取り消し。
+    // これによって「押し忘れたぶんを一覧から選んで取り戻す」動作が自然に成立する
+    tasks.forEach((t, i) => {
+      if (done ? i <= index : i >= index) {
+        if (done) next.add(t.id);
+        else next.delete(t.id);
+      }
+    });
+  } else if (done) {
+    next.add(taskId);
+  } else {
+    next.delete(taskId);
+  }
+  return tasks.filter((t) => next.has(t.id)).map((t) => t.id);
+}
+
 // ---- スライド ----
 export type SlideInfo = {
   id: string;
@@ -48,6 +110,14 @@ export type ReflectionPayload = { reason?: string }; // 旧「振り返りタイ
 // 録音は通常1レッスン=1ファイルだが、先生の画面リロード等で録音が再開された場合は
 // 新しいパートファイルに切り替わる。その境界もタイムラインイベントとして記録する
 export type AudioPartPayload = { file: string };
+/**
+ * 生徒1人の、その時点での完了タスク一覧（差分ではなくスナップショット）。
+ * 取り消しも同じ形で記録されるので、畳み込むだけで現在の状態が復元できる。
+ * 授業後に「タスクNを最初に完了した時刻」を出すときは、時系列順に見て
+ * taskIds に初めて現れたイベントの tMs を採る。
+ * そのとき、直後（数秒以内）に取り消されている完了は誤操作なので除外すること
+ */
+export type TaskProgressPayload = { participantId: string; taskIds: string[] };
 
 export type TimelineEventType =
   | 'slide_change'
@@ -56,7 +126,8 @@ export type TimelineEventType =
   | 'clear_slide'
   | 'reflection_start' // 旧機能（過去データ用）
   | 'reflection_end' // 旧機能（過去データ用）
-  | 'audio_part';
+  | 'audio_part'
+  | 'task_progress';
 
 export type TimelineEvent = {
   id: string;
@@ -68,7 +139,8 @@ export type TimelineEvent = {
     | PointerPayload
     | ClearSlidePayload
     | ReflectionPayload
-    | AudioPartPayload;
+    | AudioPartPayload
+    | TaskProgressPayload;
 };
 
 // ---- レッスン ----
@@ -324,6 +396,18 @@ export interface ServerToClientEvents {
   comment_insight: (insight: CommentInsight) => void;
   // コメントが既存カードへ統合されて不要になったカードの削除通知
   comment_insight_removed: (insightId: string) => void;
+
+  // ---- タスク ----
+  /**
+   * 自分の進捗（生徒向け）。他の生徒の進捗は生徒には一切届けない。
+   * 進んでいる人が見えると、遅れている生徒への圧力になってしまうため
+   */
+  my_task_progress: (p: { taskIds: string[] }) => void;
+  /** 参加者全員の進捗（先生向け。接続直後のスナップショット） */
+  task_progress_all: (list: TaskProgressEntry[]) => void;
+  /** 進捗の更新（先生向け。1人分ずつ届く） */
+  task_progress: (entry: TaskProgressEntry) => void;
+
 }
 
 export interface ClientToServerEvents {
@@ -356,8 +440,29 @@ export interface ClientToServerEvents {
     cb: (res: { ok: boolean; slides?: SlideInfo[]; newSlideId?: string }) => void
   ) => void;
 
+  /**
+   * タスク一覧の設定（授業前の事前設定と、授業中の追加の両方で使う）。
+   * 既存タスクは id を付けて送ることで維持される（id 無し = 新規追加）
+   */
+  set_tasks: (
+    p: { tasks: { id?: string; label: string }[] },
+    cb: (res: { ok: boolean; tasks?: LessonTask[]; error?: string }) => void
+  ) => void;
+  /** タスクの進め方の切替と、生徒画面にタスクバーを出すかどうか */
+  set_task_config: (
+    p: { mode?: TaskMode; active?: boolean },
+    cb: (res: { ok: boolean }) => void
+  ) => void;
+
+
   // 生徒
   reaction: (r: ReactionInput, cb: (res: { ok: boolean }) => void) => void;
+  /**
+   * タスクの完了・取り消し。
+   * 順番通りモードでの「前のタスクもまとめて完了にする」補完はサーバ側で行うので、
+   * 生徒側は押されたタスク1つだけを送る
+   */
+  task_set: (p: { taskId: string; done: boolean }, cb: (res: { ok: boolean }) => void) => void;
   /**
    * コメント入力中の合図（入力中は数秒おきに active:true、送信/クリアで active:false）。
    * サーバは最初の合図の時刻を「入力開始時刻」として記録し、
@@ -383,6 +488,12 @@ export type LiveLessonState = {
   audioDefault: AudioMode;
   cameraOn: boolean;
   screenLayout: ScreenLayout;
+  // ---- タスク ----
+  // 誰がどこまで進んだかは含めない（生徒にも届くため）。進捗は別イベントで配る
+  tasks: LessonTask[];
+  taskMode: TaskMode;
+  /** 生徒画面にタスクバーを出すか（先生が開始・終了を切り替える） */
+  tasksActive: boolean;
 };
 
 // ---- 文字起こし ----
