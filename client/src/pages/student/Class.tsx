@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import type { AudioMode, PointerPayload, PollAnswer, PollResults, PublicPoll } from '@shared';
+import type {
+  AudioMode,
+  CaptionLine,
+  PointerPayload,
+  PollAnswer,
+  PollResults,
+  PublicPoll,
+} from '@shared';
 import { applyTaskChange } from '@shared';
 import { LiveAudioPlayer } from '../../lib/audio';
 import { LiveVideoPlayer } from '../../lib/camera';
@@ -10,6 +17,7 @@ import { useLessonLive } from '../../lib/useLessonLive';
 import SlideCanvas from '../../components/SlideCanvas';
 import TaskBar from '../../components/TaskBar';
 import PollBar, { PollResultView } from '../../components/PollBar';
+import CaptionBar from '../../components/CaptionBar';
 
 /**
  * 音声チャンクがこの時間届かなければ「届いていない」と判断する。
@@ -17,6 +25,9 @@ import PollBar, { PollResultView } from '../../components/PollBar';
  * 警告が点滅して落ち着かないため、数秒待ってから出す。
  */
 const AUDIO_STALL_MS = 5000;
+
+/** ライブのバンドは直近しか出さないので、手元に持つ行数も少なくてよい */
+const CAPTION_KEEP_LINES = 20;
 
 export default function Class() {
   const navigate = useNavigate();
@@ -33,6 +44,10 @@ export default function Class() {
   // 音声を有効にしたのに届いていない状態
   const [audioStalled, setAudioStalled] = useState(false);
   const lastAudioAtRef = useRef<number | null>(null);
+  // 自動字幕。先生がONにしていても、生徒が自分で消せる（画面が狭いため）
+  const [captionLines, setCaptionLines] = useState<{ tMs: number; text: string }[]>([]);
+  const [captionInterim, setCaptionInterim] = useState('');
+  const [captionsHidden, setCaptionsHidden] = useState(false);
 
   // スライドを見ているだけの時間が長く、触らないので端末が自動ロックされやすい
   useWakeLock();
@@ -63,6 +78,7 @@ export default function Class() {
 
   const {
     socketRef,
+    captionsEnabled,
     connected,
     title,
     status,
@@ -114,6 +130,14 @@ export default function Class() {
         playerRef.current?.push(chunk);
       });
       socket.on('audio_permission', (p) => setAudioAllowed(p.audio));
+      socket.on('caption', (p) => {
+        if (p.final) {
+          setCaptionInterim('');
+          setCaptionLines((prev) => [...prev, { tMs: p.tMs, text: p.text }].slice(-CAPTION_KEEP_LINES));
+        } else {
+          setCaptionInterim(p.text);
+        }
+      });
 
       // カメラ映像は、先生が「遠隔の生徒にも送る」を選んだときだけ届く
       // 再生できる形式かは init が届くまで分からないので、プレイヤーは先に作っておく
@@ -138,6 +162,17 @@ export default function Class() {
       videoPlayerRef.current?.dispose();
     };
   }, []);
+
+  // 履歴は開いたときだけ取りに行く（常時配るには量が多いため）
+  const loadCaptionHistory = useCallback(
+    () =>
+      new Promise<CaptionLine[]>((resolve) => {
+        const socket = socketRef.current;
+        if (!socket) return resolve([]);
+        socket.emit('get_captions', (res) => resolve(res.lines));
+      }),
+    [socketRef]
+  );
 
   // ---- 音声が本当に届いているかの監視 ----
   // 先生のマイクが許可されなかった場合、先生画面には「マイクエラー」が出るが
@@ -280,6 +315,11 @@ export default function Class() {
               ⚠ 先生の音声が届いていません
             </span>
           )}
+          {status === 'live' && captionsEnabled && captionsHidden && (
+            <button className="btn" onClick={() => setCaptionsHidden(false)}>
+              字幕を出す
+            </button>
+          )}
           {status === 'live' && audioAllowed === 'on' && !audioEnabled && !mediaUnsupported && (
             <button className="btn primary" onClick={enableAudio}>
               🔊 音声を再生
@@ -312,6 +352,14 @@ export default function Class() {
         <div className={videoLive && status === 'live' ? 'class-video' : 'screen-hidden'}>
           <video ref={videoElRef} className="class-video-el" playsInline autoPlay />
         </div>
+        {status === 'live' && captionsEnabled && !captionsHidden && (
+          <CaptionBar
+            lines={captionLines}
+            interim={captionInterim}
+            loadHistory={loadCaptionHistory}
+            onHide={() => setCaptionsHidden(true)}
+          />
+        )}
       </div>
 
       <footer className="reaction-bar">

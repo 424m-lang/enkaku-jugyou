@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import QRCode from 'qrcode';
-import type { LessonSummary, PointerPayload } from '@shared';
+import type { CaptionLine, LessonSummary, PointerPayload } from '@shared';
 import { api } from '../../lib/api';
 import { LiveAudioPlayer } from '../../lib/audio';
 import { LiveVideoPlayer } from '../../lib/camera';
 import { useWakeLock } from '../../lib/useWakeLock';
+import CaptionBar from '../../components/CaptionBar';
 import { screenTokenFromUrl } from '../../lib/screenToken';
 import { useLessonLive } from '../../lib/useLessonLive';
 import SlideCanvas from '../../components/SlideCanvas';
@@ -31,6 +32,9 @@ export default function Screen() {
   const [soundOn, setSoundOn] = useState(false);
   // この端末のブラウザが先生の音声形式を再生できない場合の形式名（対応時は null）
   const [unsupportedAudio, setUnsupportedAudio] = useState<string | null>(null);
+  // 自動字幕。後ろの席で音が聞き取りにくい生徒には、各端末より大画面のほうが効く
+  const [captionLines, setCaptionLines] = useState<{ tMs: number; text: string }[]>([]);
+  const [captionInterim, setCaptionInterim] = useState('');
   const [volume, setVolume] = useState(1);
   const [videoLive, setVideoLive] = useState(false);
   const [joinCode, setJoinCode] = useState('');
@@ -45,7 +49,9 @@ export default function Screen() {
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const {
+    socketRef,
     connected,
+    captionsEnabled,
     title,
     status,
     currentSlideId,
@@ -83,6 +89,14 @@ export default function Screen() {
       socket.on('av_chunk', (chunk) => videoPlayerRef.current?.push(chunk));
       socket.on('av_state', (p) => {
         if (!p.cameraOn) setVideoLive(false);
+      });
+      socket.on('caption', (p) => {
+        if (p.final) {
+          setCaptionInterim('');
+          setCaptionLines((prev) => [...prev, { tMs: p.tMs, text: p.text }].slice(-20));
+        } else {
+          setCaptionInterim(p.text);
+        }
       });
     },
   });
@@ -149,6 +163,16 @@ export default function Screen() {
       videoEl.volume = volume;
     }
   }, [soundOn, avAudioActive, volume]);
+
+  const loadCaptionHistory = useCallback(
+    () =>
+      new Promise<CaptionLine[]>((resolve) => {
+        const socket = socketRef.current;
+        if (!socket) return resolve([]);
+        socket.emit('get_captions', (res) => resolve(res.lines));
+      }),
+    [socketRef]
+  );
 
   const enableSound = useCallback(() => {
     // 自動再生の制限があるため、必ず操作を起点に再生を開始する
@@ -236,6 +260,15 @@ export default function Screen() {
           </div>
         )}
       </div>
+
+      {inLesson && captionsEnabled && (
+        <CaptionBar
+          lines={captionLines}
+          interim={captionInterim}
+          loadHistory={loadCaptionHistory}
+          large
+        />
+      )}
 
       {unsupportedAudio && (
         <div className="screen-audio-error" role="alert">

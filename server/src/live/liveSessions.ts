@@ -82,6 +82,8 @@ export type LiveSession = {
   taskMode: TaskMode;
   /** 生徒画面にタスクバーを出しているか */
   tasksActive: boolean;
+  /** 自動字幕を生徒に出すか */
+  captionsEnabled: boolean;
   /** participantId → 完了したタスクidの集合。task_progress イベントの畳み込み結果 */
   taskProgress: Map<string, Set<string>>;
   /** participantId → 最後に進捗が動いた tMs（止まっている生徒の検知に使う） */
@@ -184,6 +186,7 @@ export async function getSession(lessonId: string): Promise<LiveSession | null> 
     tasks: lesson.tasks ?? [],
     taskMode: lesson.taskMode,
     tasksActive: lesson.tasksActive,
+    captionsEnabled: lesson.captionsEnabled,
     taskProgress: new Map(),
     taskUpdatedAt: new Map(),
     polls,
@@ -365,6 +368,7 @@ export function toLiveState(s: LiveSession): LiveLessonState {
     tasks: s.tasks,
     taskMode: s.taskMode,
     tasksActive: s.tasksActive,
+    captionsEnabled: s.captionsEnabled,
     openPoll: (() => {
       const p = s.polls.find((x) => x.id === s.openPollId);
       return p ? toPublicPoll(p) : null;
@@ -377,6 +381,19 @@ export function toLiveState(s: LiveSession): LiveLessonState {
  * タスク・アンケートで生徒の状況が分かるようになったので、ボタンを完全に無しにできる。
  * ボタンの定義は消さないので、戻せば元の設定がそのまま復活する
  */
+/**
+ * 自動字幕のON/OFF。
+ * 誤変換が問題になったときに先生がすぐ止められる必要があるため、
+ * 授業中でも切り替えられる。記録済みの字幕は消さない（読み返しに使うため）。
+ */
+export async function setCaptionsEnabled(s: LiveSession, enabled: boolean): Promise<void> {
+  s.captionsEnabled = enabled;
+  await db
+    .update(schema.lessons)
+    .set({ captionsEnabled: enabled })
+    .where(eq(schema.lessons.id, s.lessonId));
+}
+
 export async function setReactionsEnabled(s: LiveSession, enabled: boolean): Promise<void> {
   s.reactionsEnabled = enabled;
   await db

@@ -19,6 +19,7 @@ type Props = {
   screenCount: number;
   participants: ParticipantInfo[];
   audioDefault: AudioMode;
+  captionsEnabled: boolean;
   cameraOn: boolean;
   screenLayout: ScreenLayout;
   videoToStudents: boolean;
@@ -40,6 +41,7 @@ export default function ClassroomPanel({
   screenCount,
   participants,
   audioDefault,
+  captionsEnabled,
   cameraOn,
   screenLayout,
   videoToStudents,
@@ -247,6 +249,26 @@ export default function ClassroomPanel({
           </p>
         </div>
       )}
+
+      {/* ---- 自動字幕 ---- */}
+      <div className="classroom-sec">
+        <span className="classroom-label">自動字幕</span>
+        <div className="classroom-row">
+          <button
+            className={`btn tool ${captionsEnabled ? 'tool-active' : ''}`}
+            onClick={() =>
+              socketRef.current?.emit('set_captions', { enabled: !captionsEnabled }, () => {})
+            }
+            title="先生の話を文字にして、生徒の画面と大画面に出します"
+          >
+            {captionsEnabled ? '字幕オン' : '字幕オフ'}
+          </button>
+        </div>
+        <p className="muted small">
+          自動認識なので誤変換があります。気になるときはいつでも切れます。
+          {captionsEnabled && ' Chrome・Edgeでのみ動きます。'}
+        </p>
+      </div>
 
       {/* ---- 生徒端末の音声 ---- */}
       <div className="classroom-sec">

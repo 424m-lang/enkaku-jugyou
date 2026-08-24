@@ -2504,3 +2504,131 @@ button.slide-thumb:hover {
 .check-row.check-skip .check-label {
   color: var(--muted, #9ca3af);
 }
+
+/* ---- 自動字幕 ---- */
+/* ライブのバンド。訂正を差し込まないので2行で足りる */
+.caption-bar {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgb(17 24 39 / 92%);
+  color: #f9fafb;
+}
+.caption-bar-text {
+  flex: 1;
+  min-width: 0;
+  display: block;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font-size: 15px;
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+  /* 2行に抑える。読み返しは履歴側で行う */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.caption-final + .caption-final,
+.caption-final + .caption-interim {
+  margin-left: 0.4em;
+}
+/* 認識途中は薄く出して「まだ確定していない」ことを見せる */
+.caption-interim {
+  color: #9ca3af;
+}
+.caption-waiting {
+  color: #9ca3af;
+  font-size: 13px;
+}
+.caption-bar-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.caption-bar-btn {
+  background: none;
+  border: 0;
+  color: #9ca3af;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 4px;
+}
+.caption-bar-btn:hover {
+  color: #f9fafb;
+}
+
+/* 教室の大画面。後ろの席から読めるよう大きく、映像の上に重ねる */
+.caption-bar-large {
+  position: absolute;
+  left: 3%;
+  right: 3%;
+  bottom: 3%;
+  z-index: 20;
+  margin: 0;
+  padding: 14px 18px;
+}
+.caption-bar-large .caption-bar-text {
+  font-size: clamp(20px, 2.6vw, 34px);
+  line-height: 1.45;
+}
+
+/* 履歴。開いている間はスライドが隠れてよい */
+.caption-history {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg, #fff);
+}
+.caption-history-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+}
+.caption-history-head strong {
+  font-size: 16px;
+}
+.caption-history-head .btn {
+  margin-left: auto;
+}
+.caption-history-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 14px;
+  -webkit-overflow-scrolling: touch;
+}
+.caption-line {
+  display: flex;
+  gap: 10px;
+  margin: 0 0 10px;
+  line-height: 1.7;
+}
+.caption-time {
+  flex: 0 0 auto;
+  color: var(--muted, #9ca3af);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  padding-top: 4px;
+}
+/* まだ確定していない行。少し経つとWhisperの結果に置き換わる */
+.caption-line.live {
+  color: var(--muted, #6b7280);
+}
+.caption-history-note {
+  margin: 0;
+  padding: 8px 14px;
+  border-top: 1px solid var(--border, #e5e7eb);
+  font-size: 12px;
+  color: var(--muted, #6b7280);
+}

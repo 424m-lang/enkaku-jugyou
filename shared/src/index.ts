@@ -80,6 +80,29 @@ export function applyTaskChange(
  * scale は単一選択の一種だが、選択肢が順序を持つため集計に平均を出し、
  * 生徒画面も数字の並びとして狭い場所に収まる形で描く
  */
+/**
+ * 自動字幕の1行。
+ *
+ * source は文字起こしの出所:
+ * - 'live'    ブラウザ音声認識。1秒未満で出るが専門用語は崩れやすい
+ * - 'whisper' サーバ側の文字起こし。10秒以上遅れるがPDF由来の用語ヒントが効く
+ *
+ * ライブ表示は 'live' だけを使い、履歴は追いついた範囲を 'whisper' に差し替える。
+ * ライブ表示で置き換えないのは、訂正が届く頃には読み手が先へ進んでいて、
+ * 書き換えがかえって流れを切るため。
+ */
+export type CaptionLine = {
+  tMs: number;
+  text: string;
+  source: 'live' | 'whisper';
+};
+
+/** 1行に載せる最大文字数（長い発話は区切って送る） */
+export const MAX_CAPTION_CHARS = 200;
+
+/** timeline_events に残す字幕1行 */
+export type CaptionPayload = { text: string };
+
 export type PollType = 'single' | 'multiple' | 'scale' | 'text';
 
 export const POLL_TYPE_LABELS: Record<PollType, string> = {
@@ -204,7 +227,8 @@ export type TimelineEventType =
   | 'reflection_start' // 旧機能（過去データ用）
   | 'reflection_end' // 旧機能（過去データ用）
   | 'audio_part'
-  | 'task_progress';
+  | 'task_progress'
+  | 'caption'; // ブラウザ音声認識の確定ぶん（読み返し用。暫定は記録しない）
 
 export type TimelineEvent = {
   id: string;
@@ -216,6 +240,7 @@ export type TimelineEvent = {
     | PointerPayload
     | ClearSlidePayload
     | ReflectionPayload
+    | CaptionPayload
     | AudioPartPayload
     | TaskProgressPayload;
 };
@@ -462,6 +487,12 @@ export interface ServerToClientEvents {
     avHasAudio: boolean;
   }) => void;
 
+  /**
+   * 自動字幕。final=false は認識途中の暫定で、後から同じ発話の確定版が届く。
+   * 授業に参加している全員に配り、表示するかは受け手が決める
+   */
+  caption: (p: { text: string; final: boolean; tMs: number }) => void;
+
   /** その端末で音声を鳴らしてよいか（生徒ごとに異なるため個別に届く） */
   audio_permission: (p: { audio: AudioMode }) => void;
 
@@ -515,6 +546,15 @@ export interface ClientToServerEvents {
   /** カメラ映像（音声込み）。文字起こしには使わず、保存もしない */
   av_chunk: (chunk: ArrayBuffer, mime?: string) => void;
   camera_state: (p: { on: boolean; hasAudio?: boolean }) => void;
+  /** 先生の端末のブラウザ音声認識の結果 */
+  caption: (p: { text: string; final: boolean }) => void;
+  /** 自動字幕のON/OFF（先生） */
+  set_captions: (
+    p: { enabled: boolean },
+    cb: (res: { ok: boolean; error?: string }) => void
+  ) => void;
+  /** 字幕の履歴を取り出す（生徒・大画面が開いたときだけ呼ぶ） */
+  get_captions: (cb: (res: { lines: CaptionLine[] }) => void) => void;
   /**
    * 大画面のレイアウトと、遠隔の生徒へ映像を送るかの切り替え。
    * 映像は通信量が大きいため生徒への配信は既定でOFFにし、実演を見せるときだけONにする
@@ -630,6 +670,8 @@ export type LiveLessonState = {
   taskMode: TaskMode;
   /** 生徒画面にタスクバーを出すか（先生が開始・終了を切り替える） */
   tasksActive: boolean;
+  /** 先生が自動字幕を有効にしているか */
+  captionsEnabled: boolean;
   /**
    * いま開いているアンケート（無ければ null）。
    * 開いている1問だけなので、途中参加・再接続の生徒にそのまま渡してよい

@@ -92,6 +92,13 @@
       "when": 1790000200000,
       "tag": "0012_reactions_enabled",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1790000300000,
+      "tag": "0013_captions",
+      "breakpoints": true
     }
   ]
 }

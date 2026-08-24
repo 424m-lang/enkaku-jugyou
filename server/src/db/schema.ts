@@ -58,6 +58,8 @@ export const lessons = pgTable('lessons', {
     .default('sequential'),
   // 生徒画面にタスクバーを出しているか（先生が授業中に開始・終了する）
   tasksActive: boolean('tasks_active').notNull().default(false),
+  /** 自動字幕を生徒に出すか。先生が授業ごとに決める */
+  captionsEnabled: boolean('captions_enabled').notNull().default(false),
   // 教室スクリーン（大画面）を先生のログイン無しで開くためのトークン
   screenToken: text('screen_token').unique(),
   // 復習動画（章立て再生ページ）の公開用トークン。未公開ならnull

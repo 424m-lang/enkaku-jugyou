@@ -16,6 +16,7 @@ import type {
 import { api, ApiError } from '../../lib/api';
 import { startAudioBroadcast, supportedAudioMime } from '../../lib/audio';
 import { useWakeLock } from '../../lib/useWakeLock';
+import { startCaptions } from '../../lib/speech';
 import { applyDrawingEvent } from '../../lib/strokes';
 import { useLessonLive } from '../../lib/useLessonLive';
 import { savePdfTexts } from '../../lib/pdf';
@@ -82,6 +83,8 @@ export default function Teach() {
   const broadcastMime = supportedAudioMime();
   const opusOnly = !!broadcastMime && !broadcastMime.includes('mp4');
   const [formatWarnClosed, setFormatWarnClosed] = useState(false);
+  // 字幕を作れない・続けられない場合の理由（対応時は null）
+  const [captionError, setCaptionError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState('');
   const [showQr, setShowQr] = useState(false);
 
@@ -128,6 +131,7 @@ export default function Teach() {
     tasks,
     taskMode,
     tasksActive,
+    captionsEnabled,
     openPoll,
   } = useLessonLive(lessonId, {
     onLessonState: (st) => {
@@ -230,6 +234,24 @@ export default function Teach() {
       audioStopRef.current = null;
     };
   }, []);
+
+  // ---- 自動字幕 ----
+  // 先生の端末のブラウザ音声認識を、授業中かつONの間だけ動かして文字を配る。
+  // サーバ側の文字起こしは10秒以上遅れて教室の字幕には使えないため、
+  // ライブはこちらで賄い、用語の正しい版は履歴側でWhisperに差し替える。
+  useEffect(() => {
+    if (status !== 'live' || !captionsEnabled) return;
+    const src = startCaptions({
+      onText: (text, final) => socketRef.current?.emit('caption', { text, final }),
+      onFatal: (err) => setCaptionError(err),
+    });
+    if (!src) {
+      setCaptionError('unsupported');
+      return;
+    }
+    setCaptionError(null);
+    return () => src.stop();
+  }, [status, captionsEnabled, socketRef]);
 
   // 「直近のリアクション」: 授業中は30秒ごとに再集計して窓から外れた反応を落とす
   useEffect(() => {
@@ -615,6 +637,19 @@ export default function Teach() {
         </div>
       )}
 
+      {captionsEnabled && captionError && (
+        <div className="teach-format-warn" role="alert">
+          <div>
+            <strong>字幕を作れません</strong>
+            <span>
+              {captionError === 'unsupported'
+                ? 'このブラウザは音声認識に対応していません。Chrome または Edge で開き直してください。'
+                : 'マイクの利用が許可されませんでした。ブラウザの設定を確認してください。'}
+            </span>
+          </div>
+        </div>
+      )}
+
       {showQr && <JoinQrModal joinCode={joinCode} onClose={() => setShowQr(false)} />}
 
       <div className="teach-main">
@@ -766,6 +801,7 @@ export default function Teach() {
               screenCount={screenCount}
               participants={participants}
               audioDefault={audioDefault}
+              captionsEnabled={captionsEnabled}
               cameraOn={cameraOn}
               screenLayout={screenLayout}
               videoToStudents={videoToStudents}
