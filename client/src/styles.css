@@ -3173,3 +3173,16 @@ button.slide-thumb:hover {
 .float-window .recent-reactions {
   margin-left: 0;
 }
+
+/* 1280幅のノートPCでは、ヘッダの右側が1行に収まらないことがある。
+   マイクが止まっているときだけ出るボタンを足すと溢れるので、少しだけ詰める */
+@media (max-width: 1400px) {
+  .btn.header-action {
+    min-width: 104px;
+    padding: 8px 9px;
+  }
+
+  .teach .header-right {
+    gap: 8px;
+  }
+}
