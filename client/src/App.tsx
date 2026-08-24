@@ -8,6 +8,7 @@ import Review from './pages/teacher/Review';
 import Join from './pages/student/Join';
 import Class from './pages/student/Class';
 import Watch from './pages/Watch';
+import Check from './pages/Check';
 
 export default function App() {
   return (
@@ -23,6 +24,8 @@ export default function App() {
       <Route path="/class" element={<Class />} />
       {/* 生徒向けの復習ページ（ログイン不要・公開トークン） */}
       <Route path="/watch/:token" element={<Watch />} />
+      {/* 現地確認用。訪問先の教室モニターで開いて可否を判断する（ログイン不要） */}
+      <Route path="/check" element={<Check />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
