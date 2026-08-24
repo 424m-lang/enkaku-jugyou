@@ -244,6 +244,38 @@ export type CommentInsight = {
   status: 'pending' | 'ready' | 'failed';
 };
 
+// ---- 教室スクリーン（大画面投影） ----
+
+/**
+ * 生徒端末で先生の音声を鳴らすかどうか。
+ * 教室の大画面から音を出す授業では、各端末が同じ音を鳴らすと反響してしまうため
+ * 既定を 'off' にし、遠隔で受けている生徒だけ 'on' に切り替える。
+ */
+export type AudioMode = 'on' | 'off';
+
+/** 大画面のレイアウト（先生が切り替える） */
+export type ScreenLayout =
+  | 'slide' // スライド主体・カメラ映像は小窓
+  | 'video' // カメラ映像主体・スライドは小窓（実演を見せるとき）
+  | 'slide-only'; // スライドのみ
+
+export const SCREEN_LAYOUT_LABELS: Record<ScreenLayout, string> = {
+  slide: 'スライド主体',
+  video: '映像主体',
+  'slide-only': 'スライドのみ',
+};
+
+/** 先生画面の参加者一覧の1行 */
+export type ParticipantInfo = {
+  id: string;
+  displayName: string;
+  /** 実際に適用されている設定（個別指定があればそれ、無ければ授業の既定） */
+  audio: AudioMode;
+  /** 授業の既定ではなく個別に指定されているか */
+  overridden: boolean;
+  online: boolean;
+};
+
 // ---- Socket.IO イベント型 ----
 export interface ServerToClientEvents {
   // 授業状態
@@ -264,6 +296,26 @@ export interface ServerToClientEvents {
   audio_chunk: (chunk: ArrayBuffer, seq: number) => void;
   audio_init: (header: ArrayBuffer, seq: number) => void;
 
+  // カメラ映像（音声込みの1本のストリーム。大画面と遠隔の生徒にだけ届く）
+  av_chunk: (chunk: ArrayBuffer, seq: number) => void;
+  av_init: (header: ArrayBuffer, seq: number) => void;
+  /** カメラのON/OFF、大画面のレイアウト、遠隔の生徒へ映像を送るか */
+  av_state: (p: {
+    cameraOn: boolean;
+    layout: ScreenLayout;
+    videoToStudents: boolean;
+    /** カメラ映像に音声が入っているか（マイクが使えないと映像だけになる） */
+    avHasAudio: boolean;
+  }) => void;
+
+  /** その端末で音声を鳴らしてよいか（生徒ごとに異なるため個別に届く） */
+  audio_permission: (p: { audio: AudioMode }) => void;
+
+  // 教室スクリーンの接続台数（先生向け。0なら大画面が映っていない）
+  screen_count: (count: number) => void;
+  // 参加者一覧（先生向け。音声の個別切替に使う）
+  participants: (list: ParticipantInfo[]) => void;
+
   // リアクション（先生向け）
   reaction_feed: (item: ReactionFeedItem, counts: ReactionCounts) => void;
   reaction_counts: (counts: ReactionCounts) => void;
@@ -279,6 +331,21 @@ export interface ClientToServerEvents {
   start_lesson: (cb: (res: { ok: boolean; error?: string }) => void) => void;
   end_lesson: (cb: (res: { ok: boolean; error?: string }) => void) => void;
   audio_chunk: (chunk: ArrayBuffer) => void;
+  /** カメラ映像（音声込み）。文字起こしには使わず、保存もしない */
+  av_chunk: (chunk: ArrayBuffer) => void;
+  camera_state: (p: { on: boolean; hasAudio?: boolean }) => void;
+  /**
+   * 大画面のレイアウトと、遠隔の生徒へ映像を送るかの切り替え。
+   * 映像は通信量が大きいため生徒への配信は既定でOFFにし、実演を見せるときだけONにする
+   */
+  set_av_config: (p: { layout?: ScreenLayout; videoToStudents?: boolean }) => void;
+  /** 全生徒の音声の既定を切り替える（個別指定は解除される） */
+  set_audio_default: (p: { mode: AudioMode }, cb: (res: { ok: boolean }) => void) => void;
+  /** 生徒1人の音声を個別に切り替える（mode:null で既定へ戻す） */
+  set_participant_audio: (
+    p: { participantId: string; mode: AudioMode | null },
+    cb: (res: { ok: boolean }) => void
+  ) => void;
   slide_change: (p: SlideChangePayload) => void;
   stroke: (p: StrokePayload) => void;
   stroke_progress: (p: StrokePayload) => void;
@@ -312,6 +379,10 @@ export type LiveLessonState = {
   // 現時点までの描画状態を再構成するためのイベント（stroke/clearのみ）
   drawingEvents: TimelineEvent[];
   counts: ReactionCounts;
+  /** 生徒端末の音声の既定（教室の大画面から音を出す授業では 'off'） */
+  audioDefault: AudioMode;
+  cameraOn: boolean;
+  screenLayout: ScreenLayout;
 };
 
 // ---- 文字起こし ----

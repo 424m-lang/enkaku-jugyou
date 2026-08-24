@@ -1,7 +1,8 @@
+import crypto from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { Server, Socket } from 'socket.io';
 import { eq } from 'drizzle-orm';
-import type { ClientToServerEvents, ServerToClientEvents } from '@shared';
+import type { ClientToServerEvents, ScreenLayout, ServerToClientEvents } from '@shared';
 import { db, schema } from './db';
 import { verifyParticipantToken } from './auth';
 import {
@@ -10,11 +11,17 @@ import {
   recordEvent,
   recordPointerSampled,
   handleAudioChunk,
+  handleAvChunk,
+  effectiveAudio,
+  setAudioDefault,
+  setParticipantAudio,
+  listParticipants,
   startLesson,
   endLesson,
   insertBlankSlide,
   touchParticipants,
   tMs,
+  type LiveSession,
 } from './live/liveSessions';
 import { recordReaction } from './live/reactions';
 import { handleCommentForInsight } from './live/commentInsights';
@@ -29,7 +36,8 @@ import {
 const COMPOSING_STALE_MS = 20_000;
 
 type SocketData = {
-  role: 'teacher' | 'student';
+  /** screen = 教室の大画面（表示専用。授業へ何も送れず、生徒数にも数えない） */
+  role: 'teacher' | 'student' | 'screen';
   lessonId: string;
   participantId?: string;
   participantName?: string;
@@ -37,6 +45,13 @@ type SocketData = {
 
 export type TypedServer = Server<ClientToServerEvents, ServerToClientEvents, object, SocketData>;
 type TypedSocket = Socket<ClientToServerEvents, ServerToClientEvents, object, SocketData>;
+
+/** トークン照合。長さの違いで落としてから、残りは実行時間を揃えて比較する */
+function safeEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  return bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB);
+}
 
 function parseCookies(header?: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -52,9 +67,27 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
   // ---- 接続時の認証 ----
   io.use(async (socket, next) => {
     try {
-      const auth = socket.handshake.auth as { lessonId?: string; participantToken?: string };
+      const auth = socket.handshake.auth as {
+        lessonId?: string;
+        participantToken?: string;
+        screenToken?: string;
+      };
       const lessonId = auth.lessonId;
       if (!lessonId) return next(new Error('lessonId が必要です'));
+
+      // 教室スクリーン: 先生がログインしていない教室の端末から開くためのトークン。
+      // 表示専用なので生徒トークンより先に判定し、参加者としては扱わない
+      if (auth.screenToken) {
+        const [lesson] = await db
+          .select({ screenToken: schema.lessons.screenToken })
+          .from(schema.lessons)
+          .where(eq(schema.lessons.id, lessonId));
+        if (lesson?.screenToken && safeEqual(lesson.screenToken, auth.screenToken)) {
+          socket.data = { role: 'screen', lessonId };
+          return next();
+        }
+        return next(new Error('認証に失敗しました'));
+      }
 
       // 生徒: 参加トークンが明示されていればそちらを優先する
       // （先生と同じ端末で生徒画面を開いた場合にCookieより優先されるように）
@@ -101,27 +134,43 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
     }
     const room = `lesson:${lessonId}`;
     const teacherRoom = `${room}:teacher`;
+    // カメラ映像の配信先。大画面は常に入り、生徒は先生が映像を送るときだけ入る
+    const avRoom = `${room}:av`;
 
     await socket.join(room);
     if (role === 'teacher') {
       await socket.join(teacherRoom);
     }
+    if (role === 'screen') {
+      await socket.join(avRoom);
+    }
+    if (role === 'student' && socket.data.participantId) {
+      socket.emit('audio_permission', { audio: effectiveAudio(s, socket.data.participantId) });
+      if (shouldReceiveVideo(s, socket.data.participantId)) await socket.join(avRoom);
+    }
+
+    const avState = () => ({
+      cameraOn: s.cameraOn,
+      layout: s.screenLayout,
+      videoToStudents: s.videoToStudents,
+      avHasAudio: s.avHasAudio,
+    });
 
     // 参加直後に現在のライブ状態のスナップショットを送る
     socket.emit('lesson_state', toLiveState(s));
+    socket.emit('av_state', avState());
     // 音声配信中なら、デコーダ初期化用のヘッダチャンクを送る
     if (s.audioInitSegment && s.status === 'live') {
-      socket.emit(
-        'audio_init',
-        s.audioInitSegment.buffer.slice(
-          s.audioInitSegment.byteOffset,
-          s.audioInitSegment.byteOffset + s.audioInitSegment.byteLength
-        ) as ArrayBuffer,
-        s.audioSeq
-      );
+      socket.emit('audio_init', toArrayBuffer(s.audioInitSegment), s.audioSeq);
+    }
+    // カメラ配信中で、この接続が映像を受け取る対象なら同じくヘッダを送る
+    if (s.avInitSegment && s.cameraOn && socket.rooms.has(avRoom)) {
+      socket.emit('av_init', toArrayBuffer(s.avInitSegment), s.avSeq);
     }
 
     await broadcastParticipantCount(io, room);
+    await broadcastScreenCount(io, room, teacherRoom);
+    await broadcastParticipants(io, s, room, teacherRoom);
 
     // サーバ再起動後などで文字起こしがまだ動いていなければ復元して再開する。
     // タイマーを同期的に張ってから復元することで、複数接続でも二重起動しない
@@ -177,6 +226,68 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           }
         } catch (err) {
           app.log.error(err);
+        }
+      });
+
+      // カメラ映像（音声込み）。保存はせず、大画面と対象の生徒にだけ中継する
+      socket.on('av_chunk', (chunk) => {
+        if (!s.cameraOn) return;
+        try {
+          const { isInit, seq } = handleAvChunk(s, Buffer.from(chunk as ArrayBuffer));
+          io.to(avRoom).emit(isInit ? 'av_init' : 'av_chunk', chunk, seq);
+        } catch (err) {
+          app.log.error(err);
+        }
+      });
+
+      socket.on('camera_state', (p) => {
+        s.cameraOn = !!p?.on;
+        s.avHasAudio = s.cameraOn && p?.hasAudio !== false;
+        if (!s.cameraOn) {
+          s.avInitSegment = null;
+          // カメラを切ったら大画面は自動でスライド全画面に戻す（余白が出ないように）
+          if (s.screenLayout === 'video') s.screenLayout = 'slide';
+        }
+        io.to(room).emit('av_state', avState());
+      });
+
+      socket.on('set_av_config', (p) => {
+        if (p?.layout && isScreenLayout(p.layout)) s.screenLayout = p.layout;
+        if (typeof p?.videoToStudents === 'boolean' && p.videoToStudents !== s.videoToStudents) {
+          s.videoToStudents = p.videoToStudents;
+          void syncStudentAv(io, s, room, avRoom).catch((err) => app.log.error(err));
+        }
+        io.to(room).emit('av_state', avState());
+      });
+
+      // 生徒端末の音声: まとめて切り替え（教室で受ける授業は全員OFFが既定）
+      socket.on('set_audio_default', async (p, cb) => {
+        try {
+          if (p?.mode !== 'on' && p?.mode !== 'off') return cb({ ok: false });
+          await setAudioDefault(s, p.mode);
+          io.to(room).emit('lesson_state', toLiveState(s));
+          await syncStudentAv(io, s, room, avRoom);
+          await broadcastParticipants(io, s, room, teacherRoom);
+          cb({ ok: true });
+        } catch (err) {
+          app.log.error(err);
+          cb({ ok: false });
+        }
+      });
+
+      // 生徒端末の音声: 1人だけ切り替え（教室に1人だけ遠隔がいる場合など）
+      socket.on('set_participant_audio', async (p, cb) => {
+        try {
+          const mode = p?.mode;
+          if (mode !== 'on' && mode !== 'off' && mode !== null) return cb({ ok: false });
+          if (typeof p?.participantId !== 'string') return cb({ ok: false });
+          await setParticipantAudio(s, p.participantId, mode);
+          await syncStudentAv(io, s, room, avRoom);
+          await broadcastParticipants(io, s, room, teacherRoom);
+          cb({ ok: true });
+        } catch (err) {
+          app.log.error(err);
+          cb({ ok: false });
         }
       });
 
@@ -288,16 +399,92 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
 
     socket.on('disconnect', async () => {
       await broadcastParticipantCount(io, room);
+      await broadcastScreenCount(io, room, teacherRoom);
       if (socket.data.participantId) {
         s.composing.delete(socket.data.participantId);
         await touchParticipants([socket.data.participantId]).catch(() => {});
       }
+      if (socket.data.role === 'student') {
+        await broadcastParticipants(io, s, room, teacherRoom);
+      }
     });
   });
+}
+
+function isScreenLayout(v: string): v is ScreenLayout {
+  return v === 'slide' || v === 'video' || v === 'slide-only';
+}
+
+/** Buffer をコピーせず ArrayBuffer として渡す（Socket.IOのバイナリ送信用） */
+function toArrayBuffer(buf: Buffer): ArrayBuffer {
+  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+}
+
+/**
+ * その生徒がカメラ映像を受け取る対象か。
+ * 映像は通信量が大きいので、先生が明示的に送るとき、かつ端末で音声を鳴らしている
+ * （＝教室ではなく遠隔で受けている）生徒だけに配信する。
+ */
+function shouldReceiveVideo(s: LiveSession, participantId: string): boolean {
+  return s.videoToStudents && effectiveAudio(s, participantId) === 'on';
+}
+
+/**
+ * 生徒それぞれに音声の可否を通知し、映像の配信先も現在の設定に合わせ直す。
+ * 音声の設定を変えると映像の対象も変わるため、常にこの2つを一緒に更新する。
+ */
+async function syncStudentAv(
+  io: TypedServer,
+  s: LiveSession,
+  room: string,
+  avRoom: string
+): Promise<void> {
+  const sockets = await io.in(room).fetchSockets();
+  for (const sock of sockets) {
+    const pid = sock.data.participantId;
+    if (sock.data.role !== 'student' || !pid) continue;
+    sock.emit('audio_permission', { audio: effectiveAudio(s, pid) });
+    const wantsVideo = shouldReceiveVideo(s, pid);
+    if (wantsVideo && !sock.rooms.has(avRoom)) {
+      sock.join(avRoom);
+      // 途中から映像を受け取り始める端末にはデコーダ初期化用のヘッダが要る
+      if (s.avInitSegment && s.cameraOn) {
+        sock.emit('av_init', toArrayBuffer(s.avInitSegment), s.avSeq);
+      }
+    } else if (!wantsVideo && sock.rooms.has(avRoom)) {
+      sock.leave(avRoom);
+    }
+  }
 }
 
 async function broadcastParticipantCount(io: TypedServer, room: string): Promise<void> {
   const sockets = await io.in(room).fetchSockets();
   const count = sockets.filter((x) => x.data.role === 'student').length;
   io.to(room).emit('participant_count', count);
+}
+
+/** 教室の大画面が何台つながっているか（0なら投影されていないと先生が気づける） */
+async function broadcastScreenCount(
+  io: TypedServer,
+  room: string,
+  teacherRoom: string
+): Promise<void> {
+  const sockets = await io.in(room).fetchSockets();
+  io.to(teacherRoom).emit('screen_count', sockets.filter((x) => x.data.role === 'screen').length);
+}
+
+async function broadcastParticipants(
+  io: TypedServer,
+  s: LiveSession,
+  room: string,
+  teacherRoom: string
+): Promise<void> {
+  const sockets = await io.in(room).fetchSockets();
+  const online = new Set<string>();
+  for (const sock of sockets) {
+    if (sock.data.role === 'student' && sock.data.participantId) {
+      online.add(sock.data.participantId);
+    }
+  }
+  io.to(teacherRoom).emit('participants', await listParticipants(s, online));
 }

@@ -3,10 +3,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { asc, eq, inArray } from 'drizzle-orm';
 import type {
+  AudioMode,
   LiveLessonState,
   LessonStatus,
+  ParticipantInfo,
   ReactionButtonDef,
   ReactionCounts,
+  ScreenLayout,
   SlideInfo,
   TimelineEvent,
   TimelineEventType,
@@ -61,6 +64,26 @@ export type LiveSession = {
   /** 現在パートの先頭チャンク（WebMヘッダ）。新規参加者のデコーダ初期化用 */
   audioInitSegment: Buffer | null;
 
+  // 生徒端末の音声（教室の大画面から音を出す授業は既定 'off'）
+  audioDefault: AudioMode;
+  /** 音声の個別指定（participantId → 設定）。既定に従う生徒は入っていない */
+  audioOverrides: Map<string, AudioMode>;
+
+  /**
+   * カメラ映像（音声込みの1本のストリーム）。
+   * 大画面には常に届け、生徒端末へは videoToStudents がONのときだけ届ける。
+   * 復習動画には残さないため保存もしない（ライブ配信のみ）。
+   */
+  cameraOn: boolean;
+  /** カメラ映像に音声が入っているか（マイクが使えない環境では映像だけになる） */
+  avHasAudio: boolean;
+  screenLayout: ScreenLayout;
+  /** 遠隔の生徒にも映像を届けるか（通信量が増えるため既定はOFF） */
+  videoToStudents: boolean;
+  avSeq: number;
+  /** 現在のカメラ配信の先頭チャンク（WebMヘッダ）。途中参加のデコーダ初期化用 */
+  avInitSegment: Buffer | null;
+
   // リアクション
   lastReactionAt: Map<string, number>; // key: participantId:kind → tMs（デバウンス用）
   recentReactions: RecentReaction[]; // クリップ集約用（直近数分）
@@ -114,12 +137,29 @@ export async function getSession(lessonId: string): Promise<LiveSession | null> 
     currentAudioPart: null,
     audioSeq: 0,
     audioInitSegment: null,
+    audioDefault: lesson.audioDefault,
+    audioOverrides: new Map(),
+    cameraOn: false,
+    avHasAudio: false,
+    screenLayout: 'slide',
+    videoToStudents: false,
+    avSeq: 0,
+    avInitSegment: null,
     lastReactionAt: new Map(),
     recentReactions: [],
     transcriptSegments: [],
     transcribedUntilMs: 0,
     transcribeTimer: null,
   };
+
+  // 音声の個別指定を復元（先生が授業前に設定していることもある）
+  const overridden = await db
+    .select({ id: schema.participants.id, audioOverride: schema.participants.audioOverride })
+    .from(schema.participants)
+    .where(eq(schema.participants.lessonId, lessonId));
+  for (const p of overridden) {
+    if (p.audioOverride) s.audioOverrides.set(p.id, p.audioOverride);
+  }
 
   // サーバ再起動後の復元: live中ならタイムラインから描画状態・現在スライドを再構成
   if (lesson.status === 'live') {
@@ -249,7 +289,84 @@ export function toLiveState(s: LiveSession): LiveLessonState {
     serverNowEpochMs: Date.now(),
     drawingEvents: s.drawingEvents,
     counts: s.counts,
+    audioDefault: s.audioDefault,
+    cameraOn: s.cameraOn,
+    screenLayout: s.screenLayout,
   };
+}
+
+// ---- 生徒端末の音声 ----
+
+/** その生徒の端末で音声を鳴らすか（個別指定が優先、無ければ授業の既定） */
+export function effectiveAudio(s: LiveSession, participantId: string): AudioMode {
+  return s.audioOverrides.get(participantId) ?? s.audioDefault;
+}
+
+/** 授業の既定を切り替える。個別指定はすべて解除し、全員を同じ状態に揃える */
+export async function setAudioDefault(s: LiveSession, mode: AudioMode): Promise<void> {
+  s.audioDefault = mode;
+  s.audioOverrides.clear();
+  await db
+    .update(schema.lessons)
+    .set({ audioDefault: mode })
+    .where(eq(schema.lessons.id, s.lessonId));
+  await db
+    .update(schema.participants)
+    .set({ audioOverride: null })
+    .where(eq(schema.participants.lessonId, s.lessonId));
+}
+
+/** 生徒1人の音声を個別に指定する（null で既定へ戻す） */
+export async function setParticipantAudio(
+  s: LiveSession,
+  participantId: string,
+  mode: AudioMode | null
+): Promise<void> {
+  if (mode) s.audioOverrides.set(participantId, mode);
+  else s.audioOverrides.delete(participantId);
+  await db
+    .update(schema.participants)
+    .set({ audioOverride: mode })
+    .where(eq(schema.participants.id, participantId));
+}
+
+/** 先生画面の参加者一覧（onlineIds は現在接続中のparticipantId） */
+export async function listParticipants(
+  s: LiveSession,
+  onlineIds: Set<string>
+): Promise<ParticipantInfo[]> {
+  const rows = await db
+    .select({
+      id: schema.participants.id,
+      displayName: schema.participants.displayName,
+      joinedAt: schema.participants.joinedAt,
+    })
+    .from(schema.participants)
+    .where(eq(schema.participants.lessonId, s.lessonId))
+    .orderBy(asc(schema.participants.joinedAt));
+  return rows.map((r) => ({
+    id: r.id,
+    displayName: r.displayName,
+    audio: effectiveAudio(s, r.id),
+    overridden: s.audioOverrides.has(r.id),
+    online: onlineIds.has(r.id),
+  }));
+}
+
+// ---- カメラ映像 ----
+
+/**
+ * 先生からのカメラ映像チャンクを処理する。
+ * 音声と違い保存はせず、中継のためのヘッダ保持と連番付けだけを行う
+ * （復習動画はPDFと音声から組み立てる設計のため、映像はライブ限定）。
+ */
+export function handleAvChunk(s: LiveSession, buf: Buffer): { isInit: boolean; seq: number } {
+  const isInit = buf.subarray(0, 4).equals(EBML_MAGIC);
+  if (isInit) {
+    s.avInitSegment = buf;
+    s.avSeq = 0;
+  }
+  return { isInit, seq: s.avSeq++ };
 }
 
 // ---- 音声 ----
