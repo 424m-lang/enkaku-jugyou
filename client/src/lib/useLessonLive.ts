@@ -2,11 +2,14 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
   AudioMode,
   LessonStatus,
+  LessonTask,
   LiveLessonState,
+  PublicPoll,
   ReactionButtonDef,
   ScreenLayout,
   SlideInfo,
   StrokePayload,
+  TaskMode,
 } from '@shared';
 import { connectLessonSocket, type AppSocket } from './socket';
 import { loadLessonPdf, type PdfCache } from './pdf';
@@ -35,6 +38,8 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
   const [title, setTitle] = useState('');
   const [status, setStatus] = useState<LessonStatus>('draft');
   const [buttons, setButtons] = useState<ReactionButtonDef[]>([]);
+  // ボタンを使わない授業では false（定義は残るので、戻せば元のボタンが復活する）
+  const [reactionsEnabled, setReactionsEnabled] = useState(true);
   const [slides, setSlides] = useState<SlideInfo[]>([]);
   const [currentSlideId, setCurrentSlideId] = useState<string | null>(null);
   const [strokes, setStrokes] = useState<StrokesBySlide>({});
@@ -46,6 +51,12 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
   const [avHasAudio, setAvHasAudio] = useState(false);
   const [screenLayout, setScreenLayout] = useState<ScreenLayout>('slide');
   const [videoToStudents, setVideoToStudents] = useState(false);
+  // タスク。誰がどこまで進んだかはここには入らない（進捗は画面ごとに別イベントで受ける）
+  const [tasks, setTasks] = useState<LessonTask[]>([]);
+  const [taskMode, setTaskMode] = useState<TaskMode>('sequential');
+  const [tasksActive, setTasksActive] = useState(false);
+  // いま開いているアンケート（開始・締め切りは全画面が同じ状態を見る）
+  const [openPoll, setOpenPoll] = useState<PublicPoll | null>(null);
 
   useEffect(() => {
     if (!lessonId) return;
@@ -67,10 +78,15 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
       setTitle(st.title);
       setStatus(st.status);
       setButtons(st.reactionButtons);
+      setReactionsEnabled(st.reactionsEnabled);
       setSlides(st.slides);
       setCurrentSlideId((cur) => st.currentSlideId ?? cur ?? st.slides[0]?.id ?? null);
       setStrokes(rebuildStrokes(st.drawingEvents));
       setAudioDefault(st.audioDefault);
+      setTasks(st.tasks);
+      setTaskMode(st.taskMode);
+      setTasksActive(st.tasksActive);
+      setOpenPoll(st.openPoll);
       optionsRef.current.onLessonState?.(st);
     });
 
@@ -107,6 +123,8 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
     });
     socket.on('lesson_started', () => setStatus('live'));
     socket.on('lesson_ended', () => setStatus('ended'));
+    socket.on('poll_open', (poll) => setOpenPoll(poll));
+    socket.on('poll_closed', (p) => setOpenPoll((cur) => (cur?.id === p.pollId ? null : cur)));
 
     optionsRef.current.setup?.(socket);
 
@@ -136,6 +154,7 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
     setStatus,
     buttons,
     setButtons,
+    reactionsEnabled,
     slides,
     setSlides,
     sortedSlides,
@@ -151,5 +170,9 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
     avHasAudio,
     screenLayout,
     videoToStudents,
+    tasks,
+    taskMode,
+    tasksActive,
+    openPoll,
   };
 }

@@ -105,6 +105,8 @@ function CreateLessonForm({ onCreated }: { onCreated: (l: LessonSummary) => void
   const [title, setTitle] = useState('');
   const [files, setFiles] = useState<File[]>([]);
   const [buttons, setButtons] = useState<ReactionButtonDef[]>(DEFAULT_REACTION_BUTTONS);
+  // タスク・アンケートで生徒の状況が分かるので、ボタンを使わない授業も選べる
+  const [useReactions, setUseReactions] = useState(true);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -139,6 +141,7 @@ function CreateLessonForm({ onCreated }: { onCreated: (l: LessonSummary) => void
           buttons.map((b, i) => ({ ...b, key: b.key || `btn_${i}` })).filter((b) => b.label.trim())
         )
       );
+      fd.append('reactionsEnabled', String(useReactions));
       for (const f of files) fd.append('pdf', f, f.name);
       const res = await fetch('/api/lessons', { method: 'POST', body: fd });
       if (!res.ok) {
@@ -203,6 +206,21 @@ function CreateLessonForm({ onCreated }: { onCreated: (l: LessonSummary) => void
           </div>
         )}
         <div>
+          <label className="reactions-toggle">
+            <input
+              type="checkbox"
+              checked={useReactions}
+              onChange={(e) => setUseReactions(e.target.checked)}
+            />
+            リアクションボタンを使う
+          </label>
+          {!useReactions && (
+            <p className="muted">
+              生徒画面にボタンは出ません。タスクやアンケートで反応を集める授業向けです（授業中に切り替えられます）
+            </p>
+          )}
+          {useReactions && (
+          <>
           <span className="muted">リアクションボタン（生徒が押すボタン。最大6個）</span>
           {buttons.map((b, i) => (
             <div key={i} className="button-editor-row">
@@ -240,6 +258,8 @@ function CreateLessonForm({ onCreated }: { onCreated: (l: LessonSummary) => void
             >
               ＋ ボタンを追加
             </button>
+          )}
+          </>
           )}
         </div>
         {error && <p className="error">{error}</p>}

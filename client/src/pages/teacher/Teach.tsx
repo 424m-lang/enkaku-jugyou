@@ -5,8 +5,13 @@ import type {
   LessonStatus,
   ParticipantInfo,
   ReactionButtonDef,
+  Poll,
+  PollResults,
+  PollType,
   ReactionFeedItem,
   StrokePayload,
+  TaskMode,
+  TaskProgressEntry,
 } from '@shared';
 import { api, ApiError } from '../../lib/api';
 import { startAudioBroadcast } from '../../lib/audio';
@@ -18,6 +23,8 @@ import { makeReactionMeta } from '../../lib/reactionMeta';
 import SlideCanvas, { type DrawingTool } from '../../components/SlideCanvas';
 import JoinQrModal from '../../components/JoinQrModal';
 import ClassroomPanel from '../../components/ClassroomPanel';
+import TaskPanel from '../../components/TaskPanel';
+import PollPanel from '../../components/PollPanel';
 
 // 黒 ＋ カラーユニバーサルデザイン（Okabe-Ito）の3色。色覚の違いがあっても見分けやすい
 const COLORS: { value: string; label: string }[] = [
@@ -58,6 +65,9 @@ export default function Teach() {
   const [joinCode, setJoinCode] = useState('');
   const [reactions, setReactions] = useState<ReactionFeedItem[]>([]);
   const [insights, setInsights] = useState<CommentInsight[]>([]);
+  const [taskProgress, setTaskProgress] = useState<TaskProgressEntry[]>([]);
+  const [polls, setPolls] = useState<Poll[]>([]);
+  const [pollResults, setPollResults] = useState<Record<string, PollResults>>({});
   const [participantCount, setParticipantCount] = useState(0);
   const [participants, setParticipants] = useState<ParticipantInfo[]>([]);
   const [screenCount, setScreenCount] = useState(0);
@@ -91,6 +101,7 @@ export default function Teach() {
     setStatus,
     buttons,
     setButtons,
+    reactionsEnabled,
     setSlides,
     sortedSlides,
     currentSlideId,
@@ -104,6 +115,10 @@ export default function Teach() {
     cameraOn,
     screenLayout,
     videoToStudents,
+    tasks,
+    taskMode,
+    tasksActive,
+    openPoll,
   } = useLessonLive(lessonId, {
     onLessonState: (st) => {
       lessonClockRef.current = {
@@ -133,6 +148,20 @@ export default function Teach() {
       // 既存カードへ統合されて不要になったカードを取り除く
       socket.on('comment_insight_removed', (id) => {
         setInsights((prev) => prev.filter((x) => x.id !== id));
+      });
+      // アンケート（設問一覧と集計は先生にだけ届く）
+      socket.on('polls_updated', (list) => setPolls(list));
+      socket.on('poll_results', (r) => setPollResults((prev) => ({ ...prev, [r.pollId]: r })));
+      // タスクの進捗（接続直後に全件、以後は動いた生徒の分だけ届く）
+      socket.on('task_progress_all', (list) => setTaskProgress(list));
+      socket.on('task_progress', (entry) => {
+        setTaskProgress((prev) => {
+          const i = prev.findIndex((p) => p.participantId === entry.participantId);
+          if (i < 0) return [...prev, entry];
+          const next = [...prev];
+          next[i] = entry;
+          return next;
+        });
       });
     },
   });
@@ -413,6 +442,92 @@ export default function Teach() {
     return counts;
   }, [reactions, nowTick]);
 
+  // 授業タイムライン上の現在時刻（タスクの滞留時間の計算に使う）
+  const lessonNowMs = useMemo(() => {
+    const clock = lessonClockRef.current;
+    if (!clock.startedAtEpochMs) return null;
+    return nowTick + clock.offsetMs - clock.startedAtEpochMs;
+  }, [nowTick]);
+
+  const setReactionsEnabledRemote = useCallback(
+    (enabled: boolean) => {
+      socketRef.current?.emit('set_reactions_enabled', { enabled }, () => {});
+    },
+    [socketRef]
+  );
+
+  const setTasksRemote = useCallback(
+    (list: { id?: string; label: string }[]) => {
+      socketRef.current?.emit('set_tasks', { tasks: list }, () => {});
+    },
+    [socketRef]
+  );
+
+  const setTaskConfigRemote = useCallback(
+    (p: { mode?: TaskMode; active?: boolean }) => {
+      socketRef.current?.emit('set_task_config', p, () => {});
+    },
+    [socketRef]
+  );
+
+  const savePoll = useCallback(
+    (p: {
+      id?: string;
+      question: string;
+      type: PollType;
+      options?: { id?: string; label: string }[];
+      minLabel?: string | null;
+      maxLabel?: string | null;
+    }) => {
+      socketRef.current?.emit('save_poll', p, (res) => {
+        if (!res.ok && res.error) window.alert(res.error);
+      });
+    },
+    [socketRef]
+  );
+
+  const deletePoll = useCallback(
+    (pollId: string) => socketRef.current?.emit('delete_poll', { pollId }, () => {}),
+    [socketRef]
+  );
+  const openPollRemote = useCallback(
+    (pollId: string) =>
+      socketRef.current?.emit('open_poll', { pollId }, (res) => {
+        if (!res.ok && res.error) window.alert(res.error);
+      }),
+    [socketRef]
+  );
+  // 同じ質問をもう一度聞く。同じ設問を開き直すと前回の回答が残ったままになり
+  // 集計が古い票と混ざるため、新しい設問として複製してから開く
+  const repeatPoll = useCallback(
+    (poll: Poll) => {
+      socketRef.current?.emit(
+        'save_poll',
+        {
+          question: poll.question,
+          type: poll.type,
+          options: poll.options.map((o) => ({ label: o.label })),
+          minLabel: poll.minLabel,
+          maxLabel: poll.maxLabel,
+        },
+        (res) => {
+          if (res.ok && res.poll) {
+            socketRef.current?.emit('open_poll', { pollId: res.poll.id }, () => {});
+          } else if (res.error) {
+            window.alert(res.error);
+          }
+        }
+      );
+    },
+    [socketRef]
+  );
+
+  const closePollRemote = useCallback(
+    (pollId: string, reveal: boolean) =>
+      socketRef.current?.emit('close_poll', { pollId, reveal }, () => {}),
+    [socketRef]
+  );
+
   if (loadError) {
     return (
       <div className="page-center">
@@ -585,14 +700,33 @@ export default function Teach() {
             <button className="btn" onClick={insertBlank} title="このスライドの直後に白紙ページを挿入">
               ＋ 白紙を挿入
             </button>
-            {/* 直近のリアクション: 直近5分間のボタン反応数 */}
+            {/* 直近のリアクション: 直近5分間のボタン反応数。
+                タスク・アンケートで状況が分かるなら、ボタンごとやめることもできる */}
             <div className="recent-reactions">
-              <span className="recent-label">直近のリアクション</span>
-              {buttons.map((b) => (
-                <span key={b.key} className="kind-pill" style={{ background: b.color }}>
-                  {b.label} ×{recentCounts[b.key] ?? 0}
-                </span>
-              ))}
+              {reactionsEnabled ? (
+                <>
+                  <span className="recent-label">直近のリアクション</span>
+                  {buttons.map((b) => (
+                    <span key={b.key} className="kind-pill" style={{ background: b.color }}>
+                      {b.label} ×{recentCounts[b.key] ?? 0}
+                    </span>
+                  ))}
+                  <button
+                    className="btn-link"
+                    onClick={() => setReactionsEnabledRemote(false)}
+                    title="生徒画面からリアクションボタンを消します。設定は残るので、いつでも戻せます"
+                  >
+                    ボタンをやめる
+                  </button>
+                </>
+              ) : (
+                <>
+                  <span className="recent-label muted">リアクションボタンなし</span>
+                  <button className="btn-link" onClick={() => setReactionsEnabledRemote(true)}>
+                    ボタンを使う
+                  </button>
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -611,6 +745,27 @@ export default function Teach() {
               videoToStudents={videoToStudents}
             />
           )}
+          <TaskPanel
+            tasks={tasks}
+            mode={taskMode}
+            active={tasksActive}
+            progress={taskProgress}
+            status={status}
+            nowMs={lessonNowMs}
+            onSetTasks={setTasksRemote}
+            onSetConfig={setTaskConfigRemote}
+          />
+          <PollPanel
+            polls={polls}
+            results={pollResults}
+            openPollId={openPoll?.id ?? null}
+            status={status}
+            onSave={savePoll}
+            onDelete={deletePoll}
+            onOpen={openPollRemote}
+            onRepeat={repeatPoll}
+            onClose={closePollRemote}
+          />
           <div className="card feed-card">
             <h3>コメント・振り返り</h3>
             <div className="insight-list">

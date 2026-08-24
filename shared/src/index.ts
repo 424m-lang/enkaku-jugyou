@@ -12,6 +12,145 @@ export const DEFAULT_REACTION_BUTTONS: ReactionButtonDef[] = [
   { key: 'confused', label: 'わからない', color: '#dc2626' },
 ];
 
+// ---- タスク（授業中の進捗確認） ----
+export type LessonTask = {
+  id: string;
+  label: string;
+  /**
+   * 授業中に追加された場合の追加時刻（授業開始からのms）。事前に設定したものは null。
+   * 「途中で追加したタスクの0%」を「誰もやっていない」と読み違えないために持つ
+   */
+  addedAtMs: number | null;
+};
+
+/**
+ * タスクの進め方。
+ * - sequential（既定）: タスクNを完了にすると、それより前も完了になる（取り消すと後ろが外れる）。
+ *   進捗が必ず「先頭からの連続」になるので「どのタスクまで進んだか」として集計できる
+ * - free: 各タスクを個別にオン/オフする。完了が累積しないので、集計はタスクごとの達成率になる
+ */
+export type TaskMode = 'sequential' | 'free';
+
+export const MAX_TASKS = 12;
+
+/** 先生画面に届く、生徒1人分の進捗 */
+export type TaskProgressEntry = {
+  participantId: string;
+  participantName: string;
+  taskIds: string[];
+  /** 最後に進捗が動いた時刻（授業開始からのms）。止まっている生徒の検知に使う */
+  updatedAtMs: number;
+};
+
+/**
+ * 完了タスクの集合に1回の操作を適用する。順番通りと順不同の違いはこの関数だけに閉じている。
+ * サーバの結果が正だが、生徒画面で押した瞬間に反映するためクライアントでも同じ関数を使う。
+ * 返り値は tasks の並び順に整列された配列。
+ */
+export function applyTaskChange(
+  tasks: LessonTask[],
+  current: string[],
+  taskId: string,
+  done: boolean,
+  mode: TaskMode
+): string[] {
+  const index = tasks.findIndex((t) => t.id === taskId);
+  if (index < 0) return current;
+  const next = new Set(current);
+  if (mode === 'sequential') {
+    // 押したタスクまで一気に完了 / 押したタスク以降をまとめて取り消し。
+    // これによって「押し忘れたぶんを一覧から選んで取り戻す」動作が自然に成立する
+    tasks.forEach((t, i) => {
+      if (done ? i <= index : i >= index) {
+        if (done) next.add(t.id);
+        else next.delete(t.id);
+      }
+    });
+  } else if (done) {
+    next.add(taskId);
+  } else {
+    next.delete(taskId);
+  }
+  return tasks.filter((t) => next.has(t.id)).map((t) => t.id);
+}
+
+// ---- アンケート ----
+/**
+ * 設問の型。先生が設問ごとに選ぶ。
+ * scale は単一選択の一種だが、選択肢が順序を持つため集計に平均を出し、
+ * 生徒画面も数字の並びとして狭い場所に収まる形で描く
+ */
+export type PollType = 'single' | 'multiple' | 'scale' | 'text';
+
+export const POLL_TYPE_LABELS: Record<PollType, string> = {
+  single: '1つ選ぶ',
+  multiple: 'いくつでも選ぶ',
+  scale: '段階で答える',
+  text: '文章で答える',
+};
+
+export type PollOption = { id: string; label: string };
+
+export type PollStatus = 'draft' | 'open' | 'closed';
+
+export type Poll = {
+  id: string;
+  question: string;
+  type: PollType;
+  /** text型では空。scale型では '1'..'N' が入る */
+  options: PollOption[];
+  /** scale型の両端の意味（例: 1=わからない, 5=よくわかった）。未設定なら数字だけ */
+  minLabel: string | null;
+  maxLabel: string | null;
+  status: PollStatus;
+  openedAtMs: number | null;
+  closedAtMs: number | null;
+  position: number;
+};
+
+/**
+ * 生徒に配る形。**開いている1問だけ**を送る。
+ * 全部の設問を配ると、これから聞く質問が先に見えてしまうため
+ */
+export type PublicPoll = {
+  id: string;
+  question: string;
+  type: PollType;
+  options: PollOption[];
+  minLabel: string | null;
+  maxLabel: string | null;
+};
+
+/** 1人の回答。選択式は optionIds、自由記述は text を使う */
+export type PollAnswer = {
+  optionIds: string[];
+  text: string | null;
+};
+
+export type PollResults = {
+  pollId: string;
+  /** optionId → 人数（自由記述では空） */
+  counts: Record<string, number>;
+  /** 回答した人数。分母は total（未回答を含めた参加者数） */
+  answered: number;
+  total: number;
+  /**
+   * 自由記述の回答。**選択式は誰が何を選んだかを返さない**（正直に答えられるように）。
+   * 自由記述だけはコメントと同じ扱いで、先生がフォローできるよう名前を付ける
+   */
+  texts: { participantName: string; text: string }[];
+  /** まだ答えていない生徒の名前（先生向け。「あと何人待つか」の判断に使う） */
+  pending: string[];
+};
+
+export const MAX_POLL_OPTIONS = 8;
+export const MAX_POLLS = 30;
+
+/** scale型の選択肢を作る（1..max の連番） */
+export function scaleOptions(max: number): PollOption[] {
+  return Array.from({ length: max }, (_, i) => ({ id: String(i + 1), label: String(i + 1) }));
+}
+
 // ---- スライド ----
 export type SlideInfo = {
   id: string;
@@ -48,6 +187,14 @@ export type ReflectionPayload = { reason?: string }; // 旧「振り返りタイ
 // 録音は通常1レッスン=1ファイルだが、先生の画面リロード等で録音が再開された場合は
 // 新しいパートファイルに切り替わる。その境界もタイムラインイベントとして記録する
 export type AudioPartPayload = { file: string };
+/**
+ * 生徒1人の、その時点での完了タスク一覧（差分ではなくスナップショット）。
+ * 取り消しも同じ形で記録されるので、畳み込むだけで現在の状態が復元できる。
+ * 授業後に「タスクNを最初に完了した時刻」を出すときは、時系列順に見て
+ * taskIds に初めて現れたイベントの tMs を採る。
+ * そのとき、直後（数秒以内）に取り消されている完了は誤操作なので除外すること
+ */
+export type TaskProgressPayload = { participantId: string; taskIds: string[] };
 
 export type TimelineEventType =
   | 'slide_change'
@@ -56,7 +203,8 @@ export type TimelineEventType =
   | 'clear_slide'
   | 'reflection_start' // 旧機能（過去データ用）
   | 'reflection_end' // 旧機能（過去データ用）
-  | 'audio_part';
+  | 'audio_part'
+  | 'task_progress';
 
 export type TimelineEvent = {
   id: string;
@@ -68,7 +216,8 @@ export type TimelineEvent = {
     | PointerPayload
     | ClearSlidePayload
     | ReflectionPayload
-    | AudioPartPayload;
+    | AudioPartPayload
+    | TaskProgressPayload;
 };
 
 // ---- レッスン ----
@@ -324,6 +473,32 @@ export interface ServerToClientEvents {
   comment_insight: (insight: CommentInsight) => void;
   // コメントが既存カードへ統合されて不要になったカードの削除通知
   comment_insight_removed: (insightId: string) => void;
+
+  // ---- タスク ----
+  /**
+   * 自分の進捗（生徒向け）。他の生徒の進捗は生徒には一切届けない。
+   * 進んでいる人が見えると、遅れている生徒への圧力になってしまうため
+   */
+  my_task_progress: (p: { taskIds: string[] }) => void;
+  /** 参加者全員の進捗（先生向け。接続直後のスナップショット） */
+  task_progress_all: (list: TaskProgressEntry[]) => void;
+  /** 進捗の更新（先生向け。1人分ずつ届く） */
+  task_progress: (entry: TaskProgressEntry) => void;
+
+  // ---- アンケート ----
+  /** 設問一覧（先生向け）。生徒には配らない（次の質問が見えてしまうため） */
+  polls_updated: (polls: Poll[]) => void;
+  /** アンケートの開始。全員に届き、生徒画面に回答欄が現れる */
+  poll_open: (poll: PublicPoll) => void;
+  /**
+   * アンケートの締め切り。results が入っているのは先生が結果を見せると決めたときだけ。
+   * 自由記述は他の生徒に見せないので、その場合も results.texts は空で届く
+   */
+  poll_closed: (p: { pollId: string; results: PollResults | null }) => void;
+  /** 自分の回答（生徒向け。再接続時の復元と、送信後の確定に使う） */
+  my_poll_answer: (p: { pollId: string; answer: PollAnswer }) => void;
+  /** 集計（先生向け。回答が届くたびに更新される） */
+  poll_results: (results: PollResults) => void;
 }
 
 export interface ClientToServerEvents {
@@ -356,8 +531,62 @@ export interface ClientToServerEvents {
     cb: (res: { ok: boolean; slides?: SlideInfo[]; newSlideId?: string }) => void
   ) => void;
 
+  /**
+   * タスク一覧の設定（授業前の事前設定と、授業中の追加の両方で使う）。
+   * 既存タスクは id を付けて送ることで維持される（id 無し = 新規追加）
+   */
+  set_tasks: (
+    p: { tasks: { id?: string; label: string }[] },
+    cb: (res: { ok: boolean; tasks?: LessonTask[]; error?: string }) => void
+  ) => void;
+  /** リアクションボタンを使うかどうかの切替（授業前でも授業中でも変えられる） */
+  set_reactions_enabled: (
+    p: { enabled: boolean },
+    cb: (res: { ok: boolean }) => void
+  ) => void;
+  /** タスクの進め方の切替と、生徒画面にタスクバーを出すかどうか */
+  set_task_config: (
+    p: { mode?: TaskMode; active?: boolean },
+    cb: (res: { ok: boolean }) => void
+  ) => void;
+
+  /** 設問の作成・編集（id 無しで新規）。授業前の準備も授業中の追加も同じ経路 */
+  save_poll: (
+    p: {
+      id?: string;
+      question: string;
+      type: PollType;
+      options?: { id?: string; label: string }[];
+      minLabel?: string | null;
+      maxLabel?: string | null;
+    },
+    cb: (res: { ok: boolean; poll?: Poll; error?: string }) => void
+  ) => void;
+  delete_poll: (p: { pollId: string }, cb: (res: { ok: boolean }) => void) => void;
+  /** 開始（同時に開けるのは1問だけ。他が開いていれば締め切られる） */
+  open_poll: (p: { pollId: string }, cb: (res: { ok: boolean; error?: string }) => void) => void;
+  /** 締め切り。reveal を立てると集計結果が生徒にも届く */
+  close_poll: (
+    p: { pollId: string; reveal?: boolean },
+    cb: (res: { ok: boolean }) => void
+  ) => void;
+
   // 生徒
   reaction: (r: ReactionInput, cb: (res: { ok: boolean }) => void) => void;
+  /**
+   * タスクの完了・取り消し。
+   * 順番通りモードでの「前のタスクもまとめて完了にする」補完はサーバ側で行うので、
+   * 生徒側は押されたタスク1つだけを送る
+   */
+  task_set: (p: { taskId: string; done: boolean }, cb: (res: { ok: boolean }) => void) => void;
+  /**
+   * アンケートへの回答。締め切られるまで何度でも送り直せる（誤操作をタスクと同じ考え方で受ける）。
+   * 同じ生徒の回答は上書きされるので、票が二重に入ることはない
+   */
+  poll_answer: (
+    p: { pollId: string; optionIds?: string[]; text?: string },
+    cb: (res: { ok: boolean }) => void
+  ) => void;
   /**
    * コメント入力中の合図（入力中は数秒おきに active:true、送信/クリアで active:false）。
    * サーバは最初の合図の時刻を「入力開始時刻」として記録し、
@@ -372,6 +601,12 @@ export type LiveLessonState = {
   status: LessonStatus;
   title: string;
   reactionButtons: ReactionButtonDef[];
+  /**
+   * リアクションボタンを使うか。false なら生徒画面にボタンが出ず、押しても記録されない。
+   * ボタンの定義は残したままなので、戻せば元の設定がそのまま復活する
+   * （授業後の集計で過去の反応のラベル・色を引けるようにするためでもある）
+   */
+  reactionsEnabled: boolean;
   slides: SlideInfo[];
   currentSlideId: string | null;
   startedAtEpochMs: number | null; // 授業開始時刻
@@ -383,6 +618,17 @@ export type LiveLessonState = {
   audioDefault: AudioMode;
   cameraOn: boolean;
   screenLayout: ScreenLayout;
+  // ---- タスク ----
+  // 誰がどこまで進んだかは含めない（生徒にも届くため）。進捗は別イベントで配る
+  tasks: LessonTask[];
+  taskMode: TaskMode;
+  /** 生徒画面にタスクバーを出すか（先生が開始・終了を切り替える） */
+  tasksActive: boolean;
+  /**
+   * いま開いているアンケート（無ければ null）。
+   * 開いている1問だけなので、途中参加・再接続の生徒にそのまま渡してよい
+   */
+  openPoll: PublicPoll | null;
 };
 
 // ---- 文字起こし ----
