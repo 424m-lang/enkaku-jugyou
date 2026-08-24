@@ -7,7 +7,7 @@
  * ここでは固定せず、init チャンクと一緒にサーバから受け取ったものを使う。
  *
  * - init を受け取るたびにデコーダを初期化し直す
- * - バッファが遅延しすぎたらライブエッジ付近へシークして遅延を回復する
+ * - ライブエッジからの遅れを常に詰める（少しの遅れは再生速度、大きな遅れはシーク）
  * - その端末で再生できない形式だったときは onUnsupported で知らせる
  *   （教室のモニターが無音のまま放置されるのを防ぐため、必ず表に出す）
  */
@@ -42,6 +42,13 @@ export function canPlayMime(mime: string): boolean {
   }
 }
 
+/** 目標とする遅れ。これより短いと、受信が少し途切れただけで音が飛ぶ */
+const TARGET_LAG_S = 0.6;
+/** これ以上遅れたらシークで一気に追いつく */
+const HARD_SEEK_S = 1.6;
+/** わずかな遅れを詰めるときの再生速度（声の高さの変化が分からない範囲） */
+const CATCH_UP_RATE = 1.04;
+
 export class LiveMediaPlayer {
   protected el: HTMLMediaElement;
   private mime: string | null = null;
@@ -73,6 +80,7 @@ export class LiveMediaPlayer {
 
   reset(initChunk: ArrayBuffer, mime: string): void {
     this.dispose();
+    this.el.playbackRate = 1; // 前の配信で追いつき中だった速度を持ち越さない
     const Ctor = getMediaSourceCtor();
     if (!Ctor || !canPlayMime(mime)) {
       // 対応していない端末。黙って無音にせず、呼び出し元に知らせて表示させる
@@ -147,18 +155,33 @@ export class LiveMediaPlayer {
     }
   }
 
-  /** 遅延が3秒を超えたらライブエッジへ追従 */
+  /**
+   * ライブエッジへの追従。
+   *
+   * 受信が一瞬詰まるたびに遅れが積み上がり、放っておくと先生の声・映像だけが
+   * 数秒遅れたまま戻らない。授業では書き込みやスライド送りが即座に届くので、
+   * ここが遅れるほど「いま説明しているところ」とズレて見える。
+   *
+   * ただしシークは映像が飛んで見えるので、遅れの大きさで対処を分ける。
+   * - わずかな遅れ: 再生速度を4%だけ上げて自然に詰める（声の高さの変化は分からない）
+   * - 大きな遅れ: シークで一気に追いつく（そのまま速度で詰めると時間がかかりすぎる）
+   */
   private catchUp(): void {
     const sb = this.sourceBuffer;
     if (!sb) return;
     const buffered = sb.buffered;
     if (buffered.length === 0) return;
     const end = buffered.end(buffered.length - 1);
-    if (this.el.currentTime < end - 3) {
-      this.el.currentTime = Math.max(buffered.start(buffered.length - 1), end - 0.8);
-    } else if (this.el.paused && this.enabled) {
-      void this.el.play().catch(() => {});
+    const behind = end - this.el.currentTime;
+    if (behind > HARD_SEEK_S) {
+      this.el.currentTime = Math.max(buffered.start(buffered.length - 1), end - TARGET_LAG_S);
+      this.el.playbackRate = 1;
+    } else if (behind > TARGET_LAG_S + 0.25) {
+      this.el.playbackRate = CATCH_UP_RATE;
+    } else if (this.el.playbackRate !== 1) {
+      this.el.playbackRate = 1;
     }
+    if (this.el.paused && this.enabled) void this.el.play().catch(() => {});
   }
 
   dispose(): void {
