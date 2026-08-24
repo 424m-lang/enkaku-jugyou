@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { Server, Socket } from 'socket.io';
 import { eq } from 'drizzle-orm';
-import type { ClientToServerEvents, ScreenLayout, ServerToClientEvents } from '@shared';
+import type { ClientToServerEvents, PollType, ScreenLayout, ServerToClientEvents } from '@shared';
 import { MAX_TASKS } from '@shared';
 import { db, schema } from './db';
 import { verifyParticipantToken } from './auth';
@@ -29,6 +29,17 @@ import {
   tMs,
   type LiveSession,
 } from './live/liveSessions';
+import {
+  savePoll,
+  deletePoll,
+  openPoll,
+  closePoll,
+  recordPollAnswer,
+  myPollAnswer,
+  pollResults,
+  publicResults,
+  toPublicPoll,
+} from './live/polls';
 import { recordReaction } from './live/reactions';
 import { handleCommentForInsight } from './live/commentInsights';
 import {
@@ -159,11 +170,18 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       socket.emit('audio_permission', { audio: effectiveAudio(s, pid) });
       // 自分の進捗だけを返す（他の生徒がどこまで進んだかは生徒には見せない）
       socket.emit('my_task_progress', { taskIds: taskProgressOf(s, pid) });
+      // 開いているアンケートに答え済みなら、その内容を戻す（再接続で消えないように）
+      if (s.openPollId) {
+        const mine = myPollAnswer(s, pid, s.openPollId);
+        if (mine) socket.emit('my_poll_answer', { pollId: s.openPollId, answer: mine });
+      }
       if (shouldReceiveAudio(s, pid)) await socket.join(audioRoom);
       if (shouldReceiveVideo(s, pid)) await socket.join(avRoom);
     }
     if (role === 'teacher') {
       socket.emit('task_progress_all', await listTaskProgress(s));
+      socket.emit('polls_updated', s.polls);
+      if (s.openPollId) socket.emit('poll_results', await pollResults(s, s.openPollId));
     }
 
     const avState = () => ({
@@ -188,9 +206,9 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
     await broadcastParticipantCount(io, room);
     await broadcastScreenCount(io, room, teacherRoom);
     await broadcastParticipants(io, s, room, teacherRoom);
-    // 途中参加で分母（参加者数）が変わるため、達成率を配り直す。
+    // 途中参加で分母（参加者数）が変わるため、先生の集計を配り直す。
     // これを忘れると「12人中3人」がいつまでも「2人中1人」のまま見え、判断を誤らせる
-    if (role === 'student') io.to(teacherRoom).emit('task_progress_all', await listTaskProgress(s));
+    if (role === 'student') await broadcastDenominators(io, s, teacherRoom);
 
     // サーバ再起動後などで文字起こしがまだ動いていなければ復元して再開する。
     // タイマーを同期的に張ってから復元することで、複数接続でも二重起動しない
@@ -390,6 +408,80 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         }
       });
 
+      // ---- アンケート ----
+      // 設問一覧は先生にだけ配る（生徒に配ると次に聞く質問が見えてしまう）
+      socket.on('save_poll', async (p, cb) => {
+        try {
+          if (!isPollType(p?.type)) return cb({ ok: false, error: '設問の型が不正です' });
+          const { poll, error } = await savePoll(s, p);
+          if (error || !poll) return cb({ ok: false, error });
+          io.to(teacherRoom).emit('polls_updated', s.polls);
+          cb({ ok: true, poll });
+        } catch (err) {
+          app.log.error(err);
+          cb({ ok: false });
+        }
+      });
+
+      socket.on('delete_poll', async (p, cb) => {
+        try {
+          if (typeof p?.pollId !== 'string') return cb({ ok: false });
+          const wasOpen = s.openPollId === p.pollId;
+          await deletePoll(s, p.pollId);
+          io.to(teacherRoom).emit('polls_updated', s.polls);
+          if (wasOpen) {
+            io.to(room).emit('poll_closed', { pollId: p.pollId, results: null });
+            io.to(room).emit('lesson_state', toLiveState(s));
+          }
+          cb({ ok: true });
+        } catch (err) {
+          app.log.error(err);
+          cb({ ok: false });
+        }
+      });
+
+      socket.on('open_poll', async (p, cb) => {
+        try {
+          if (s.status !== 'live') return cb({ ok: false, error: '授業を開始してください' });
+          if (typeof p?.pollId !== 'string') return cb({ ok: false });
+          const previous = s.openPollId;
+          const poll = await openPoll(s, p.pollId);
+          if (!poll) return cb({ ok: false, error: '設問が見つかりません' });
+          // 別の設問が開いていた場合、その締め切りも生徒へ知らせる
+          if (previous && previous !== poll.id) {
+            io.to(room).emit('poll_closed', { pollId: previous, results: null });
+          }
+          io.to(room).emit('poll_open', toPublicPoll(poll));
+          io.to(teacherRoom).emit('polls_updated', s.polls);
+          io.to(teacherRoom).emit('poll_results', await pollResults(s, poll.id));
+          cb({ ok: true });
+        } catch (err) {
+          app.log.error(err);
+          cb({ ok: false });
+        }
+      });
+
+      socket.on('close_poll', async (p, cb) => {
+        try {
+          if (typeof p?.pollId !== 'string') return cb({ ok: false });
+          const type = s.polls.find((x) => x.id === p.pollId)?.type;
+          await closePoll(s, p.pollId);
+          const results = await pollResults(s, p.pollId);
+          // 自由記述は他の生徒に見せない（誰が書いたかが分かってしまうため）。
+          // 見せられる集計が無いので、結果表示そのものを出さない
+          const reveal = p.reveal && type !== 'text';
+          io.to(room).emit('poll_closed', {
+            pollId: p.pollId,
+            results: reveal ? publicResults(results) : null,
+          });
+          io.to(teacherRoom).emit('polls_updated', s.polls);
+          io.to(teacherRoom).emit('poll_results', results);
+          cb({ ok: true });
+        } catch (err) {
+          app.log.error(err);
+          cb({ ok: false });
+        }
+      });
     }
 
     // ================= 生徒のイベント =================
@@ -474,6 +566,22 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         }
       });
 
+      // アンケートへの回答。締め切りまでは送り直すたびに上書きされる
+      socket.on('poll_answer', async (p, cb) => {
+        try {
+          if (s.status !== 'live') return cb({ ok: false });
+          if (typeof p?.pollId !== 'string') return cb({ ok: false });
+          const pid = socket.data.participantId!;
+          const answer = await recordPollAnswer(s, pid, p.pollId, p);
+          if (!answer) return cb({ ok: false });
+          cb({ ok: true });
+          socket.emit('my_poll_answer', { pollId: p.pollId, answer });
+          io.to(teacherRoom).emit('poll_results', await pollResults(s, p.pollId));
+        } catch (err) {
+          app.log.error(err);
+          cb({ ok: false });
+        }
+      });
     }
 
     socket.on('disconnect', async () => {
@@ -485,7 +593,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       }
       if (socket.data.role === 'student') {
         await broadcastParticipants(io, s, room, teacherRoom);
-        io.to(teacherRoom).emit('task_progress_all', await listTaskProgress(s));
+        await broadcastDenominators(io, s, teacherRoom);
       }
     });
   });
@@ -495,6 +603,24 @@ function isScreenLayout(v: string): v is ScreenLayout {
   return v === 'slide' || v === 'video' || v === 'slide-only';
 }
 
+function isPollType(v: unknown): v is PollType {
+  return v === 'single' || v === 'multiple' || v === 'scale' || v === 'text';
+}
+
+/**
+ * タスク・アンケートの集計を先生へ配り直す。
+ * どちらも分母が参加者数なので、生徒の出入りで数字が変わる
+ */
+async function broadcastDenominators(
+  io: TypedServer,
+  s: LiveSession,
+  teacherRoom: string
+): Promise<void> {
+  io.to(teacherRoom).emit('task_progress_all', await listTaskProgress(s));
+  if (s.openPollId) {
+    io.to(teacherRoom).emit('poll_results', await pollResults(s, s.openPollId));
+  }
+}
 
 /** Buffer をコピーせず ArrayBuffer として渡す（Socket.IOのバイナリ送信用） */
 function toArrayBuffer(buf: Buffer): ArrayBuffer {

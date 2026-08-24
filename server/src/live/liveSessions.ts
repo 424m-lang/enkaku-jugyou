@@ -8,6 +8,8 @@ import type {
   LiveLessonState,
   LessonStatus,
   ParticipantInfo,
+  Poll,
+  PollAnswer,
   ReactionButtonDef,
   ReactionCounts,
   ScreenLayout,
@@ -22,6 +24,7 @@ import type {
 import { MAX_TASKS, applyTaskChange } from '@shared';
 import { db, schema } from '../db';
 import { lessonDir } from '../storage';
+import { loadPolls, loadPollAnswers, toPublicPoll } from './polls';
 
 /** WebMファイルの先頭マジックナンバー（EBMLヘッダ）。録音パートの先頭チャンク判定に使う */
 const EBML_MAGIC = Buffer.from([0x1a, 0x45, 0xdf, 0xa3]);
@@ -66,6 +69,13 @@ export type LiveSession = {
   taskProgress: Map<string, Set<string>>;
   /** participantId → 最後に進捗が動いた tMs（止まっている生徒の検知に使う） */
   taskUpdatedAt: Map<string, number>;
+
+  // ---- アンケート ----
+  polls: Poll[];
+  /** いま開いている設問（同時に開けるのは1問だけ） */
+  openPollId: string | null;
+  /** pollId → participantId → 回答 */
+  pollAnswers: Map<string, Map<string, PollAnswer>>;
 
   /**
    * コメント入力中の生徒（participantId → 入力対象スライド・入力開始時刻・最終合図時刻）。
@@ -137,6 +147,7 @@ export async function getSession(lessonId: string): Promise<LiveSession | null> 
   if (!lesson) return null;
 
   const slides = await loadSlides(lessonId);
+  const polls = await loadPolls(lessonId);
 
   const s: LiveSession = {
     lessonId,
@@ -153,6 +164,9 @@ export async function getSession(lessonId: string): Promise<LiveSession | null> 
     tasksActive: lesson.tasksActive,
     taskProgress: new Map(),
     taskUpdatedAt: new Map(),
+    polls,
+    openPollId: polls.find((p) => p.status === 'open')?.id ?? null,
+    pollAnswers: await loadPollAnswers(lessonId),
     composing: new Map(),
     currentAudioPart: null,
     audioSeq: 0,
@@ -326,6 +340,10 @@ export function toLiveState(s: LiveSession): LiveLessonState {
     tasks: s.tasks,
     taskMode: s.taskMode,
     tasksActive: s.tasksActive,
+    openPoll: (() => {
+      const p = s.polls.find((x) => x.id === s.openPollId);
+      return p ? toPublicPoll(p) : null;
+    })(),
   };
 }
 

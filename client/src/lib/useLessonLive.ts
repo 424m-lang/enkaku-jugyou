@@ -4,6 +4,7 @@ import type {
   LessonStatus,
   LessonTask,
   LiveLessonState,
+  PublicPoll,
   ReactionButtonDef,
   ScreenLayout,
   SlideInfo,
@@ -52,6 +53,8 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
   const [tasks, setTasks] = useState<LessonTask[]>([]);
   const [taskMode, setTaskMode] = useState<TaskMode>('sequential');
   const [tasksActive, setTasksActive] = useState(false);
+  // いま開いているアンケート（開始・締め切りは全画面が同じ状態を見る）
+  const [openPoll, setOpenPoll] = useState<PublicPoll | null>(null);
 
   useEffect(() => {
     if (!lessonId) return;
@@ -80,6 +83,7 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
       setTasks(st.tasks);
       setTaskMode(st.taskMode);
       setTasksActive(st.tasksActive);
+      setOpenPoll(st.openPoll);
       optionsRef.current.onLessonState?.(st);
     });
 
@@ -116,6 +120,8 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
     });
     socket.on('lesson_started', () => setStatus('live'));
     socket.on('lesson_ended', () => setStatus('ended'));
+    socket.on('poll_open', (poll) => setOpenPoll(poll));
+    socket.on('poll_closed', (p) => setOpenPoll((cur) => (cur?.id === p.pollId ? null : cur)));
 
     optionsRef.current.setup?.(socket);
 
@@ -163,5 +169,6 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
     tasks,
     taskMode,
     tasksActive,
+    openPoll,
   };
 }

@@ -1920,3 +1920,362 @@ button.slide-thumb:hover {
   font-size: 0.75rem;
 }
 
+/* ---- アンケート（生徒画面の回答欄） ---- */
+/* 先生がアンケートを開始している間だけ出る。タスクバーと同じ枠を使い、
+   アンケート中はタスクバーが数字だけに縮んで場所を譲る */
+.poll-bar {
+  border: 1px solid var(--primary);
+  border-radius: 12px;
+  background: #eff6ff;
+  padding: 8px 10px;
+}
+
+.poll-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.poll-q {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.poll-answered {
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+
+.poll-options {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.poll-option {
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 9px 16px;
+  cursor: pointer;
+}
+
+.poll-option.on {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+  font-weight: 700;
+}
+
+.poll-hint {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+/* 段階評価は数字を並べるだけなので、狭い場所にも収まる */
+.poll-scale {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.poll-scale-btn {
+  flex: 1;
+  font: inherit;
+  font-size: 0.95rem;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 9px 4px;
+  cursor: pointer;
+}
+
+.poll-scale-btn.on {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+  font-weight: 700;
+}
+
+.poll-end-label {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  color: var(--muted);
+  max-width: 30%;
+}
+
+.poll-text-row {
+  display: flex;
+  gap: 6px;
+}
+
+.poll-text-row input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+/* 締め切り後、先生が「結果を見せる」を選んだときだけ出る集計 */
+.poll-result {
+  background: var(--panel);
+  border-color: var(--border);
+}
+
+.poll-pie-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.poll-pie {
+  width: 88px;
+  height: 88px;
+  flex-shrink: 0;
+}
+
+.poll-legend {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 0.82rem;
+}
+
+.poll-legend li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+}
+
+.legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+/* ---- アンケート（先生画面のパネル） ---- */
+.poll-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0;
+  padding: 10px;
+  background: #f9fafb;
+  border-radius: 10px;
+}
+
+.poll-edit input,
+.poll-edit select {
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.poll-type-row {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.poll-type-row .chip {
+  cursor: pointer;
+}
+
+.poll-scale-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.poll-scale-edit label {
+  font-size: 0.8rem;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.poll-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.poll-item {
+  border-top: 1px solid var(--border);
+  padding: 8px 0;
+}
+
+.poll-item.open {
+  background: #eff6ff;
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.poll-item-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.poll-item-q {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.85rem;
+}
+
+.poll-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.poll-count {
+  margin: 8px 0 4px;
+}
+
+/* 集計。分母は参加者全員なので、未回答は自然に「残りのグレー」として見える */
+.poll-bars {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.poll-bars li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.poll-bar-label {
+  width: 34%;
+  flex-shrink: 0;
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.poll-bar-track {
+  flex: 1;
+  height: 12px;
+  background: var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.poll-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--primary);
+  transition: width 0.2s;
+}
+
+.poll-bar-num {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  width: 34px;
+  text-align: right;
+}
+
+.poll-texts {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  font-size: 0.8rem;
+}
+
+.poll-texts li {
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.poll-pending {
+  margin: 6px 0 0;
+  font-size: 0.75rem;
+}
+
+/* アンケート中に縮んだタスクバー */
+.task-mini {
+  align-self: flex-start;
+  font: inherit;
+  font-size: 0.78rem;
+  color: var(--muted);
+  background: #f9fafb;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+
+/* スマホ横向きなど画面が低いときは、アンケートを1行に畳んでスライドに場所を残す。
+   質問は省略記号で切れるが、先生が読み上げている前提で選択肢を優先する */
+@media (max-height: 500px) {
+  .poll-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 10px;
+  }
+
+  .poll-head {
+    margin-bottom: 0;
+    flex-shrink: 1;
+    min-width: 0;
+    max-width: 45%;
+  }
+
+  .poll-q {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.82rem;
+  }
+
+  .poll-answered {
+    display: none;
+  }
+
+  .poll-options,
+  .poll-scale,
+  .poll-text-row {
+    flex: 1;
+    min-width: 0;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .poll-options::-webkit-scrollbar,
+  .poll-scale::-webkit-scrollbar {
+    display: none;
+  }
+
+  .poll-option,
+  .poll-scale-btn {
+    padding: 7px 14px;
+    white-space: nowrap;
+  }
+
+  .poll-hint {
+    display: none;
+  }
+}

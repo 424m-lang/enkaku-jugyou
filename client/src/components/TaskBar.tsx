@@ -12,6 +12,11 @@ type Props = {
   /** 自分が完了したタスク（tasks の並び順） */
   doneIds: string[];
   disabled: boolean;
+  /**
+   * アンケート中は数字だけに縮む。アンケートは短時間で注意を求めるもの、
+   * タスクバーはぼんやり見えていればよいもの、という性格の違いに合わせる
+   */
+  compact?: boolean;
   onSet: (taskId: string, done: boolean) => void;
 };
 
@@ -25,7 +30,7 @@ type Props = {
  *
  * 他の生徒の進捗は表示しない。遅れている生徒への圧力になるため、比較は先生画面だけに置く。
  */
-export default function TaskBar({ tasks, mode, doneIds, disabled, onSet }: Props) {
+export default function TaskBar({ tasks, mode, doneIds, disabled, compact, onSet }: Props) {
   const [open, setOpen] = useState(false);
   // 直前に完了にしたタスク（数秒だけ「取り消す」を同じ場所に出す）
   const [undoable, setUndoable] = useState<string | null>(null);
@@ -66,8 +71,25 @@ export default function TaskBar({ tasks, mode, doneIds, disabled, onSet }: Props
     setUndoable(next ? taskId : null);
   };
 
+  // アンケート中は場所を譲り、進み具合の数字と一覧だけを残す
+  if (compact && !open) {
+    return (
+      <button type="button" className="task-mini" onClick={() => setOpen(true)}>
+        タスク {doneIds.length}/{tasks.length}
+      </button>
+    );
+  }
+
   return (
     <div className={`task-bar${flashNew ? ' task-bar-new' : ''}`}>
+      {compact ? (
+        <div className="task-row">
+          <button type="button" className="task-label" onClick={() => setOpen(false)}>
+            <span className="task-label-text">タスク {doneIds.length}/{tasks.length}</span>
+            <span className="task-caret">▾</span>
+          </button>
+        </div>
+      ) : (
       <div className="task-row">
         {mode === 'sequential' ? (
           <>
@@ -144,6 +166,7 @@ export default function TaskBar({ tasks, mode, doneIds, disabled, onSet }: Props
           </>
         )}
       </div>
+      )}
 
       {open && (
         <ul className="task-list">

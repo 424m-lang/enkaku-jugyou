@@ -5,6 +5,9 @@ import type {
   LessonStatus,
   ParticipantInfo,
   ReactionButtonDef,
+  Poll,
+  PollResults,
+  PollType,
   ReactionFeedItem,
   StrokePayload,
   TaskMode,
@@ -21,6 +24,7 @@ import SlideCanvas, { type DrawingTool } from '../../components/SlideCanvas';
 import JoinQrModal from '../../components/JoinQrModal';
 import ClassroomPanel from '../../components/ClassroomPanel';
 import TaskPanel from '../../components/TaskPanel';
+import PollPanel from '../../components/PollPanel';
 
 // 黒 ＋ カラーユニバーサルデザイン（Okabe-Ito）の3色。色覚の違いがあっても見分けやすい
 const COLORS: { value: string; label: string }[] = [
@@ -62,6 +66,8 @@ export default function Teach() {
   const [reactions, setReactions] = useState<ReactionFeedItem[]>([]);
   const [insights, setInsights] = useState<CommentInsight[]>([]);
   const [taskProgress, setTaskProgress] = useState<TaskProgressEntry[]>([]);
+  const [polls, setPolls] = useState<Poll[]>([]);
+  const [pollResults, setPollResults] = useState<Record<string, PollResults>>({});
   const [participantCount, setParticipantCount] = useState(0);
   const [participants, setParticipants] = useState<ParticipantInfo[]>([]);
   const [screenCount, setScreenCount] = useState(0);
@@ -111,6 +117,7 @@ export default function Teach() {
     tasks,
     taskMode,
     tasksActive,
+    openPoll,
   } = useLessonLive(lessonId, {
     onLessonState: (st) => {
       lessonClockRef.current = {
@@ -141,6 +148,9 @@ export default function Teach() {
       socket.on('comment_insight_removed', (id) => {
         setInsights((prev) => prev.filter((x) => x.id !== id));
       });
+      // アンケート（設問一覧と集計は先生にだけ届く）
+      socket.on('polls_updated', (list) => setPolls(list));
+      socket.on('poll_results', (r) => setPollResults((prev) => ({ ...prev, [r.pollId]: r })));
       // タスクの進捗（接続直後に全件、以後は動いた生徒の分だけ届く）
       socket.on('task_progress_all', (list) => setTaskProgress(list));
       socket.on('task_progress', (entry) => {
@@ -452,6 +462,64 @@ export default function Teach() {
     [socketRef]
   );
 
+  const savePoll = useCallback(
+    (p: {
+      id?: string;
+      question: string;
+      type: PollType;
+      options?: { id?: string; label: string }[];
+      minLabel?: string | null;
+      maxLabel?: string | null;
+    }) => {
+      socketRef.current?.emit('save_poll', p, (res) => {
+        if (!res.ok && res.error) window.alert(res.error);
+      });
+    },
+    [socketRef]
+  );
+
+  const deletePoll = useCallback(
+    (pollId: string) => socketRef.current?.emit('delete_poll', { pollId }, () => {}),
+    [socketRef]
+  );
+  const openPollRemote = useCallback(
+    (pollId: string) =>
+      socketRef.current?.emit('open_poll', { pollId }, (res) => {
+        if (!res.ok && res.error) window.alert(res.error);
+      }),
+    [socketRef]
+  );
+  // 同じ質問をもう一度聞く。同じ設問を開き直すと前回の回答が残ったままになり
+  // 集計が古い票と混ざるため、新しい設問として複製してから開く
+  const repeatPoll = useCallback(
+    (poll: Poll) => {
+      socketRef.current?.emit(
+        'save_poll',
+        {
+          question: poll.question,
+          type: poll.type,
+          options: poll.options.map((o) => ({ label: o.label })),
+          minLabel: poll.minLabel,
+          maxLabel: poll.maxLabel,
+        },
+        (res) => {
+          if (res.ok && res.poll) {
+            socketRef.current?.emit('open_poll', { pollId: res.poll.id }, () => {});
+          } else if (res.error) {
+            window.alert(res.error);
+          }
+        }
+      );
+    },
+    [socketRef]
+  );
+
+  const closePollRemote = useCallback(
+    (pollId: string, reveal: boolean) =>
+      socketRef.current?.emit('close_poll', { pollId, reveal }, () => {}),
+    [socketRef]
+  );
+
   if (loadError) {
     return (
       <div className="page-center">
@@ -659,6 +727,17 @@ export default function Teach() {
             nowMs={lessonNowMs}
             onSetTasks={setTasksRemote}
             onSetConfig={setTaskConfigRemote}
+          />
+          <PollPanel
+            polls={polls}
+            results={pollResults}
+            openPollId={openPoll?.id ?? null}
+            status={status}
+            onSave={savePoll}
+            onDelete={deletePoll}
+            onOpen={openPollRemote}
+            onRepeat={repeatPoll}
+            onClose={closePollRemote}
           />
           <div className="card feed-card">
             <h3>コメント・振り返り</h3>

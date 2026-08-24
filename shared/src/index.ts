@@ -74,6 +74,83 @@ export function applyTaskChange(
   return tasks.filter((t) => next.has(t.id)).map((t) => t.id);
 }
 
+// ---- アンケート ----
+/**
+ * 設問の型。先生が設問ごとに選ぶ。
+ * scale は単一選択の一種だが、選択肢が順序を持つため集計に平均を出し、
+ * 生徒画面も数字の並びとして狭い場所に収まる形で描く
+ */
+export type PollType = 'single' | 'multiple' | 'scale' | 'text';
+
+export const POLL_TYPE_LABELS: Record<PollType, string> = {
+  single: '1つ選ぶ',
+  multiple: 'いくつでも選ぶ',
+  scale: '段階で答える',
+  text: '文章で答える',
+};
+
+export type PollOption = { id: string; label: string };
+
+export type PollStatus = 'draft' | 'open' | 'closed';
+
+export type Poll = {
+  id: string;
+  question: string;
+  type: PollType;
+  /** text型では空。scale型では '1'..'N' が入る */
+  options: PollOption[];
+  /** scale型の両端の意味（例: 1=わからない, 5=よくわかった）。未設定なら数字だけ */
+  minLabel: string | null;
+  maxLabel: string | null;
+  status: PollStatus;
+  openedAtMs: number | null;
+  closedAtMs: number | null;
+  position: number;
+};
+
+/**
+ * 生徒に配る形。**開いている1問だけ**を送る。
+ * 全部の設問を配ると、これから聞く質問が先に見えてしまうため
+ */
+export type PublicPoll = {
+  id: string;
+  question: string;
+  type: PollType;
+  options: PollOption[];
+  minLabel: string | null;
+  maxLabel: string | null;
+};
+
+/** 1人の回答。選択式は optionIds、自由記述は text を使う */
+export type PollAnswer = {
+  optionIds: string[];
+  text: string | null;
+};
+
+export type PollResults = {
+  pollId: string;
+  /** optionId → 人数（自由記述では空） */
+  counts: Record<string, number>;
+  /** 回答した人数。分母は total（未回答を含めた参加者数） */
+  answered: number;
+  total: number;
+  /**
+   * 自由記述の回答。**選択式は誰が何を選んだかを返さない**（正直に答えられるように）。
+   * 自由記述だけはコメントと同じ扱いで、先生がフォローできるよう名前を付ける
+   */
+  texts: { participantName: string; text: string }[];
+  /** まだ答えていない生徒の名前（先生向け。「あと何人待つか」の判断に使う） */
+  pending: string[];
+};
+
+export const MAX_POLL_OPTIONS = 8;
+export const MAX_POLLS = 30;
+
+/** scale型の選択肢を作る（1..max の連番） */
+export function scaleOptions(max: number): PollOption[] {
+  return Array.from({ length: max }, (_, i) => ({ id: String(i + 1), label: String(i + 1) }));
+}
+
 // ---- スライド ----
 export type SlideInfo = {
   id: string;
@@ -408,6 +485,20 @@ export interface ServerToClientEvents {
   /** 進捗の更新（先生向け。1人分ずつ届く） */
   task_progress: (entry: TaskProgressEntry) => void;
 
+  // ---- アンケート ----
+  /** 設問一覧（先生向け）。生徒には配らない（次の質問が見えてしまうため） */
+  polls_updated: (polls: Poll[]) => void;
+  /** アンケートの開始。全員に届き、生徒画面に回答欄が現れる */
+  poll_open: (poll: PublicPoll) => void;
+  /**
+   * アンケートの締め切り。results が入っているのは先生が結果を見せると決めたときだけ。
+   * 自由記述は他の生徒に見せないので、その場合も results.texts は空で届く
+   */
+  poll_closed: (p: { pollId: string; results: PollResults | null }) => void;
+  /** 自分の回答（生徒向け。再接続時の復元と、送信後の確定に使う） */
+  my_poll_answer: (p: { pollId: string; answer: PollAnswer }) => void;
+  /** 集計（先生向け。回答が届くたびに更新される） */
+  poll_results: (results: PollResults) => void;
 }
 
 export interface ClientToServerEvents {
@@ -454,6 +545,26 @@ export interface ClientToServerEvents {
     cb: (res: { ok: boolean }) => void
   ) => void;
 
+  /** 設問の作成・編集（id 無しで新規）。授業前の準備も授業中の追加も同じ経路 */
+  save_poll: (
+    p: {
+      id?: string;
+      question: string;
+      type: PollType;
+      options?: { id?: string; label: string }[];
+      minLabel?: string | null;
+      maxLabel?: string | null;
+    },
+    cb: (res: { ok: boolean; poll?: Poll; error?: string }) => void
+  ) => void;
+  delete_poll: (p: { pollId: string }, cb: (res: { ok: boolean }) => void) => void;
+  /** 開始（同時に開けるのは1問だけ。他が開いていれば締め切られる） */
+  open_poll: (p: { pollId: string }, cb: (res: { ok: boolean; error?: string }) => void) => void;
+  /** 締め切り。reveal を立てると集計結果が生徒にも届く */
+  close_poll: (
+    p: { pollId: string; reveal?: boolean },
+    cb: (res: { ok: boolean }) => void
+  ) => void;
 
   // 生徒
   reaction: (r: ReactionInput, cb: (res: { ok: boolean }) => void) => void;
@@ -463,6 +574,14 @@ export interface ClientToServerEvents {
    * 生徒側は押されたタスク1つだけを送る
    */
   task_set: (p: { taskId: string; done: boolean }, cb: (res: { ok: boolean }) => void) => void;
+  /**
+   * アンケートへの回答。締め切られるまで何度でも送り直せる（誤操作をタスクと同じ考え方で受ける）。
+   * 同じ生徒の回答は上書きされるので、票が二重に入ることはない
+   */
+  poll_answer: (
+    p: { pollId: string; optionIds?: string[]; text?: string },
+    cb: (res: { ok: boolean }) => void
+  ) => void;
   /**
    * コメント入力中の合図（入力中は数秒おきに active:true、送信/クリアで active:false）。
    * サーバは最初の合図の時刻を「入力開始時刻」として記録し、
@@ -494,6 +613,11 @@ export type LiveLessonState = {
   taskMode: TaskMode;
   /** 生徒画面にタスクバーを出すか（先生が開始・終了を切り替える） */
   tasksActive: boolean;
+  /**
+   * いま開いているアンケート（無ければ null）。
+   * 開いている1問だけなので、途中参加・再接続の生徒にそのまま渡してよい
+   */
+  openPoll: PublicPoll | null;
 };
 
 // ---- 文字起こし ----

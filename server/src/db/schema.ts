@@ -8,7 +8,14 @@ import {
   doublePrecision,
   index,
 } from 'drizzle-orm/pg-core';
-import type { InsightComment, LessonTask, ReactionButtonDef, ReactionCounts } from '@shared';
+import { uniqueIndex } from 'drizzle-orm/pg-core';
+import type {
+  InsightComment,
+  LessonTask,
+  PollOption,
+  ReactionButtonDef,
+  ReactionCounts,
+} from '@shared';
 
 export const teachers = pgTable('teachers', {
   id: text('id').primaryKey(),
@@ -93,6 +100,57 @@ export const participants = pgTable(
     lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('participants_lesson_idx').on(t.lessonId)]
+);
+
+// アンケートの設問。1つの授業に何問でも用意でき、開けるのは同時に1問だけ
+export const polls = pgTable(
+  'polls',
+  {
+    id: text('id').primaryKey(),
+    lessonId: text('lesson_id')
+      .notNull()
+      .references(() => lessons.id),
+    question: text('question').notNull(),
+    // 先生が設問ごとに選ぶ。scale は選択肢が順序を持つ単一選択
+    type: text('type', { enum: ['single', 'multiple', 'scale', 'text'] }).notNull(),
+    options: jsonb('options').$type<PollOption[]>().notNull().default([]),
+    // scale の両端の意味（例: 1=わからない, 5=よくわかった）
+    minLabel: text('min_label'),
+    maxLabel: text('max_label'),
+    status: text('status', { enum: ['draft', 'open', 'closed'] })
+      .notNull()
+      .default('draft'),
+    // 授業開始からの経過ms。授業後に「いつ聞いたか」を音声と突き合わせるのに使う
+    openedAtMs: integer('opened_at_ms'),
+    closedAtMs: integer('closed_at_ms'),
+    position: doublePrecision('position').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('polls_lesson_idx').on(t.lessonId, t.position)]
+);
+
+// 回答。1人1行で、締め切りまでは上書きされる（押し直しても票は増えない）
+export const pollAnswers = pgTable(
+  'poll_answers',
+  {
+    id: text('id').primaryKey(),
+    pollId: text('poll_id')
+      .notNull()
+      .references(() => polls.id),
+    lessonId: text('lesson_id')
+      .notNull()
+      .references(() => lessons.id),
+    participantId: text('participant_id')
+      .notNull()
+      .references(() => participants.id),
+    // 選択式（single/scale は1件、multiple は複数）
+    optionIds: jsonb('option_ids').$type<string[]>().notNull().default([]),
+    // 自由記述
+    text: text('text'),
+    answeredAtMs: integer('answered_at_ms').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('poll_answers_unique').on(t.pollId, t.participantId)]
 );
 
 // 単一タイムライン: 授業開始からの経過ミリ秒 t_ms を基準に全イベントを記録
