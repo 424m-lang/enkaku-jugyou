@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
+  AudioMode,
   LessonStatus,
   LiveLessonState,
   ReactionButtonDef,
+  ScreenLayout,
   SlideInfo,
   StrokePayload,
 } from '@shared';
@@ -11,6 +13,8 @@ import { loadLessonPdf, type PdfCache } from './pdf';
 import { rebuildStrokes, applyDrawingEvent, type StrokesBySlide } from './strokes';
 
 type Options = {
+  /** 教室の大画面として接続する場合のトークン（先生のログイン不要） */
+  screenToken?: string;
   /** lesson_state 受信時の追加処理（集計の反映など） */
   onLessonState?: (st: LiveLessonState) => void;
   /** ページ固有のソケットハンドラ登録（接続確立時に一度だけ呼ばれる） */
@@ -36,6 +40,12 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
   const [strokes, setStrokes] = useState<StrokesBySlide>({});
   const [remoteProgress, setRemoteProgress] = useState<Record<string, StrokePayload>>({});
   const [pdf, setPdf] = useState<PdfCache | null>(null);
+  // 教室スクリーン（大画面）まわり。3画面すべてが同じ状態を見る必要がある
+  const [audioDefault, setAudioDefault] = useState<AudioMode>('on');
+  const [cameraOn, setCameraOn] = useState(false);
+  const [avHasAudio, setAvHasAudio] = useState(false);
+  const [screenLayout, setScreenLayout] = useState<ScreenLayout>('slide');
+  const [videoToStudents, setVideoToStudents] = useState(false);
 
   useEffect(() => {
     if (!lessonId) return;
@@ -45,7 +55,7 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
       if (!disposed) setPdf(cache);
     });
 
-    const socket = connectLessonSocket(lessonId);
+    const socket = connectLessonSocket(lessonId, optionsRef.current.screenToken);
     socketRef.current = socket;
 
     socket.on('connect', () => setConnected(true));
@@ -60,7 +70,15 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
       setSlides(st.slides);
       setCurrentSlideId((cur) => st.currentSlideId ?? cur ?? st.slides[0]?.id ?? null);
       setStrokes(rebuildStrokes(st.drawingEvents));
+      setAudioDefault(st.audioDefault);
       optionsRef.current.onLessonState?.(st);
+    });
+
+    socket.on('av_state', (p) => {
+      setCameraOn(p.cameraOn);
+      setAvHasAudio(p.avHasAudio);
+      setScreenLayout(p.layout);
+      setVideoToStudents(p.videoToStudents);
     });
 
     socket.on('slides_updated', (sl) => setSlides(sl));
@@ -128,5 +146,10 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
     setStrokes,
     currentProgress,
     pdf,
+    audioDefault,
+    cameraOn,
+    avHasAudio,
+    screenLayout,
+    videoToStudents,
   };
 }

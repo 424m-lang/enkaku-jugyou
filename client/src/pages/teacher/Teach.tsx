@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import type {
   CommentInsight,
   LessonStatus,
+  ParticipantInfo,
   ReactionButtonDef,
   ReactionFeedItem,
   StrokePayload,
@@ -16,6 +17,7 @@ import { fmtClock } from '../../lib/format';
 import { makeReactionMeta } from '../../lib/reactionMeta';
 import SlideCanvas, { type DrawingTool } from '../../components/SlideCanvas';
 import JoinQrModal from '../../components/JoinQrModal';
+import ClassroomPanel from '../../components/ClassroomPanel';
 
 // 黒 ＋ カラーユニバーサルデザイン（Okabe-Ito）の3色。色覚の違いがあっても見分けやすい
 const COLORS: { value: string; label: string }[] = [
@@ -57,6 +59,8 @@ export default function Teach() {
   const [reactions, setReactions] = useState<ReactionFeedItem[]>([]);
   const [insights, setInsights] = useState<CommentInsight[]>([]);
   const [participantCount, setParticipantCount] = useState(0);
+  const [participants, setParticipants] = useState<ParticipantInfo[]>([]);
+  const [screenCount, setScreenCount] = useState(0);
   const [audioState, setAudioState] = useState<'off' | 'on' | 'error'>('off');
   const [loadError, setLoadError] = useState('');
   const [showQr, setShowQr] = useState(false);
@@ -96,6 +100,10 @@ export default function Teach() {
     setStrokes,
     currentProgress,
     pdf,
+    audioDefault,
+    cameraOn,
+    screenLayout,
+    videoToStudents,
   } = useLessonLive(lessonId, {
     onLessonState: (st) => {
       lessonClockRef.current = {
@@ -106,6 +114,8 @@ export default function Teach() {
     setup: (socket) => {
       // 先生画面だけが受け取るイベント
       socket.on('participant_count', (n) => setParticipantCount(n));
+      socket.on('participants', (list) => setParticipants(list));
+      socket.on('screen_count', (n) => setScreenCount(n));
       socket.on('reaction_feed', (item) => {
         // 同じ反応が重複して届いても二重表示しない（再接続時の取りこぼし補完に備える）
         setReactions((prev) =>
@@ -432,20 +442,8 @@ export default function Teach() {
           <button className="btn header-action" onClick={() => setShowQr(true)} disabled={!joinCode}>
             参加用QR
           </button>
-          <button
-            className="btn header-action"
-            title="生徒画面と同じスライドを別ウィンドウで表示（プロジェクタ投影用）"
-            onClick={() =>
-              window.open(
-                `/screen/${lessonId}`,
-                `screen-${lessonId}`,
-                'popup=yes,width=1024,height=640'
-              )
-            }
-          >
-            スクリーン表示
-          </button>
           <span className="muted nowrap">生徒 {participantCount}人</span>
+          {screenCount > 0 && <span className="chip chip-live nowrap">大画面 {screenCount}台</span>}
           {status === 'live' && (
             <span className={`nowrap ${audioState === 'on' ? 'rec-on' : 'rec-off'}`}>
               {audioState === 'on' ? '● 録音・配信中' : audioState === 'error' ? 'マイクエラー' : '音声停止中'}
@@ -600,6 +598,19 @@ export default function Teach() {
         </div>
 
         <aside className="sidebar">
+          {lessonId && (
+            <ClassroomPanel
+              lessonId={lessonId}
+              socketRef={socketRef}
+              status={status}
+              screenCount={screenCount}
+              participants={participants}
+              audioDefault={audioDefault}
+              cameraOn={cameraOn}
+              screenLayout={screenLayout}
+              videoToStudents={videoToStudents}
+            />
+          )}
           <div className="card feed-card">
             <h3>コメント・振り返り</h3>
             <div className="insight-list">

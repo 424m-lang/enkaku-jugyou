@@ -1,3 +1,5 @@
+import { screenTokenFromUrl } from './screenToken';
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -11,6 +13,8 @@ export async function api<T>(path: string, opts: RequestInit = {}): Promise<T> {
   if (typeof opts.body === 'string') headers['Content-Type'] = 'application/json';
   const token = sessionStorage.getItem('participantToken');
   if (token) headers['x-participant-token'] = token;
+  const screenToken = screenTokenFromUrl();
+  if (screenToken) headers['x-screen-token'] = screenToken;
 
   const res = await fetch(path, { credentials: 'same-origin', ...opts, headers });
   if (!res.ok) {

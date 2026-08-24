@@ -36,6 +36,12 @@ export const lessons = pgTable('lessons', {
   pdfPageCount: integer('pdf_page_count'),
   // PDF各ページのテキスト（クライアントで抽出して保存）。ブロック分けのAIに渡す
   pdfPageTexts: jsonb('pdf_page_texts').$type<string[]>(),
+  // 生徒端末で先生の音声を鳴らすかの既定。教室の大画面から音を出す授業は 'off'
+  audioDefault: text('audio_default', { enum: ['on', 'off'] })
+    .notNull()
+    .default('on'),
+  // 教室スクリーン（大画面）を先生のログイン無しで開くためのトークン
+  screenToken: text('screen_token').unique(),
   // 復習動画（章立て再生ページ）の公開用トークン。未公開ならnull
   reviewShareToken: text('review_share_token').unique(),
   reviewPublishedAt: timestamp('review_published_at', { withTimezone: true }),
@@ -71,6 +77,8 @@ export const participants = pgTable(
       .references(() => lessons.id),
     displayName: text('display_name').notNull(),
     tokenHash: text('token_hash').notNull(),
+    // 音声の個別指定（授業の既定を上書きする。nullなら既定に従う）
+    audioOverride: text('audio_override', { enum: ['on', 'off'] }),
     // Phase 2（同意管理）用のプレースホルダ
     consentStatus: text('consent_status').notNull().default('unknown'),
     joinedAt: timestamp('joined_at', { withTimezone: true }).notNull().defaultNow(),

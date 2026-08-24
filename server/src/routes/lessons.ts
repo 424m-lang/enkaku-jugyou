@@ -63,6 +63,16 @@ async function authorizeLessonAccess(
     const unsigned = req.unsignCookie(teacherCookie);
     if (unsigned.valid && unsigned.value === lesson.teacherId) return lesson;
   }
+  // 教室の大画面（表示専用。スライドを描くためにPDFと授業情報だけ読めればよい）
+  const screenToken = req.headers['x-screen-token'];
+  if (
+    lesson.screenToken &&
+    typeof screenToken === 'string' &&
+    screenToken.length === lesson.screenToken.length &&
+    crypto.timingSafeEqual(Buffer.from(screenToken), Buffer.from(lesson.screenToken))
+  ) {
+    return lesson;
+  }
   // 生徒
   const token = req.headers['x-participant-token'];
   const participant = await verifyParticipantToken(
@@ -197,6 +207,26 @@ export async function lessonRoutes(app: FastifyInstance): Promise<void> {
     if (!lesson) return;
     const slides = await loadSlides(id);
     return { ...lessonToSummary(lesson), slides };
+  });
+
+  /**
+   * 教室スクリーン（大画面）用のURLトークン。
+   * 大画面は先生のPCとは別の端末で開く（音声をそこから鳴らすため）ので、
+   * 先生のログイン無しに表示だけできるトークンを発行する。
+   * この接続は表示専用で、大画面側から授業へ何かを送ることはできない。
+   */
+  app.get('/api/lessons/:id/screen-token', { preHandler: requireTeacher }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const [lesson] = await db
+      .select()
+      .from(schema.lessons)
+      .where(and(eq(schema.lessons.id, id), eq(schema.lessons.teacherId, teacherIdOf(req))));
+    if (!lesson) return reply.code(404).send({ error: '授業が見つかりません' });
+    if (lesson.screenToken) return { screenToken: lesson.screenToken };
+
+    const screenToken = crypto.randomBytes(16).toString('base64url');
+    await db.update(schema.lessons).set({ screenToken }).where(eq(schema.lessons.id, id));
+    return { screenToken };
   });
 
   // ---- 授業設定の更新（タイトル・ボタン。開始前のみ） ----
