@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import type { AudioMode, PointerPayload, PollAnswer, PollResults, PublicPoll } from '@shared';
 import { applyTaskChange } from '@shared';
 import { LiveAudioPlayer } from '../../lib/audio';
-import { LiveVideoPlayer, playableVideoMime } from '../../lib/camera';
+import { LiveVideoPlayer } from '../../lib/camera';
 import { ReactionQueue } from '../../lib/reactionQueue';
 import { useLessonLive } from '../../lib/useLessonLive';
 import SlideCanvas from '../../components/SlideCanvas';
@@ -20,6 +20,8 @@ export default function Class() {
   const [audioEnabled, setAudioEnabled] = useState(false);
   // 先生が決めた、この端末で音を鳴らしてよいか（教室で受ける生徒は 'off'）
   const [audioAllowed, setAudioAllowed] = useState<AudioMode>('on');
+  // この端末が先生の音声形式を再生できない場合。無音の原因が分かるように表に出す
+  const [mediaUnsupported, setMediaUnsupported] = useState(false);
   const [videoLive, setVideoLive] = useState(false);
   const [comment, setComment] = useState('');
   const [queuedCount, setQueuedCount] = useState(0);
@@ -81,6 +83,7 @@ export default function Class() {
       setQueuedCount(queueRef.current.pendingCount);
       if (audioElRef.current) {
         playerRef.current = new LiveAudioPlayer(audioElRef.current);
+        playerRef.current.onUnsupported = () => setMediaUnsupported(true);
       }
       socket.on('connect_error', (err) => {
         // トークン失効などで認証できない場合は参加画面へ
@@ -88,17 +91,18 @@ export default function Class() {
       });
       socket.on('pointer', (p) => setPointer(p));
       socket.on('slide_change', () => setPointer(null));
-      socket.on('audio_init', (chunk) => playerRef.current?.reset(chunk));
+      socket.on('audio_init', (chunk, _seq, mime) => playerRef.current?.reset(chunk, mime));
       socket.on('audio_chunk', (chunk) => playerRef.current?.push(chunk));
       socket.on('audio_permission', (p) => setAudioAllowed(p.audio));
 
       // カメラ映像は、先生が「遠隔の生徒にも送る」を選んだときだけ届く
-      const videoMime = playableVideoMime();
-      if (videoElRef.current && videoMime) {
-        videoPlayerRef.current = new LiveVideoPlayer(videoElRef.current, videoMime);
+      // 再生できる形式かは init が届くまで分からないので、プレイヤーは先に作っておく
+      if (videoElRef.current) {
+        videoPlayerRef.current = new LiveVideoPlayer(videoElRef.current);
+        videoPlayerRef.current.onUnsupported = () => setVideoLive(false);
       }
-      socket.on('av_init', (chunk) => {
-        videoPlayerRef.current?.reset(chunk);
+      socket.on('av_init', (chunk, _seq, mime) => {
+        videoPlayerRef.current?.reset(chunk, mime);
         setVideoLive(true);
       });
       socket.on('av_chunk', (chunk) => videoPlayerRef.current?.push(chunk));
@@ -226,7 +230,12 @@ export default function Class() {
               🔇 音声は教室のスピーカーから
             </span>
           )}
-          {status === 'live' && audioAllowed === 'on' && !audioEnabled && (
+          {status === 'live' && audioAllowed === 'on' && mediaUnsupported && (
+            <span className="chip chip-warn" title="この端末のブラウザが対応していません">
+              ⚠ この端末では音声を再生できません
+            </span>
+          )}
+          {status === 'live' && audioAllowed === 'on' && !audioEnabled && !mediaUnsupported && (
             <button className="btn primary" onClick={enableAudio}>
               🔊 音声を再生
             </button>

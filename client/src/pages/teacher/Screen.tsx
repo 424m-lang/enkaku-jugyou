@@ -4,7 +4,7 @@ import QRCode from 'qrcode';
 import type { LessonSummary, PointerPayload } from '@shared';
 import { api } from '../../lib/api';
 import { LiveAudioPlayer } from '../../lib/audio';
-import { LiveVideoPlayer, playableVideoMime } from '../../lib/camera';
+import { LiveVideoPlayer } from '../../lib/camera';
 import { screenTokenFromUrl } from '../../lib/screenToken';
 import { useLessonLive } from '../../lib/useLessonLive';
 import SlideCanvas from '../../components/SlideCanvas';
@@ -28,6 +28,8 @@ export default function Screen() {
 
   const [pointer, setPointer] = useState<PointerPayload | null>(null);
   const [soundOn, setSoundOn] = useState(false);
+  // この端末のブラウザが先生の音声形式を再生できない場合の形式名（対応時は null）
+  const [unsupportedAudio, setUnsupportedAudio] = useState<string | null>(null);
   const [volume, setVolume] = useState(1);
   const [videoLive, setVideoLive] = useState(false);
   const [joinCode, setJoinCode] = useState('');
@@ -61,16 +63,20 @@ export default function Screen() {
 
       if (audioElRef.current) {
         audioPlayerRef.current = new LiveAudioPlayer(audioElRef.current);
+        // 教室のモニターが無音のまま放置されるのが最悪なので、必ず画面に出す
+        audioPlayerRef.current.onUnsupported = (mime) => setUnsupportedAudio(mime);
       }
-      socket.on('audio_init', (chunk) => audioPlayerRef.current?.reset(chunk));
+      socket.on('audio_init', (chunk, _seq, mime) => audioPlayerRef.current?.reset(chunk, mime));
       socket.on('audio_chunk', (chunk) => audioPlayerRef.current?.push(chunk));
 
-      const videoMime = playableVideoMime();
-      if (videoElRef.current && videoMime) {
-        videoPlayerRef.current = new LiveVideoPlayer(videoElRef.current, videoMime);
+      // 再生できる形式かは init が届くまで分からないので、プレイヤーは先に作っておく
+      if (videoElRef.current) {
+        videoPlayerRef.current = new LiveVideoPlayer(videoElRef.current);
+        // 映像が駄目でも授業は続くので、映像だけ下ろしてスライドに切り替える
+        videoPlayerRef.current.onUnsupported = () => setVideoLive(false);
       }
-      socket.on('av_init', (chunk) => {
-        videoPlayerRef.current?.reset(chunk);
+      socket.on('av_init', (chunk, _seq, mime) => {
+        videoPlayerRef.current?.reset(chunk, mime);
         setVideoLive(true);
       });
       socket.on('av_chunk', (chunk) => videoPlayerRef.current?.push(chunk));
@@ -259,6 +265,16 @@ export default function Screen() {
           </div>
         )}
       </div>
+
+      {unsupportedAudio && (
+        <div className="screen-audio-error" role="alert">
+          <strong>この端末では音声を再生できません</strong>
+          <span>
+            ブラウザが {unsupportedAudio} に対応していません。
+            別の端末（Windows／Chromebook／Android）でこの画面を開いてください。
+          </span>
+        </div>
+      )}
 
       <div className={`screen-controls ${controlsVisible ? '' : 'screen-controls-hidden'}`}>
         {!soundOn ? (

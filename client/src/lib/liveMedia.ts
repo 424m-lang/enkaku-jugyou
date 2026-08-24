@@ -1,23 +1,60 @@
 /**
  * MediaSource(MSE)でチャンクを逐次追加して再生するライブプレイヤー。
- * 先生のMediaRecorderが吐くWebMチャンクをそのまま流し込む前提で、
+ * 先生のMediaRecorderが吐くチャンクをそのまま流し込む前提で、
  * 音声のみのストリームにもカメラ映像（音声込み）にも同じ仕組みを使う。
  *
- * - init（WebMヘッダ）を受け取るたびにデコーダを初期化し直す
+ * 形式(mime)は先生の環境によって変わる（AAC/MP4かOpus/WebM）ため、
+ * ここでは固定せず、init チャンクと一緒にサーバから受け取ったものを使う。
+ *
+ * - init を受け取るたびにデコーダを初期化し直す
  * - バッファが遅延しすぎたらライブエッジ付近へシークして遅延を回復する
+ * - その端末で再生できない形式だったときは onUnsupported で知らせる
+ *   （教室のモニターが無音のまま放置されるのを防ぐため、必ず表に出す）
  */
+
+type MediaSourceCtor = {
+  new (): MediaSource;
+  isTypeSupported(mime: string): boolean;
+};
+
+/**
+ * MSEの実装を取り出す。
+ * iPhoneのSafariは MediaSource を持たず ManagedMediaSource だけを持つ（iOS 17.1以降）ので、
+ * そちらを優先して拾う。どちらも無い端末では再生できない。
+ */
+export function getMediaSourceCtor(): MediaSourceCtor | null {
+  if (typeof window === 'undefined') return null;
+  const w = window as unknown as {
+    ManagedMediaSource?: MediaSourceCtor;
+    MediaSource?: MediaSourceCtor;
+  };
+  return w.ManagedMediaSource ?? w.MediaSource ?? null;
+}
+
+/** その端末でこの形式を再生できるか */
+export function canPlayMime(mime: string): boolean {
+  const Ctor = getMediaSourceCtor();
+  if (!Ctor) return false;
+  try {
+    return Ctor.isTypeSupported(mime);
+  } catch {
+    return false;
+  }
+}
+
 export class LiveMediaPlayer {
   protected el: HTMLMediaElement;
-  private mime: string;
+  private mime: string | null = null;
   private mediaSource: MediaSource | null = null;
   private sourceBuffer: SourceBuffer | null = null;
   private queue: ArrayBuffer[] = [];
   private objectUrl: string | null = null;
   enabled = false;
+  /** 再生できない形式だったときに呼ばれる（mimeは受け取った形式） */
+  onUnsupported: ((mime: string) => void) | null = null;
 
-  constructor(el: HTMLMediaElement, mime: string) {
+  constructor(el: HTMLMediaElement) {
     this.el = el;
-    this.mime = mime;
   }
 
   /** ユーザー操作（タップ）を起点に呼ぶこと（自動再生制限のため） */
@@ -34,16 +71,45 @@ export class LiveMediaPlayer {
     this.el.muted = muted;
   }
 
-  reset(initChunk: ArrayBuffer): void {
+  reset(initChunk: ArrayBuffer, mime: string): void {
     this.dispose();
-    const ms = new MediaSource();
+    const Ctor = getMediaSourceCtor();
+    if (!Ctor || !canPlayMime(mime)) {
+      // 対応していない端末。黙って無音にせず、呼び出し元に知らせて表示させる
+      this.mime = mime;
+      this.onUnsupported?.(mime);
+      return;
+    }
+    this.mime = mime;
+    const ms = new Ctor();
     this.mediaSource = ms;
-    this.objectUrl = URL.createObjectURL(ms);
-    this.el.src = this.objectUrl;
+    // ManagedMediaSource は外部出力への転送を切っていないと再生できない
+    (this.el as HTMLMediaElement & { disableRemotePlayback?: boolean }).disableRemotePlayback = true;
+    // ManagedMediaSource は srcObject 経由での接続が正規の手順。
+    // 対応していない環境（従来のMediaSource）では objectURL に落とす
+    let attached = false;
+    try {
+      (this.el as HTMLMediaElement & { srcObject: unknown }).srcObject = ms;
+      attached = true;
+    } catch {
+      attached = false;
+    }
+    if (!attached) {
+      this.objectUrl = URL.createObjectURL(ms);
+      this.el.src = this.objectUrl;
+    }
     this.queue = [initChunk];
     ms.addEventListener('sourceopen', () => {
       if (this.mediaSource !== ms) return;
-      const sb = ms.addSourceBuffer(this.mime);
+      let sb: SourceBuffer;
+      try {
+        sb = ms.addSourceBuffer(mime);
+      } catch {
+        // isTypeSupported が true でも実際には追加できない端末がある
+        this.dispose();
+        this.onUnsupported?.(mime);
+        return;
+      }
       this.sourceBuffer = sb;
       sb.addEventListener('updateend', () => this.pump());
       this.pump();
@@ -100,6 +166,13 @@ export class LiveMediaPlayer {
     if (this.objectUrl) {
       URL.revokeObjectURL(this.objectUrl);
       this.objectUrl = null;
+    }
+    if (this.mediaSource) {
+      try {
+        (this.el as HTMLMediaElement & { srcObject: unknown }).srcObject = null;
+      } catch {
+        /* ignore */
+      }
     }
     this.mediaSource = null;
     this.queue = [];

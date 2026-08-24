@@ -29,6 +29,21 @@ import { loadPolls, loadPollAnswers, toPublicPoll } from './polls';
 /** WebMファイルの先頭マジックナンバー（EBMLヘッダ）。録音パートの先頭チャンク判定に使う */
 const EBML_MAGIC = Buffer.from([0x1a, 0x45, 0xdf, 0xa3]);
 
+/**
+ * 録音（再）開始の先頭チャンクか。
+ * WebMはEBMLマジックで始まり、MP4は先頭4バイトのボックス長に続いて 'ftyp' が来る。
+ * 先生の環境によってどちらの形式にもなるため、両方を見る。
+ */
+function isInitSegment(buf: Buffer): boolean {
+  if (buf.subarray(0, 4).equals(EBML_MAGIC)) return true;
+  return buf.length >= 8 && buf.subarray(4, 8).toString('latin1') === 'ftyp';
+}
+
+/** 保存ファイルの拡張子。形式が分からないときは従来どおりWebMとして扱う */
+function extForMime(mime: string | null): string {
+  return mime && mime.includes('mp4') ? 'mp4' : 'webm';
+}
+
 type AudioPart = {
   file: string; // レッスンディレクトリ内のファイル名
   startMs: number;
@@ -88,6 +103,8 @@ export type LiveSession = {
   // 音声（1レッスン=原則1ファイル。先生のリロード時のみ新パートに切替）
   currentAudioPart: AudioPart | null;
   audioSeq: number;
+  /** 先生が実際に使っている音声形式。生徒側のデコーダ生成に必要 */
+  audioMime: string | null;
   /** 現在パートの先頭チャンク（WebMヘッダ）。新規参加者のデコーダ初期化用 */
   audioInitSegment: Buffer | null;
 
@@ -108,6 +125,8 @@ export type LiveSession = {
   /** 遠隔の生徒にも映像を届けるか（通信量が増えるため既定はOFF） */
   videoToStudents: boolean;
   avSeq: number;
+  /** 先生が実際に使っている映像形式。受け手のデコーダ生成に必要 */
+  avMime: string | null;
   /** 現在のカメラ配信の先頭チャンク（WebMヘッダ）。途中参加のデコーダ初期化用 */
   avInitSegment: Buffer | null;
 
@@ -173,6 +192,7 @@ export async function getSession(lessonId: string): Promise<LiveSession | null> 
     composing: new Map(),
     currentAudioPart: null,
     audioSeq: 0,
+    audioMime: null,
     audioInitSegment: null,
     audioDefault: lesson.audioDefault,
     audioOverrides: new Map(),
@@ -181,6 +201,7 @@ export async function getSession(lessonId: string): Promise<LiveSession | null> 
     screenLayout: 'slide',
     videoToStudents: false,
     avSeq: 0,
+    avMime: null,
     avInitSegment: null,
     lastReactionAt: new Map(),
     recentReactions: [],
@@ -523,10 +544,15 @@ export async function listParticipants(
  * 音声と違い保存はせず、中継のためのヘッダ保持と連番付けだけを行う
  * （復習動画はPDFと音声から組み立てる設計のため、映像はライブ限定）。
  */
-export function handleAvChunk(s: LiveSession, buf: Buffer): { isInit: boolean; seq: number } {
-  const isInit = buf.subarray(0, 4).equals(EBML_MAGIC);
+export function handleAvChunk(
+  s: LiveSession,
+  buf: Buffer,
+  mime?: string
+): { isInit: boolean; seq: number } {
+  const isInit = isInitSegment(buf);
   if (isInit) {
     s.avInitSegment = buf;
+    s.avMime = mime ?? null;
     s.avSeq = 0;
   }
   return { isInit, seq: s.avSeq++ };
@@ -536,21 +562,23 @@ export function handleAvChunk(s: LiveSession, buf: Buffer): { isInit: boolean; s
 
 /**
  * 先生からの音声チャンクを処理する。
- * WebMヘッダ（EBMLマジック）で始まるチャンクは録音（再）開始の先頭とみなし、
+ * 先頭チャンク（WebMのEBMLヘッダ、またはMP4のftypボックス）は録音（再）開始とみなし、
  * 新しいパートファイルへ切り替える。通常は1レッスンで1パート=1ファイル。
  */
 export async function handleAudioChunk(
   s: LiveSession,
-  buf: Buffer
+  buf: Buffer,
+  mime?: string
 ): Promise<{ isInit: boolean; seq: number }> {
-  const isHeader = buf.subarray(0, 4).equals(EBML_MAGIC);
+  const isHeader = isInitSegment(buf);
 
   if (isHeader) {
     if (s.currentAudioPart) {
       s.currentAudioPart.stream.end();
     }
+    s.audioMime = mime ?? null;
     const startMs = tMs(s);
-    const file = `audio_${startMs}.webm`;
+    const file = `audio_${startMs}.${extForMime(s.audioMime)}`;
     const stream = fs.createWriteStream(path.join(lessonDir(s.lessonId), file), { flags: 'w' });
     s.currentAudioPart = { file, startMs, stream };
     s.audioInitSegment = buf;

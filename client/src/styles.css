@@ -2292,3 +2292,36 @@ button.slide-thumb:hover {
   width: 16px;
   height: 16px;
 }
+
+/* 音声を再生できない端末の警告。教室のモニターが無音のまま気づかれないのを防ぐ */
+.screen-audio-error {
+  position: absolute;
+  left: 50%;
+  top: 24px;
+  transform: translateX(-50%);
+  z-index: 30;
+  max-width: min(720px, 90vw);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 20px;
+  border-radius: 10px;
+  background: #7f1d1d;
+  color: #fff;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 35%);
+  text-align: center;
+}
+.screen-audio-error strong {
+  font-size: 20px;
+}
+.screen-audio-error span {
+  font-size: 14px;
+  opacity: 0.9;
+}
+
+.chip-warn {
+  background: #fef3c7;
+  color: #92400e;
+  border-color: #fcd34d;
+}
+
