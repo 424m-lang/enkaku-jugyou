@@ -101,6 +101,7 @@ export default function Teach() {
     setStatus,
     buttons,
     setButtons,
+    reactionsEnabled,
     setSlides,
     sortedSlides,
     currentSlideId,
@@ -448,6 +449,13 @@ export default function Teach() {
     return nowTick + clock.offsetMs - clock.startedAtEpochMs;
   }, [nowTick]);
 
+  const setReactionsEnabledRemote = useCallback(
+    (enabled: boolean) => {
+      socketRef.current?.emit('set_reactions_enabled', { enabled }, () => {});
+    },
+    [socketRef]
+  );
+
   const setTasksRemote = useCallback(
     (list: { id?: string; label: string }[]) => {
       socketRef.current?.emit('set_tasks', { tasks: list }, () => {});
@@ -692,14 +700,33 @@ export default function Teach() {
             <button className="btn" onClick={insertBlank} title="このスライドの直後に白紙ページを挿入">
               ＋ 白紙を挿入
             </button>
-            {/* 直近のリアクション: 直近5分間のボタン反応数 */}
+            {/* 直近のリアクション: 直近5分間のボタン反応数。
+                タスク・アンケートで状況が分かるなら、ボタンごとやめることもできる */}
             <div className="recent-reactions">
-              <span className="recent-label">直近のリアクション</span>
-              {buttons.map((b) => (
-                <span key={b.key} className="kind-pill" style={{ background: b.color }}>
-                  {b.label} ×{recentCounts[b.key] ?? 0}
-                </span>
-              ))}
+              {reactionsEnabled ? (
+                <>
+                  <span className="recent-label">直近のリアクション</span>
+                  {buttons.map((b) => (
+                    <span key={b.key} className="kind-pill" style={{ background: b.color }}>
+                      {b.label} ×{recentCounts[b.key] ?? 0}
+                    </span>
+                  ))}
+                  <button
+                    className="btn-link"
+                    onClick={() => setReactionsEnabledRemote(false)}
+                    title="生徒画面からリアクションボタンを消します。設定は残るので、いつでも戻せます"
+                  >
+                    ボタンをやめる
+                  </button>
+                </>
+              ) : (
+                <>
+                  <span className="recent-label muted">リアクションボタンなし</span>
+                  <button className="btn-link" onClick={() => setReactionsEnabledRemote(true)}>
+                    ボタンを使う
+                  </button>
+                </>
+              )}
             </div>
           </div>
         </div>

@@ -105,6 +105,8 @@ export async function lessonRoutes(app: FastifyInstance): Promise<void> {
     const parts = req.parts();
     let title = '';
     let buttons: ReactionButtonDef[] = DEFAULT_REACTION_BUTTONS;
+    // ボタンを使わない授業。定義そのものは保存しておき、後から使いたくなったら戻せる
+    let reactionsEnabled = true;
     const pdfBuffers: Buffer[] = [];
 
     for await (const part of parts) {
@@ -112,6 +114,8 @@ export async function lessonRoutes(app: FastifyInstance): Promise<void> {
         pdfBuffers.push(await part.toBuffer());
       } else if (part.type === 'field' && part.fieldname === 'title') {
         title = String(part.value).trim();
+      } else if (part.type === 'field' && part.fieldname === 'reactionsEnabled') {
+        reactionsEnabled = String(part.value) !== 'false';
       } else if (part.type === 'field' && part.fieldname === 'reactionButtons') {
         const parsed = buttonsSchema.safeParse(JSON.parse(String(part.value)));
         if (!parsed.success) {
@@ -171,6 +175,7 @@ export async function lessonRoutes(app: FastifyInstance): Promise<void> {
       joinCode,
       status: 'draft',
       reactionButtons: buttons,
+      reactionsEnabled,
       pdfPath: pdfPath(lessonId),
       pdfPageCount: pageCount,
     });

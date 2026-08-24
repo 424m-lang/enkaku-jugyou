@@ -53,6 +53,8 @@ export type LiveSession = {
   title: string;
   status: LessonStatus;
   reactionButtons: ReactionButtonDef[];
+  /** ボタンを使わない授業では false。定義（reactionButtons）は消さずに残す */
+  reactionsEnabled: boolean;
   startedAtEpochMs: number | null;
   slides: SlideInfo[];
   currentSlideId: string | null;
@@ -154,6 +156,7 @@ export async function getSession(lessonId: string): Promise<LiveSession | null> 
     title: lesson.title,
     status: lesson.status,
     reactionButtons: lesson.reactionButtons,
+    reactionsEnabled: lesson.reactionsEnabled,
     startedAtEpochMs: lesson.startedAt ? lesson.startedAt.getTime() : null,
     slides,
     currentSlideId: slides[0]?.id ?? null,
@@ -328,6 +331,7 @@ export function toLiveState(s: LiveSession): LiveLessonState {
     status: s.status,
     title: s.title,
     reactionButtons: s.reactionButtons,
+    reactionsEnabled: s.reactionsEnabled,
     slides: s.slides,
     currentSlideId: s.currentSlideId,
     startedAtEpochMs: s.startedAtEpochMs,
@@ -345,6 +349,19 @@ export function toLiveState(s: LiveSession): LiveLessonState {
       return p ? toPublicPoll(p) : null;
     })(),
   };
+}
+
+/**
+ * リアクションボタンを使うかどうかの切替。
+ * タスク・アンケートで生徒の状況が分かるようになったので、ボタンを完全に無しにできる。
+ * ボタンの定義は消さないので、戻せば元の設定がそのまま復活する
+ */
+export async function setReactionsEnabled(s: LiveSession, enabled: boolean): Promise<void> {
+  s.reactionsEnabled = enabled;
+  await db
+    .update(schema.lessons)
+    .set({ reactionsEnabled: enabled })
+    .where(eq(schema.lessons.id, s.lessonId));
 }
 
 // ---- タスク ----

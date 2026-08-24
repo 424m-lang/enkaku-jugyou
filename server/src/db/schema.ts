@@ -37,6 +37,9 @@ export const lessons = pgTable('lessons', {
     .notNull()
     .default('draft'),
   reactionButtons: jsonb('reaction_buttons').$type<ReactionButtonDef[]>().notNull(),
+  // ボタンを使わない授業の設定。タスクとアンケートで生徒の状況が分かるようになったため、
+  // 先生の好みで完全に無しにできる。定義そのものは消さないので、戻せば元のボタンが復活する
+  reactionsEnabled: boolean('reactions_enabled').notNull().default(true),
   // Phase 2（同意管理・匿名化）用のプレースホルダ
   anonymizeMode: boolean('anonymize_mode').notNull().default(false),
   pdfPath: text('pdf_path'),

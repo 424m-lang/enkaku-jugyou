@@ -38,6 +38,8 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
   const [title, setTitle] = useState('');
   const [status, setStatus] = useState<LessonStatus>('draft');
   const [buttons, setButtons] = useState<ReactionButtonDef[]>([]);
+  // ボタンを使わない授業では false（定義は残るので、戻せば元のボタンが復活する）
+  const [reactionsEnabled, setReactionsEnabled] = useState(true);
   const [slides, setSlides] = useState<SlideInfo[]>([]);
   const [currentSlideId, setCurrentSlideId] = useState<string | null>(null);
   const [strokes, setStrokes] = useState<StrokesBySlide>({});
@@ -76,6 +78,7 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
       setTitle(st.title);
       setStatus(st.status);
       setButtons(st.reactionButtons);
+      setReactionsEnabled(st.reactionsEnabled);
       setSlides(st.slides);
       setCurrentSlideId((cur) => st.currentSlideId ?? cur ?? st.slides[0]?.id ?? null);
       setStrokes(rebuildStrokes(st.drawingEvents));
@@ -151,6 +154,7 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
     setStatus,
     buttons,
     setButtons,
+    reactionsEnabled,
     slides,
     setSlides,
     sortedSlides,

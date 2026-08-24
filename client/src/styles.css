@@ -2279,3 +2279,16 @@ button.slide-thumb:hover {
     display: none;
   }
 }
+
+.reactions-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.9rem;
+  margin-bottom: 6px;
+}
+
+.reactions-toggle input {
+  width: 16px;
+  height: 16px;
+}

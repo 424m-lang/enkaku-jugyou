@@ -51,6 +51,7 @@ export default function Class() {
     title,
     status,
     buttons,
+    reactionsEnabled,
     currentSlideId,
     currentSlide,
     strokes,
@@ -286,19 +287,22 @@ export default function Class() {
             onClose={() => setRevealed(null)}
           />
         )}
-        <div className="reaction-buttons">
-          {buttons.map((b) => (
-            <button
-              key={b.key}
-              className="reaction-btn"
-              style={{ background: b.color }}
-              disabled={status !== 'live'}
-              onClick={() => void sendReaction(b.key)}
-            >
-              {b.label}
-            </button>
-          ))}
-        </div>
+        {/* ボタンを使わない授業では行ごと出さない（空の行が場所を取らないように） */}
+        {reactionsEnabled && buttons.length > 0 && (
+          <div className="reaction-buttons">
+            {buttons.map((b) => (
+              <button
+                key={b.key}
+                className="reaction-btn"
+                style={{ background: b.color }}
+                disabled={status !== 'live'}
+                onClick={() => void sendReaction(b.key)}
+              >
+                {b.label}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="comment-row">
           <input
             value={comment}

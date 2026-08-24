@@ -539,6 +539,11 @@ export interface ClientToServerEvents {
     p: { tasks: { id?: string; label: string }[] },
     cb: (res: { ok: boolean; tasks?: LessonTask[]; error?: string }) => void
   ) => void;
+  /** リアクションボタンを使うかどうかの切替（授業前でも授業中でも変えられる） */
+  set_reactions_enabled: (
+    p: { enabled: boolean },
+    cb: (res: { ok: boolean }) => void
+  ) => void;
   /** タスクの進め方の切替と、生徒画面にタスクバーを出すかどうか */
   set_task_config: (
     p: { mode?: TaskMode; active?: boolean },
@@ -596,6 +601,12 @@ export type LiveLessonState = {
   status: LessonStatus;
   title: string;
   reactionButtons: ReactionButtonDef[];
+  /**
+   * リアクションボタンを使うか。false なら生徒画面にボタンが出ず、押しても記録されない。
+   * ボタンの定義は残したままなので、戻せば元の設定がそのまま復活する
+   * （授業後の集計で過去の反応のラベル・色を引けるようにするためでもある）
+   */
+  reactionsEnabled: boolean;
   slides: SlideInfo[];
   currentSlideId: string | null;
   startedAtEpochMs: number | null; // 授業開始時刻

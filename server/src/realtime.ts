@@ -21,6 +21,7 @@ import {
   endLesson,
   insertBlankSlide,
   touchParticipants,
+  setReactionsEnabled,
   setTasks,
   setTaskConfig,
   setTaskProgress,
@@ -408,6 +409,18 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         }
       });
 
+      socket.on('set_reactions_enabled', async (p, cb) => {
+        try {
+          if (typeof p?.enabled !== 'boolean') return cb({ ok: false });
+          await setReactionsEnabled(s, p.enabled);
+          io.to(room).emit('lesson_state', toLiveState(s));
+          cb({ ok: true });
+        } catch (err) {
+          app.log.error(err);
+          cb({ ok: false });
+        }
+      });
+
       // ---- アンケート ----
       // 設問一覧は先生にだけ配る（生徒に配ると次に聞く質問が見えてしまう）
       socket.on('save_poll', async (p, cb) => {
@@ -506,6 +519,9 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       socket.on('reaction', async (input, cb) => {
         try {
           if (s.status !== 'live') return cb({ ok: false });
+          // ボタンを使わない授業ではボタン反応を受け付けない（コメントは別扱いで残す）。
+          // オフラインキューに溜まっていた反応が後から届いても記録されない
+          if (input.kind !== 'comment' && !s.reactionsEnabled) return cb({ ok: false });
           if (
             input.kind !== 'comment' &&
             !s.reactionButtons.some((b) => b.key === input.kind)
