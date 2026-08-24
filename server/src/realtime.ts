@@ -136,6 +136,9 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
     const teacherRoom = `${room}:teacher`;
     // カメラ映像の配信先。大画面は常に入り、生徒は先生が映像を送るときだけ入る
     const avRoom = `${room}:av`;
+    // 音声のみの配信先。大画面は常に入り、生徒は音声を鳴らす設定の生徒だけ入る
+    // （教室で受ける生徒はミュートなので、そもそも音声を送る必要が無い）
+    const audioRoom = `${room}:audio`;
 
     await socket.join(room);
     if (role === 'teacher') {
@@ -143,10 +146,13 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
     }
     if (role === 'screen') {
       await socket.join(avRoom);
+      await socket.join(audioRoom);
     }
     if (role === 'student' && socket.data.participantId) {
-      socket.emit('audio_permission', { audio: effectiveAudio(s, socket.data.participantId) });
-      if (shouldReceiveVideo(s, socket.data.participantId)) await socket.join(avRoom);
+      const pid = socket.data.participantId;
+      socket.emit('audio_permission', { audio: effectiveAudio(s, pid) });
+      if (shouldReceiveAudio(s, pid)) await socket.join(audioRoom);
+      if (shouldReceiveVideo(s, pid)) await socket.join(avRoom);
     }
 
     const avState = () => ({
@@ -159,8 +165,8 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
     // 参加直後に現在のライブ状態のスナップショットを送る
     socket.emit('lesson_state', toLiveState(s));
     socket.emit('av_state', avState());
-    // 音声配信中なら、デコーダ初期化用のヘッダチャンクを送る
-    if (s.audioInitSegment && s.status === 'live') {
+    // 音声配信中で、この接続が音声を受け取る対象なら、デコーダ初期化用のヘッダチャンクを送る
+    if (s.audioInitSegment && s.status === 'live' && socket.rooms.has(audioRoom)) {
       socket.emit('audio_init', toArrayBuffer(s.audioInitSegment), s.audioSeq);
     }
     // カメラ配信中で、この接続が映像を受け取る対象なら同じくヘッダを送る
@@ -214,16 +220,14 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         }
       });
 
+      // 音声（文字起こし用の録音と共通）。教室で受けている生徒には音が要らないので、
+      // 大画面と、音声を鳴らす設定の生徒だけに中継する
       socket.on('audio_chunk', async (chunk) => {
         if (s.status !== 'live') return;
         try {
           const buf = Buffer.from(chunk as ArrayBuffer);
           const { isInit, seq } = await handleAudioChunk(s, buf);
-          if (isInit) {
-            socket.to(room).emit('audio_init', chunk, seq);
-          } else {
-            socket.to(room).emit('audio_chunk', chunk, seq);
-          }
+          io.to(audioRoom).emit(isInit ? 'audio_init' : 'audio_chunk', chunk, seq);
         } catch (err) {
           app.log.error(err);
         }
@@ -255,7 +259,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         if (p?.layout && isScreenLayout(p.layout)) s.screenLayout = p.layout;
         if (typeof p?.videoToStudents === 'boolean' && p.videoToStudents !== s.videoToStudents) {
           s.videoToStudents = p.videoToStudents;
-          void syncStudentAv(io, s, room, avRoom).catch((err) => app.log.error(err));
+          void syncStudentAv(io, s, room, avRoom, audioRoom).catch((err) => app.log.error(err));
         }
         io.to(room).emit('av_state', avState());
       });
@@ -266,7 +270,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           if (p?.mode !== 'on' && p?.mode !== 'off') return cb({ ok: false });
           await setAudioDefault(s, p.mode);
           io.to(room).emit('lesson_state', toLiveState(s));
-          await syncStudentAv(io, s, room, avRoom);
+          await syncStudentAv(io, s, room, avRoom, audioRoom);
           await broadcastParticipants(io, s, room, teacherRoom);
           cb({ ok: true });
         } catch (err) {
@@ -282,7 +286,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           if (mode !== 'on' && mode !== 'off' && mode !== null) return cb({ ok: false });
           if (typeof p?.participantId !== 'string') return cb({ ok: false });
           await setParticipantAudio(s, p.participantId, mode);
-          await syncStudentAv(io, s, room, avRoom);
+          await syncStudentAv(io, s, room, avRoom, audioRoom);
           await broadcastParticipants(io, s, room, teacherRoom);
           cb({ ok: true });
         } catch (err) {
@@ -420,6 +424,11 @@ function toArrayBuffer(buf: Buffer): ArrayBuffer {
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
 }
 
+/** その生徒の端末で音声を鳴らす設定か（＝音声を送る必要があるか） */
+function shouldReceiveAudio(s: LiveSession, participantId: string): boolean {
+  return effectiveAudio(s, participantId) === 'on';
+}
+
 /**
  * その生徒がカメラ映像を受け取る対象か。
  * 映像は通信量が大きいので、先生が明示的に送るとき、かつ端末で音声を鳴らしている
@@ -430,24 +439,37 @@ function shouldReceiveVideo(s: LiveSession, participantId: string): boolean {
 }
 
 /**
- * 生徒それぞれに音声の可否を通知し、映像の配信先も現在の設定に合わせ直す。
- * 音声の設定を変えると映像の対象も変わるため、常にこの2つを一緒に更新する。
+ * 生徒それぞれに音声の可否を通知し、音声・映像の配信先も現在の設定に合わせ直す。
+ * 教室で受けている（ミュートの）生徒には音声も映像も送らないので通信量を使わない。
+ * 音声の設定を変えると両方の対象が変わるため、常にまとめて更新する。
  */
 async function syncStudentAv(
   io: TypedServer,
   s: LiveSession,
   room: string,
-  avRoom: string
+  avRoom: string,
+  audioRoom: string
 ): Promise<void> {
   const sockets = await io.in(room).fetchSockets();
   for (const sock of sockets) {
     const pid = sock.data.participantId;
     if (sock.data.role !== 'student' || !pid) continue;
     sock.emit('audio_permission', { audio: effectiveAudio(s, pid) });
+
+    const wantsAudio = shouldReceiveAudio(s, pid);
+    if (wantsAudio && !sock.rooms.has(audioRoom)) {
+      sock.join(audioRoom);
+      // 途中から音声を受け取り始める端末にはデコーダ初期化用のヘッダが要る
+      if (s.audioInitSegment && s.status === 'live') {
+        sock.emit('audio_init', toArrayBuffer(s.audioInitSegment), s.audioSeq);
+      }
+    } else if (!wantsAudio && sock.rooms.has(audioRoom)) {
+      sock.leave(audioRoom);
+    }
+
     const wantsVideo = shouldReceiveVideo(s, pid);
     if (wantsVideo && !sock.rooms.has(avRoom)) {
       sock.join(avRoom);
-      // 途中から映像を受け取り始める端末にはデコーダ初期化用のヘッダが要る
       if (s.avInitSegment && s.cameraOn) {
         sock.emit('av_init', toArrayBuffer(s.avInitSegment), s.avSeq);
       }
