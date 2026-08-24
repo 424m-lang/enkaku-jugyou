@@ -1252,8 +1252,12 @@ button.slide-thumb:hover {
   position: relative; /* 先生のカメラ映像を右下に重ねるため */
   flex: 1;
   min-height: 0;
+  min-width: 0;
   padding: 8px;
   display: flex;
+  /* 字幕はスライドの下に帯として出す。横並びのままだと字幕がスライドの右へ
+     縦長に立ってしまい、読めないうえにスライドの幅も削ってしまう */
+  flex-direction: column;
 }
 
 .class-main .page-center {
