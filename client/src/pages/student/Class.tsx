@@ -4,6 +4,7 @@ import type { AudioMode, PointerPayload, PollAnswer, PollResults, PublicPoll } f
 import { applyTaskChange } from '@shared';
 import { LiveAudioPlayer } from '../../lib/audio';
 import { LiveVideoPlayer } from '../../lib/camera';
+import { useWakeLock } from '../../lib/useWakeLock';
 import { ReactionQueue } from '../../lib/reactionQueue';
 import { useLessonLive } from '../../lib/useLessonLive';
 import SlideCanvas from '../../components/SlideCanvas';
@@ -22,6 +23,9 @@ export default function Class() {
   const [audioAllowed, setAudioAllowed] = useState<AudioMode>('on');
   // この端末が先生の音声形式を再生できない場合。無音の原因が分かるように表に出す
   const [mediaUnsupported, setMediaUnsupported] = useState(false);
+
+  // スライドを見ているだけの時間が長く、触らないので端末が自動ロックされやすい
+  useWakeLock();
   const [videoLive, setVideoLive] = useState(false);
   const [comment, setComment] = useState('');
   const [queuedCount, setQueuedCount] = useState(0);

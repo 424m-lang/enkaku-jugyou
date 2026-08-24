@@ -2442,6 +2442,32 @@ button.slide-thumb:hover {
   margin: 6px 0;
 }
 
+/* 先生画面: 配信形式がWebM系のときの警告（Apple系・テレビで音が出ない） */
+.teach-format-warn {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 8px 12px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  background: #fffbeb;
+  border-left: 5px solid #d97706;
+  color: #92400e;
+}
+.teach-format-warn > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+}
+.teach-format-warn strong {
+  font-size: 15px;
+}
+.teach-format-warn span {
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 /* 端末チェック: 役割の選択 */
 .check-roles {
   margin: 16px 0 4px;

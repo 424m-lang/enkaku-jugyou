@@ -5,6 +5,7 @@ import type { LessonSummary, PointerPayload } from '@shared';
 import { api } from '../../lib/api';
 import { LiveAudioPlayer } from '../../lib/audio';
 import { LiveVideoPlayer } from '../../lib/camera';
+import { useWakeLock } from '../../lib/useWakeLock';
 import { screenTokenFromUrl } from '../../lib/screenToken';
 import { useLessonLive } from '../../lib/useLessonLive';
 import SlideCanvas from '../../components/SlideCanvas';
@@ -156,38 +157,8 @@ export default function Screen() {
     setSoundOn(true);
   }, []);
 
-  // ---- 画面のスリープ防止 ----
   // 投影中に教室PCの画面が暗くなると授業が止まるため、可能な環境では抑止する
-  useEffect(() => {
-    type WakeLockLike = { release: () => Promise<void> };
-    const nav = navigator as Navigator & {
-      wakeLock?: { request: (type: 'screen') => Promise<WakeLockLike> };
-    };
-    const wakeLock = nav.wakeLock;
-    if (!wakeLock) return;
-    let lock: WakeLockLike | null = null;
-    let disposed = false;
-    const acquire = async () => {
-      try {
-        const next = await wakeLock.request('screen');
-        if (disposed) void next.release().catch(() => {});
-        else lock = next;
-      } catch {
-        /* 権限やブラウザの制限で取れないことがある。取れなくても投影は続く */
-      }
-    };
-    void acquire();
-    // タブが裏に回るとロックは自動的に解除されるので、戻ったら取り直す
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') void acquire();
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => {
-      disposed = true;
-      document.removeEventListener('visibilitychange', onVisible);
-      void lock?.release().catch(() => {});
-    };
-  }, []);
+  useWakeLock();
 
   // ---- 全画面 ----
   useEffect(() => {
