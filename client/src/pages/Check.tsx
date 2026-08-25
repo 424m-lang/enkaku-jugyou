@@ -16,6 +16,25 @@ import { supportedVideoMime } from '../lib/camera';
  * 3. 実際にスピーカーから音が出るか（アプリ・OS・モニター本体の3段の音量）
  */
 
+/** 実測にかける秒数。短すぎると無音とのばらつきを拾う */
+const MEASURE_SEC = 10;
+/** 目安に使う1コマの長さ（分） */
+const LESSON_MIN = 50;
+/**
+ * ギガの上限を超えたあとの速度制限。ここに収まるかが、細い回線の家庭で
+ * 授業が成立するかの分かれ目になる。余裕を見て6割を「○」の線にする
+ */
+const THROTTLED_KBPS = 128;
+
+type AudioRate = {
+  liveMime: string;
+  /** 本番で使う形式の実測値 */
+  liveKbps: number | null;
+  /** 比較用のOpus（本番がOpusならnull） */
+  opusKbps: number | null;
+  channels: number | null;
+};
+
 type State = 'pending' | 'ok' | 'warn' | 'ng' | 'skip';
 type Role = 'monitor' | 'student-remote' | 'student-room' | 'teacher';
 
@@ -106,6 +125,11 @@ export default function Check() {
   const [toneHow, setToneHow] = useState('');
   const [micState, setMicState] = useState<State>('pending');
   const [micDetail, setMicDetail] = useState('');
+  // 実際に何kbps出るかは端末とブラウザで変わる。回線の細い家庭がいる授業では
+  // これがそのまま「その生徒に届くかどうか」になるので、現地で測れるようにする
+  const [rateBusy, setRateBusy] = useState(0); // 残り秒数（0なら測っていない）
+  const [rateResult, setRateResult] = useState<AudioRate | null>(null);
+  const [rateError, setRateError] = useState('');
   const audioElRef = useRef<HTMLAudioElement>(null);
   const playerRef = useRef<LiveMediaPlayer | null>(null);
 
@@ -250,6 +274,79 @@ export default function Check() {
       setTonePlaying(false);
     }
   }, [hasMse]);
+
+  /**
+   * 本番と同じ設定でマイクを録り、実際に出る通信量を測る。
+   *
+   * 指定した `audioBitsPerSecond` は**そのとおりにならないことがある**
+   * （AACは下げ幅に下限がある）。しかも下限は端末とブラウザで変わるので、
+   * 推測ではなく現地の実機で測るしかない。
+   *
+   * 比較用にOpusも同時に録る。差が大きければ、受け手に合わせて形式を
+   * 選び分ける価値があると分かる（差が小さければその作業は要らない）。
+   */
+  const measureRate = useCallback(async () => {
+    setRateError('');
+    setRateResult(null);
+    let stream: MediaStream;
+    try {
+      // 本番の startAudioBroadcast と同じ制約で取る
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1,
+        },
+      });
+    } catch (e) {
+      setRateError(e instanceof Error ? e.message : 'マイクを使えませんでした');
+      return;
+    }
+
+    const live = supportedAudioMime();
+    const opus = 'audio/webm;codecs=opus';
+    const targets: { key: 'live' | 'opus'; mime: string }[] = [];
+    if (live) targets.push({ key: 'live', mime: live });
+    if (!live?.includes('opus') && typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(opus)) {
+      targets.push({ key: 'opus', mime: opus });
+    }
+    if (targets.length === 0) {
+      stream.getTracks().forEach((t) => t.stop());
+      setRateError('この端末では録音できません');
+      return;
+    }
+
+    const bytes: Record<string, number> = {};
+    const recs = targets.map(({ key, mime }) => {
+      const rec = new MediaRecorder(stream, { mimeType: mime, audioBitsPerSecond: 48_000 });
+      bytes[key] = 0;
+      rec.ondataavailable = (e) => {
+        bytes[key] += e.data.size;
+      };
+      rec.start(500);
+      return rec;
+    });
+
+    for (let left = MEASURE_SEC; left > 0; left--) {
+      setRateBusy(left);
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    setRateBusy(0);
+    recs.forEach((r) => r.state !== 'inactive' && r.stop());
+    // stop() のあとに最後のチャンクが届くので少し待ってから集計する
+    await new Promise((r) => setTimeout(r, 400));
+    const channels = stream.getAudioTracks()[0]?.getSettings().channelCount ?? null;
+    stream.getTracks().forEach((t) => t.stop());
+
+    const kbps = (n: number) => Math.round((n * 8) / MEASURE_SEC / 1000);
+    setRateResult({
+      liveMime: live ?? '',
+      liveKbps: bytes.live !== undefined ? kbps(bytes.live) : null,
+      opusKbps: bytes.opus !== undefined ? kbps(bytes.opus) : null,
+      channels,
+    });
+  }, []);
 
   const checkMic = useCallback(async () => {
     try {
@@ -462,6 +559,67 @@ export default function Check() {
               detail={broadcastVideo ?? 'この端末からは映像を配信できません'}
             />
           </ul>
+          <div className="check-actions">
+            <button className="btn" onClick={() => void measureRate()} disabled={rateBusy > 0}>
+              {rateBusy > 0 ? `測定中… あと${rateBusy}秒` : `通信量を測る（${MEASURE_SEC}秒）`}
+            </button>
+          </div>
+          <p className="check-note">
+            <strong>測定中は、普段の授業と同じ声で話し続けてください。</strong>
+            黙っていると実際より小さく出ます。
+          </p>
+          {rateError && <p className="check-note check-ng-text">{rateError}</p>}
+          {rateResult && (
+            <ul className="check-list">
+              <Row
+                state={
+                  rateResult.liveKbps === null
+                    ? 'ng'
+                    : rateResult.liveKbps <= THROTTLED_KBPS * 0.6
+                      ? 'ok'
+                      : 'warn'
+                }
+                label="実際に出る通信量（本番の形式）"
+                detail={
+                  rateResult.liveKbps === null
+                    ? '測れませんでした'
+                    : `${rateResult.liveKbps} kbps ・ ${LESSON_MIN}分で約${Math.round(
+                        (rateResult.liveKbps * LESSON_MIN * 60) / 8 / 1000
+                      )}MB（生徒1人あたり）`
+                }
+              />
+              {rateResult.opusKbps !== null && (
+                <Row
+                  state="skip"
+                  label="参考: Opus形式なら"
+                  detail={`${rateResult.opusKbps} kbps ・ ${LESSON_MIN}分で約${Math.round(
+                    (rateResult.opusKbps * LESSON_MIN * 60) / 8 / 1000
+                  )}MB`}
+                />
+              )}
+              <Row
+                state="skip"
+                label="チャンネル数"
+                detail={rateResult.channels === 1 ? 'モノラル' : `${rateResult.channels ?? '不明'}`}
+              />
+            </ul>
+          )}
+          {rateResult?.liveKbps != null && rateResult.liveKbps > THROTTLED_KBPS * 0.6 && (
+            <p className="check-note">
+              速度制限のかかった回線（{THROTTLED_KBPS}kbps程度）で受ける生徒がいる場合、
+              この値だと苦しくなります。通常の光・モバイル回線であれば問題ありません。
+            </p>
+          )}
+          {rateResult?.opusKbps != null &&
+            rateResult.liveKbps != null &&
+            rateResult.liveKbps > rateResult.opusKbps * 1.4 && (
+              <p className="check-note">
+                この端末では、Opus形式のほうが通信量を
+                {Math.round((1 - rateResult.opusKbps / rateResult.liveKbps) * 100)}%
+                減らせます。回線の細い家庭がいる授業では、受け手に合わせて形式を選び分ける価値があります
+                （いまはApple系の端末でも聞けるようAAC形式を優先しています）。
+              </p>
+            )}
           {broadcastIsOpus && (
             <p className="check-note check-ng-text">
               この端末はOpus形式で配信します。
