@@ -67,6 +67,7 @@ export default function Screen() {
     cameraOn,
     avHasAudio,
     screenLayout,
+    pipPos,
   } = useLessonLive(lessonId, {
     screenToken,
     setup: (socket) => {
@@ -217,6 +218,8 @@ export default function Screen() {
 
   // 授業前は参加用QRを出し、授業が始まってからスライドを映す
   const inLesson = status === 'live' && !!currentSlide;
+  // 小窓の置き場所は先生が教室に合わせて決める（教卓や掲示物と重なるのを避けるため）
+  const pipStyle = { '--pip-x': pipPos.x, '--pip-y': pipPos.y } as React.CSSProperties;
   const showVideo = inLesson && cameraOn && videoLive && screenLayout !== 'slide-only';
   const videoMain = showVideo && screenLayout === 'video';
   const slideEl = currentSlide ? (
@@ -237,10 +240,17 @@ export default function Screen() {
           video要素は常に置いておく。作り直すとMediaSourceが張り直しになり
           映像と音が途切れるため、隠すときもDOMからは外さない
         */}
-        <div className={showVideo ? (videoMain ? 'screen-main' : 'screen-sub') : 'screen-hidden'}>
+        <div
+          className={showVideo ? (videoMain ? 'screen-main' : 'screen-sub') : 'screen-hidden'}
+          style={pipStyle}
+        >
           <video ref={videoElRef} className="screen-video" playsInline autoPlay />
         </div>
-        {inLesson && videoMain && <div className="screen-sub">{slideEl}</div>}
+        {inLesson && videoMain && (
+          <div className="screen-sub" style={pipStyle}>
+            {slideEl}
+          </div>
+        )}
 
         {!inLesson && (
           <div className="screen-waiting">

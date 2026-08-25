@@ -8,6 +8,7 @@ import type {
   LiveLessonState,
   LessonStatus,
   ParticipantInfo,
+  PipPos,
   Poll,
   PollAnswer,
   ReactionButtonDef,
@@ -20,8 +21,9 @@ import type {
   TimelineEvent,
   TimelineEventType,
   TranscriptSegment,
+  VideoFormat,
 } from '@shared';
-import { MAX_TASKS, applyTaskChange } from '@shared';
+import { DEFAULT_PIP_POS, MAX_TASKS, applyTaskChange } from '@shared';
 import { db, schema } from '../db';
 import { lessonDir } from '../storage';
 import { loadPolls, loadPollAnswers, toPublicPoll } from './polls';
@@ -88,6 +90,16 @@ export type LiveSession = {
   captionsForStudents: boolean;
   /** 字幕を作っているか。出し先のどちらかがONなら作る（導出値） */
   captionsEnabled: boolean;
+  /**
+   * いま字幕を出している生徒（socket.id → participantId）。
+   *
+   * 先生に「生徒の端末に出す」というスイッチは無く、ここが空でなければ
+   * 先生の端末で音声認識が始まる。socket.id をキーにしているのは、
+   * 端末を閉じた生徒のぶんで認識を回し続けないようにするため
+   */
+  captionWants: Map<string, string>;
+  /** 先生の端末で音声認識が動かない。字幕をONにした生徒に理由を返すために持つ */
+  captionsUnavailable: boolean;
   /** participantId → 完了したタスクidの集合。task_progress イベントの畳み込み結果 */
   taskProgress: Map<string, Set<string>>;
   /** participantId → 最後に進捗が動いた tMs（止まっている生徒の検知に使う） */
@@ -125,16 +137,27 @@ export type LiveSession = {
    * 復習動画には残さないため保存もしない（ライブ配信のみ）。
    */
   cameraOn: boolean;
+  /**
+   * いま映像を送っている先生の接続。
+   * 送り手が居なくなったのに cameraOn が立ったままだと、教室モニターは
+   * 止まった絵を映し続け、先生の画面も「カメラを止める」のまま戻せなくなる
+   */
+  cameraSocketId: string | null;
   /** カメラ映像に音声が入っているか（マイクが使えない環境では映像だけになる） */
   avHasAudio: boolean;
+  /**
+   * 形式ごとのカメラ配信。同じ映像を2形式で同時に送ることがある。
+   *
+   * WebMしか再生できない端末は無いが、MP4しか再生できない端末（Safari系）はある。
+   * どちらか一方に決めると、Apple系が1台混じるだけで全員が4秒遅い映像になるため、
+   * **必要な形式だけを並行して流す**。受け手は自分の形式の部屋にだけ入る。
+   */
+  avStreams: Map<VideoFormat, { init: Buffer; mime: string; seq: number }>;
   screenLayout: ScreenLayout;
+  /** 小窓（スライド主体ならカメラ、映像主体ならスライド）の置き場所 */
+  pipPos: PipPos;
   /** 遠隔の生徒にも映像を届けるか（通信量が増えるため既定はOFF） */
   videoToStudents: boolean;
-  avSeq: number;
-  /** 先生が実際に使っている映像形式。受け手のデコーダ生成に必要 */
-  avMime: string | null;
-  /** 現在のカメラ配信の先頭チャンク（WebMヘッダ）。途中参加のデコーダ初期化用 */
-  avInitSegment: Buffer | null;
 
   // リアクション
   lastReactionAt: Map<string, number>; // key: participantId:kind → tMs（デバウンス用）
@@ -192,7 +215,10 @@ export async function getSession(lessonId: string): Promise<LiveSession | null> 
     tasksActive: lesson.tasksActive,
     captionsOnScreen: lesson.captionsOnScreen,
     captionsForStudents: lesson.captionsForStudents,
-    captionsEnabled: lesson.captionsOnScreen || lesson.captionsForStudents,
+    // 生徒ぶんは接続している生徒から決まるので、読み込み時は必ず0人から始める
+    captionsEnabled: lesson.captionsOnScreen,
+    captionWants: new Map(),
+    captionsUnavailable: false,
     taskProgress: new Map(),
     taskUpdatedAt: new Map(),
     polls,
@@ -206,12 +232,12 @@ export async function getSession(lessonId: string): Promise<LiveSession | null> 
     audioDefault: lesson.audioDefault,
     audioOverrides: new Map(),
     cameraOn: false,
+    cameraSocketId: null,
     avHasAudio: false,
+    avStreams: new Map(),
     screenLayout: 'slide',
+    pipPos: DEFAULT_PIP_POS,
     videoToStudents: false,
-    avSeq: 0,
-    avMime: null,
-    avInitSegment: null,
     lastReactionAt: new Map(),
     recentReactions: [],
     transcriptSegments: [],
@@ -377,6 +403,7 @@ export function toLiveState(s: LiveSession): LiveLessonState {
     taskMode: s.taskMode,
     tasksActive: s.tasksActive,
     captionsEnabled: s.captionsEnabled,
+    captionsUnavailable: s.captionsUnavailable,
     captionsOnScreen: s.captionsOnScreen,
     captionsForStudents: s.captionsForStudents,
     openPoll: (() => {
@@ -402,22 +429,50 @@ export function toLiveState(s: LiveSession): LiveLessonState {
  * 誤変換が問題になったときにすぐ止められるよう、授業中でも切り替えられる。
  * 記録済みの字幕は消さない（読み返しに使うため）。
  */
-export async function setCaptionTargets(
-  s: LiveSession,
-  p: { onScreen?: boolean; forStudents?: boolean }
-): Promise<void> {
-  if (typeof p.onScreen !== 'boolean' && typeof p.forStudents !== 'boolean') return;
-  if (typeof p.onScreen === 'boolean') s.captionsOnScreen = p.onScreen;
-  if (typeof p.forStudents === 'boolean') s.captionsForStudents = p.forStudents;
+function recomputeCaptions(s: LiveSession): void {
+  s.captionsForStudents = s.captionWants.size > 0;
   s.captionsEnabled = s.captionsOnScreen || s.captionsForStudents;
+  // 誰も字幕を出していない間は「動かない」の表示を持ち越さない。
+  // 次にONにした人が、その時点の状況で判断し直せるようにする
+  if (!s.captionsEnabled) s.captionsUnavailable = false;
+}
+
+/**
+ * 教室モニターに字幕を出すか（先生の操作）。
+ * 生徒ぶんはここでは触らない。保存するのも教室モニターぶんだけで、
+ * 生徒の希望は「いま繋がっている生徒」から毎回決め直す
+ */
+export async function setCaptionsOnScreen(s: LiveSession, onScreen: boolean): Promise<void> {
+  s.captionsOnScreen = onScreen;
+  recomputeCaptions(s);
   await db
     .update(schema.lessons)
-    .set({
-      captionsOnScreen: s.captionsOnScreen,
-      captionsForStudents: s.captionsForStudents,
-      captionsEnabled: s.captionsEnabled,
-    })
+    .set({ captionsOnScreen: s.captionsOnScreen, captionsEnabled: s.captionsEnabled })
     .where(eq(schema.lessons.id, s.lessonId));
+}
+
+/** 生徒1人ぶんの字幕の希望。保存しない（授業をまたいで引き継ぐものではない） */
+export function setStudentCaptions(
+  s: LiveSession,
+  socketId: string,
+  participantId: string,
+  on: boolean
+): void {
+  if (on) s.captionWants.set(socketId, participantId);
+  else s.captionWants.delete(socketId);
+  recomputeCaptions(s);
+}
+
+/** 接続が切れた端末のぶんを外す。変化があったときだけ true */
+export function dropCaptionWant(s: LiveSession, socketId: string): boolean {
+  if (!s.captionWants.delete(socketId)) return false;
+  recomputeCaptions(s);
+  return true;
+}
+
+/** 字幕を使っている生徒の人数。同じ生徒が2台開いていても1人と数える */
+export function captionUserCount(s: LiveSession): number {
+  return new Set(s.captionWants.values()).size;
 }
 
 /** リアクションボタンの上限（先生画面の1行に収まる数） */
@@ -615,23 +670,36 @@ export async function listParticipants(
 
 // ---- カメラ映像 ----
 
+/** 受け取ったチャンクがどちらの形式か。先生が実際に使った mime から判断する */
+function formatOfMime(mime: string | undefined): VideoFormat {
+  return mime?.startsWith('video/mp4') ? 'mp4' : 'webm';
+}
+
 /**
  * 先生からのカメラ映像チャンクを処理する。
  * 音声と違い保存はせず、中継のためのヘッダ保持と連番付けだけを行う
  * （復習動画はPDFと音声から組み立てる設計のため、映像はライブ限定）。
+ *
+ * 2形式が同時に流れてくるので、形式ごとにヘッダと連番を分けて持つ。
+ * ヘッダより前の欠片は受け手がデコードできないため捨てる（null を返す）。
  */
 export function handleAvChunk(
   s: LiveSession,
   buf: Buffer,
   mime?: string
-): { isInit: boolean; seq: number } {
+): { format: VideoFormat; isInit: boolean; seq: number; mime: string } | null {
+  const format = formatOfMime(mime);
   const isInit = isInitSegment(buf);
   if (isInit) {
-    s.avInitSegment = buf;
-    s.avMime = mime ?? null;
-    s.avSeq = 0;
+    s.avStreams.set(format, {
+      init: buf,
+      mime: mime ?? (format === 'mp4' ? 'video/mp4' : 'video/webm'),
+      seq: 0,
+    });
   }
-  return { isInit, seq: s.avSeq++ };
+  const stream = s.avStreams.get(format);
+  if (!stream) return null;
+  return { format, isInit, seq: stream.seq++, mime: stream.mime };
 }
 
 // ---- 音声 ----

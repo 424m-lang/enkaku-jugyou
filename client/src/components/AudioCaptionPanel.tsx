@@ -17,6 +17,8 @@ type Props = {
   audioDefault: AudioMode;
   captionsOnScreen: boolean;
   captionsForStudents: boolean;
+  /** いま字幕を使っている生徒の人数 */
+  captionUsers: number;
 };
 
 export default function AudioCaptionPanel({
@@ -27,6 +29,7 @@ export default function AudioCaptionPanel({
   audioDefault,
   captionsOnScreen,
   captionsForStudents,
+  captionUsers,
 }: Props) {
   const [showParticipants, setShowParticipants] = useState(false);
 
@@ -44,9 +47,9 @@ export default function AudioCaptionPanel({
     [socketRef]
   );
 
-  const setCaptions = useCallback(
-    (p: { onScreen?: boolean; forStudents?: boolean }) => {
-      socketRef.current?.emit('set_captions', p, () => {});
+  const setCaptionsOnScreen = useCallback(
+    (onScreen: boolean) => {
+      socketRef.current?.emit('set_captions', { onScreen }, () => {});
     },
     [socketRef]
   );
@@ -59,7 +62,8 @@ export default function AudioCaptionPanel({
   return (
     <>
       {/* ---- 生徒端末の音声 ---- */}
-      <div className="classroom-sec">
+      {/* 音声と字幕は決める内容が別なので、教室モニター設定と同じように線で区切る */}
+      <div className="classroom-sec classroom-sec-divided">
         <span className="classroom-label">生徒の端末の音声</span>
         <div className="classroom-row">
           <button
@@ -67,14 +71,16 @@ export default function AudioCaptionPanel({
             onClick={() => setAudioDefault('off')}
             title="教室で受ける授業。音は教室モニターのスピーカーからだけ出します"
           >
-            🔇 全員ミュート
+            🔇 全員 教室から参加
+            <span className="btn-sub">全端末ミュート</span>
           </button>
           <button
             className={`btn tool ${audioDefault === 'on' ? 'tool-active' : ''}`}
             onClick={() => setAudioDefault('on')}
-            title="全員が遠隔で受ける授業"
+            title="全員が遠隔で受ける授業。各自の端末から音が出ます"
           >
-            🔊 全員 音声あり
+            🔊 全員 遠隔で参加
+            <span className="btn-sub">全端末 音声ON</span>
           </button>
         </div>
         <p className="muted small">
@@ -118,14 +124,15 @@ export default function AudioCaptionPanel({
       </div>
 
       {/* ---- 自動字幕 ---- */}
-      {/* 「字幕を作る」というスイッチは置かない。出し先をONにすれば作り始め、
-          両方OFFにすればやめる。作っているのに誰にも出ていない状態を作らせない */}
+      {/* 「字幕を作る」というスイッチは置かない。出し先がひとつでもONなら作り始める。
+          生徒の端末ぶんは先生が決めない。誰に字幕が要るかは本人にしか分からず、
+          先生が押し忘れれば必要な生徒が読めなくなるため */}
       <div className="classroom-sec">
-        <span className="classroom-label">自動字幕を出す先</span>
+        <span className="classroom-label">自動字幕</span>
         <div className="classroom-row">
           <button
             className={`btn tool ${captionsOnScreen ? 'tool-active' : ''}`}
-            onClick={() => setCaptions({ onScreen: !captionsOnScreen })}
+            onClick={() => setCaptionsOnScreen(!captionsOnScreen)}
             disabled={screenCount === 0 && !captionsOnScreen}
             title={
               screenCount === 0
@@ -135,26 +142,16 @@ export default function AudioCaptionPanel({
           >
             🖥 教室モニター
           </button>
-          <button
-            className={`btn tool ${captionsForStudents ? 'tool-active' : ''}`}
-            onClick={() => setCaptions({ forStudents: !captionsForStudents })}
-            title="生徒の端末に字幕を出せるようにします。出すかどうかは生徒が各自で決めます"
-          >
-            📱 生徒の端末
-          </button>
+          <span className={captionsForStudents ? 'caption-users on' : 'caption-users'}>
+            📱 生徒の端末{' '}
+            {captionsForStudents ? `${captionUsers}人が使用中` : '誰も使っていません'}
+          </span>
         </div>
         <p className="muted small">
-          {captionsEnabled ? (
-            <>
-              先生の話を文字にしています。自動認識なので誤変換があります。
-              Chrome・Edgeでのみ動きます。
-              {captionsForStudents && ' 生徒は自分の画面で字幕を消せます。'}
-            </>
-          ) : screenCount === 0 ? (
-            '押した先に字幕が出ます。教室モニターは接続されると選べます。'
-          ) : (
-            '押した先に字幕が出ます。どちらも押さなければ字幕は作りません。'
-          )}
+          生徒は各自の端末で字幕を出せます。
+          {captionsEnabled
+            ? '先生の話を文字にしています。自動認識なので誤変換があります。Chrome・Edgeでのみ動きます。'
+            : '教室モニターに出すか、生徒が1人でも字幕を出すと、認識が始まります。'}
         </p>
       </div>
     </>

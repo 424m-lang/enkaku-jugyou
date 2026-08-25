@@ -23,7 +23,7 @@ import { savePdfTexts } from '../../lib/pdf';
 import { fmtClock } from '../../lib/format';
 import { makeReactionMeta } from '../../lib/reactionMeta';
 import SlideCanvas, { type DrawingTool } from '../../components/SlideCanvas';
-import JoinLinkModal from '../../components/JoinLinkModal';
+import JoinLinkPanel from '../../components/JoinLinkPanel';
 import FloatingWindow from '../../components/FloatingWindow';
 import MonitorPanel from '../../components/MonitorPanel';
 import AudioCaptionPanel from '../../components/AudioCaptionPanel';
@@ -101,9 +101,9 @@ export default function Teach() {
   // 字幕を作れない・続けられない場合の理由（対応時は null）
   const [captionError, setCaptionError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState('');
-  const [showJoin, setShowJoin] = useState(false);
   // 道具の窓。閉じている間も中身はDOMに残す（書きかけが消えないように）
   const [windows, setWindows] = useState({
+    join: false,
     monitor: false,
     audio: false,
     reaction: false,
@@ -154,11 +154,14 @@ export default function Teach() {
     audioDefault,
     cameraOn,
     screenLayout,
+    pipPos,
+    avFormats,
     videoToStudents,
     tasks,
     taskMode,
     tasksActive,
     captionsEnabled,
+    captionUsers,
     captionsOnScreen,
     captionsForStudents,
     openPoll,
@@ -264,19 +267,31 @@ export default function Teach() {
   // 先生の端末のブラウザ音声認識を、授業中かつONの間だけ動かして文字を配る。
   // サーバ側の文字起こしは10秒以上遅れて教室の字幕には使えないため、
   // ライブはこちらで賄い、用語の正しい版は履歴側でWhisperに差し替える。
+  // 字幕は生徒がONにしても始まるので、動かなかったことは生徒にも伝える。
+  // でないと「出るはずの字幕が出てこない」理由が生徒側から分からない
+  const reportCaptionStatus = useCallback(
+    (unavailable: boolean) => socketRef.current?.emit('set_caption_status', { unavailable }),
+    [socketRef]
+  );
+
   useEffect(() => {
     if (status !== 'live' || !captionsEnabled) return;
     const src = startCaptions({
       onText: (text, final) => socketRef.current?.emit('caption', { text, final }),
-      onFatal: (err) => setCaptionError(err),
+      onFatal: (err) => {
+        setCaptionError(err);
+        reportCaptionStatus(true);
+      },
     });
     if (!src) {
       setCaptionError('unsupported');
+      reportCaptionStatus(true);
       return;
     }
     setCaptionError(null);
+    reportCaptionStatus(false);
     return () => src.stop();
-  }, [status, captionsEnabled, socketRef]);
+  }, [status, captionsEnabled, socketRef, reportCaptionStatus]);
 
   // 「直近のリアクション」: 授業中は30秒ごとに再集計して窓から外れた反応を落とす
   useEffect(() => {
@@ -675,25 +690,28 @@ export default function Teach() {
           <span className="muted nowrap">
             参加コード: <strong className="inline-code">{joinCode}</strong>
           </span>
-          <button
-            className="btn header-action"
-            onClick={() => setShowJoin(true)}
-            disabled={!joinCode}
-          >
-            参加用リンク
-          </button>
-          <button
-            className={`btn header-action ${windows.monitor ? 'header-action-on' : ''}`}
-            onClick={() => toggleWindow('monitor')}
-          >
-            教室モニター設定
-          </button>
-          <button
-            className={`btn header-action ${windows.audio ? 'header-action-on' : ''}`}
-            onClick={() => toggleWindow('audio')}
-          >
-            音声・字幕設定
-          </button>
+          {/* 3つとも同じ「開くと窓が出る」ボタンなので、大きさを揃えて1組に見せる */}
+          <div className="header-tools">
+            <button
+              className={`btn header-action ${windows.join ? 'header-action-on' : ''}`}
+              onClick={() => toggleWindow('join')}
+              disabled={!joinCode}
+            >
+              参加用リンク
+            </button>
+            <button
+              className={`btn header-action ${windows.monitor ? 'header-action-on' : ''}`}
+              onClick={() => toggleWindow('monitor')}
+            >
+              教室モニター設定
+            </button>
+            <button
+              className={`btn header-action ${windows.audio ? 'header-action-on' : ''}`}
+              onClick={() => toggleWindow('audio')}
+            >
+              音声・字幕設定
+            </button>
+          </div>
           <span className="muted nowrap">生徒 {participantCount}人</span>
           {screenCount > 0 && (
             <span className="chip chip-live nowrap">教室モニター {screenCount}台</span>
@@ -756,8 +774,6 @@ export default function Teach() {
           </div>
         </div>
       )}
-
-      {showJoin && <JoinLinkModal joinCode={joinCode} onClose={() => setShowJoin(false)} />}
 
       <div className="teach-main">
         <div className="slide-area">
@@ -992,6 +1008,16 @@ export default function Teach() {
         </aside>
       </div>
 
+      <FloatingWindow
+        title="参加用リンク"
+        open={windows.join}
+        onClose={() => toggleWindow('join')}
+        defaultPos={{ x: 40, y: 80 }}
+        width={440}
+      >
+        <JoinLinkPanel joinCode={joinCode} />
+      </FloatingWindow>
+
       {lessonId && (
         <FloatingWindow
           title="教室モニター設定"
@@ -1006,6 +1032,8 @@ export default function Teach() {
             screenCount={screenCount}
             cameraOn={cameraOn}
             screenLayout={screenLayout}
+            pipPos={pipPos}
+            avFormats={avFormats}
             videoToStudents={videoToStudents}
           />
         </FloatingWindow>
@@ -1025,6 +1053,7 @@ export default function Teach() {
           audioDefault={audioDefault}
           captionsOnScreen={captionsOnScreen}
           captionsForStudents={captionsForStudents}
+          captionUsers={captionUsers}
         />
       </FloatingWindow>
 

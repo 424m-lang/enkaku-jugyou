@@ -4,13 +4,16 @@ import type {
   LessonStatus,
   LessonTask,
   LiveLessonState,
+  PipPos,
   PublicPoll,
   ReactionButtonDef,
   ScreenLayout,
   SlideInfo,
   StrokePayload,
   TaskMode,
+  VideoFormat,
 } from '@shared';
+import { DEFAULT_PIP_POS } from '@shared';
 import { connectLessonSocket, type AppSocket } from './socket';
 import { loadLessonPdf, type PdfCache } from './pdf';
 import { rebuildStrokes, applyDrawingEvent, type StrokesBySlide } from './strokes';
@@ -51,6 +54,9 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
   const [avHasAudio, setAvHasAudio] = useState(false);
   const [screenLayout, setScreenLayout] = useState<ScreenLayout>('slide');
   const [videoToStudents, setVideoToStudents] = useState(false);
+  const [pipPos, setPipPos] = useState<PipPos>(DEFAULT_PIP_POS);
+  // いま流す必要のある映像形式（サーバが受け手の顔ぶれから判断して伝えてくる）
+  const [avFormats, setAvFormats] = useState<VideoFormat[]>(['webm']);
   // タスク。誰がどこまで進んだかはここには入らない（進捗は画面ごとに別イベントで受ける）
   const [tasks, setTasks] = useState<LessonTask[]>([]);
   const [taskMode, setTaskMode] = useState<TaskMode>('sequential');
@@ -59,6 +65,9 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
   // 字幕の出し先。作るかどうかはこの2つから決まる
   const [captionsOnScreen, setCaptionsOnScreen] = useState(false);
   const [captionsForStudents, setCaptionsForStudents] = useState(false);
+  const [captionsUnavailable, setCaptionsUnavailable] = useState(false);
+  // 字幕を使っている生徒の人数（先生だけに届く）
+  const [captionUsers, setCaptionUsers] = useState(0);
   // いま開いているアンケート（開始・締め切りは全画面が同じ状態を見る）
   const [openPoll, setOpenPoll] = useState<PublicPoll | null>(null);
 
@@ -93,6 +102,7 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
       setCaptionsEnabled(st.captionsEnabled);
       setCaptionsOnScreen(st.captionsOnScreen);
       setCaptionsForStudents(st.captionsForStudents);
+      setCaptionsUnavailable(st.captionsUnavailable);
       setOpenPoll(st.openPoll);
       optionsRef.current.onLessonState?.(st);
     });
@@ -102,7 +112,11 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
       setAvHasAudio(p.avHasAudio);
       setScreenLayout(p.layout);
       setVideoToStudents(p.videoToStudents);
+      if (p.pipPos) setPipPos(p.pipPos);
     });
+
+    socket.on('av_formats', (p) => setAvFormats(p.formats));
+    socket.on('caption_users', (n) => setCaptionUsers(n));
 
     socket.on('slides_updated', (sl) => setSlides(sl));
     socket.on('slide_change', (p) => setCurrentSlideId(p.slideId));
@@ -177,12 +191,16 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
     avHasAudio,
     screenLayout,
     videoToStudents,
+    pipPos,
+    avFormats,
     tasks,
     taskMode,
     tasksActive,
     captionsEnabled,
     captionsOnScreen,
     captionsForStudents,
+    captionsUnavailable,
+    captionUsers,
     openPoll,
   };
 }

@@ -1045,9 +1045,12 @@ button.slide-thumb:hover {
 
 .screen-sub {
   position: absolute;
-  right: 2vw;
-  bottom: 2vw;
-  width: min(26vw, 460px);
+  /* 先生が見本の中でドラッグした位置。0=左上いっぱい、1=右下いっぱい。
+     縦は 16:9 なので、幅と同じ割合が高さの割合にもなる */
+  --pip-w: min(26vw, 460px);
+  left: calc(2vw + (100% - 4vw - var(--pip-w)) * var(--pip-x, 1));
+  top: calc(2vw + (100% - 4vw - var(--pip-w) * 9 / 16) * var(--pip-y, 1));
+  width: var(--pip-w);
   aspect-ratio: 16 / 9;
   display: flex;
   overflow: hidden;
@@ -2825,6 +2828,56 @@ button.slide-thumb:hover {
   font-weight: 700;
 }
 
+/* 参加用リンク・教室モニター設定・音声字幕設定。
+   どれも「押すと窓が出る」同じ性質のものなので、幅を揃えて1組に見せる */
+.header-tools {
+  display: flex;
+  gap: 6px;
+}
+
+.header-tools .btn.header-action {
+  flex: 0 0 140px;
+  min-width: 0;
+  font-size: 0.85rem;
+  padding: 8px 6px;
+}
+
+/* 生徒ぶんの字幕は先生が切り替えるものではないので、
+   ボタンではなく「いまどうなっているか」として見せる */
+.caption-users {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.caption-users.on {
+  border-style: solid;
+  border-color: var(--primary);
+  color: var(--primary);
+  font-weight: 700;
+}
+
+/* 設定の窓のなかで、話題が変わるところに線を入れる */
+.classroom-sec-divided {
+  padding-bottom: 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* ボタンの2行目。何が起きるかを短く添える（「全員 教室から参加／全端末ミュート」） */
+.btn-sub {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 400;
+  opacity: 0.72;
+  margin-top: 1px;
+}
+
 /* スライド操作の行の右側。3つの窓を開くボタンは大きさを揃える */
 .tool-windows {
   margin-left: auto;
@@ -2952,8 +3005,10 @@ button.slide-thumb:hover {
 
 .lp-sub {
   position: absolute;
-  right: 5%;
-  bottom: 7%;
+  /* 縮図も教室モニターと同じ置き方にする（見たとおりの位置に出るように）。
+     幅34%・16:9なので、高さも枠の34%になる */
+  left: calc(5% + 56% * var(--pip-x, 1));
+  top: calc(7% + 45% * var(--pip-y, 1));
   width: 34%;
   aspect-ratio: 16 / 9;
   border: 1px solid rgba(255, 255, 255, 0.75);
@@ -2962,6 +3017,18 @@ button.slide-thumb:hover {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+/* 選んでいる見本の中だけ、つまんで動かせる */
+.lp-sub-drag {
+  cursor: grab;
+  touch-action: none;
+  border-color: #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+.lp-sub-drag:active {
+  cursor: grabbing;
 }
 
 .lp-slide {
@@ -3021,30 +3088,18 @@ button.slide-thumb:hover {
 }
 
 /* ================= 参加用リンク ================= */
-.join-modal {
-  max-width: 720px;
+/* QRは近道であって主役ではないので、横に説明を添えて幅を取らせない */
+.join-qr-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
 }
 
-.join-main {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 18px;
-  text-align: left;
-  margin: 12px 0 16px;
-}
-
-.join-col {
+.join-qr-side {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
-}
-
-.join-qr {
-  width: 100%;
-  max-width: 220px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
 }
 
 .feed-count {
@@ -3180,6 +3235,12 @@ button.slide-thumb:hover {
   .btn.header-action {
     min-width: 104px;
     padding: 8px 9px;
+  }
+
+  .header-tools .btn.header-action {
+    flex-basis: 124px;
+    font-size: 0.78rem;
+    padding: 8px 4px;
   }
 
   .teach .header-right {

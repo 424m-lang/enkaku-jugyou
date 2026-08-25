@@ -30,7 +30,17 @@ const AUDIO_STALL_MS = 5000;
 const CAPTION_KEEP_LINES = 20;
 
 /** 字幕を消したかどうかの記憶。端末ごとの好みなので授業を跨いで残す */
-const CAPTIONS_HIDDEN_KEY = 'captionsHidden';
+/**
+ * この端末で字幕を出すか。既定はOFF。
+ *
+ * 先生に「生徒の端末に字幕を出す」というスイッチは無く、ここをONにすると
+ * サーバ経由で先生の端末の音声認識が始まる。既定をONにすると、誰も読んでいないのに
+ * 認識が回り続ける（＝先生の声が常に外の認識サービスへ送られる）ため、
+ * 必ず本人が選んだときだけONにする。
+ *
+ * 以前の `captionsHidden`（既定＝表示）とは意味が逆なので、キーごと変えている
+ */
+const CAPTIONS_ON_KEY = 'captionsOn';
 
 export default function Class() {
   const navigate = useNavigate();
@@ -47,22 +57,11 @@ export default function Class() {
   // 音声を有効にしたのに届いていない状態
   const [audioStalled, setAudioStalled] = useState(false);
   const lastAudioAtRef = useRef<number | null>(null);
-  // 自動字幕。先生がONにしていても、出すかどうかは生徒が自分で決める。
+  // 自動字幕。出すかどうかは生徒が自分で決める。
   // 選んだ結果はこの端末に覚えさせる（読み込み直すたびに選び直させない）
   const [captionLines, setCaptionLines] = useState<{ tMs: number; text: string }[]>([]);
   const [captionInterim, setCaptionInterim] = useState('');
-  const [captionsHidden, setCaptionsHidden] = useState(
-    () => localStorage.getItem(CAPTIONS_HIDDEN_KEY) === '1'
-  );
-  const setCaptionsHiddenPersisted = useCallback((hidden: boolean) => {
-    setCaptionsHidden(hidden);
-    try {
-      localStorage.setItem(CAPTIONS_HIDDEN_KEY, hidden ? '1' : '0');
-    } catch {
-      /* プライベートモードなどで保存できなくても、いまの表示は切り替わる */
-    }
-  }, []);
-
+  const [captionsOn, setCaptionsOn] = useState(() => localStorage.getItem(CAPTIONS_ON_KEY) === '1');
   // スライドを見ているだけの時間が長く、触らないので端末が自動ロックされやすい
   useWakeLock();
   const [videoLive, setVideoLive] = useState(false);
@@ -92,7 +91,7 @@ export default function Class() {
 
   const {
     socketRef,
-    captionsForStudents,
+    captionsUnavailable,
     connected,
     title,
     status,
@@ -148,6 +147,13 @@ export default function Class() {
         playerRef.current?.push(chunk);
       });
       socket.on('audio_permission', (p) => setAudioAllowed(p.audio));
+      // 字幕の希望は接続ごとに送り直す。サーバは接続単位で数えていて、
+      // 再接続すると前の申告は消えるため（端末を閉じた生徒のぶんで認識を回さないための作り）
+      socket.on('connect', () => {
+        if (localStorage.getItem(CAPTIONS_ON_KEY) === '1') {
+          socket.emit('set_my_captions', { on: true }, () => {});
+        }
+      });
       socket.on('caption', (p) => {
         if (p.final) {
           setCaptionInterim('');
@@ -173,6 +179,20 @@ export default function Class() {
       });
     },
   });
+
+  // 先生の端末で認識が始まる・止まるので、切り替えはサーバにも伝える
+  const setCaptionsOnPersisted = useCallback(
+    (on: boolean) => {
+      setCaptionsOn(on);
+      try {
+        localStorage.setItem(CAPTIONS_ON_KEY, on ? '1' : '0');
+      } catch {
+        /* プライベートモードなどで保存できなくても、いまの表示は切り替わる */
+      }
+      socketRef.current?.emit('set_my_captions', { on }, () => {});
+    },
+    [socketRef]
+  );
 
   useEffect(() => {
     return () => {
@@ -336,10 +356,15 @@ export default function Class() {
               ⚠ 先生の音声が届いていません
             </span>
           )}
-          {status === 'live' && captionsForStudents && captionsHidden && (
-            <button className="btn" onClick={() => setCaptionsHiddenPersisted(false)}>
+          {status === 'live' && !captionsOn && (
+            <button className="btn" onClick={() => setCaptionsOnPersisted(true)}>
               字幕を出す
             </button>
+          )}
+          {status === 'live' && captionsOn && captionsUnavailable && (
+            <span className="chip chip-warn" title="先生の端末が音声認識に対応していません">
+              ⚠ 字幕を作れません
+            </span>
           )}
           {status === 'live' && audioAllowed === 'on' && !audioEnabled && !mediaUnsupported && (
             <button className="btn primary" onClick={enableAudio}>
@@ -376,12 +401,12 @@ export default function Class() {
         <div className={videoLive && status === 'live' ? 'class-video' : 'screen-hidden'}>
           <video ref={videoElRef} className="class-video-el" playsInline autoPlay />
         </div>
-        {status === 'live' && captionsForStudents && !captionsHidden && (
+        {status === 'live' && captionsOn && (
           <CaptionBar
             lines={captionLines}
             interim={captionInterim}
             loadHistory={loadCaptionHistory}
-            onHide={() => setCaptionsHiddenPersisted(true)}
+            onHide={() => setCaptionsOnPersisted(false)}
           />
         )}
       </div>

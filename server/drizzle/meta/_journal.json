@@ -113,6 +113,13 @@
       "when": 1790000500000,
       "tag": "0015_insight_resolved",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1790000600000,
+      "tag": "0016_screen_code",
+      "breakpoints": true
     }
   ]
 }

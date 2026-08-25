@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import QRCode from 'qrcode';
-import type { ScreenLayout } from '@shared';
+import type { PipPos, ScreenLayout, VideoFormat } from '@shared';
 import { SCREEN_LAYOUT_LABELS } from '@shared';
 import { api } from '../lib/api';
 import {
@@ -29,6 +29,10 @@ type Props = {
   cameraOn: boolean;
   screenLayout: ScreenLayout;
   videoToStudents: boolean;
+  /** 小窓の置き場所（0〜1の割合） */
+  pipPos: PipPos;
+  /** いま流す必要のある映像形式（受け手の顔ぶれからサーバが決める） */
+  avFormats: VideoFormat[];
 };
 
 const LAYOUTS: ScreenLayout[] = ['slide', 'video', 'slide-only'];
@@ -40,8 +44,13 @@ export default function MonitorPanel({
   cameraOn,
   screenLayout,
   videoToStudents,
+  pipPos,
+  avFormats,
 }: Props) {
+  // 教室モニターを開くURL。長い方（トークン入り）は別ウィンドウ用、
+  // 短い方（/m/コード）は人が打つ用。表示とQRは短い方を使う
   const [screenUrl, setScreenUrl] = useState('');
+  const [shortUrl, setShortUrl] = useState('');
   const [qrDataUrl, setQrDataUrl] = useState('');
   const [copied, setCopied] = useState(false);
   const [cameras, setCameras] = useState<CameraOption[]>([]);
@@ -51,13 +60,26 @@ export default function MonitorPanel({
 
   const broadcastRef = useRef<CameraBroadcast | null>(null);
   const videoSupported = supportedVideoMime() !== null;
+  // start() のたびに最新の形式を渡せるように、描画とは別に保持する
+  const avFormatsRef = useRef(avFormats);
+  avFormatsRef.current = avFormats;
+
+  // 受け手の顔ぶれが変わったら、配信中でも流す形式を足し引きする
+  // （Apple TVが後から繋がる、といったことが教室では普通に起きる）
+  useEffect(() => {
+    broadcastRef.current?.setFormats(avFormats);
+  }, [avFormats]);
 
   // ---- モニターを開くURL ----
   useEffect(() => {
     let disposed = false;
-    void api<{ screenToken: string }>(`/api/lessons/${lessonId}/screen-token`)
-      .then(({ screenToken }) => {
-        if (!disposed) setScreenUrl(`${window.location.origin}/screen/${lessonId}?k=${screenToken}`);
+    void api<{ screenToken: string; screenCode?: string }>(
+      `/api/lessons/${lessonId}/screen-token`
+    )
+      .then(({ screenToken, screenCode }) => {
+        if (disposed) return;
+        setScreenUrl(`${window.location.origin}/screen/${lessonId}?k=${screenToken}`);
+        if (screenCode) setShortUrl(`${window.location.origin}/m/${screenCode}`);
       })
       .catch(() => {
         // トークンが取れなくても、先生自身の端末なら拡張ディスプレイで使える
@@ -68,10 +90,13 @@ export default function MonitorPanel({
     };
   }, [lessonId]);
 
+  // 人が打つURLも、QRが指す先も短い方にする（読み取れない端末では手打ちになるため）
+  const openUrl = shortUrl || screenUrl;
+
   useEffect(() => {
-    if (!screenUrl) return;
+    if (!openUrl) return;
     let disposed = false;
-    void QRCode.toDataURL(screenUrl, {
+    void QRCode.toDataURL(openUrl, {
       width: 400,
       margin: 1,
       errorCorrectionLevel: 'M',
@@ -86,15 +111,15 @@ export default function MonitorPanel({
     return () => {
       disposed = true;
     };
-  }, [screenUrl]);
+  }, [openUrl]);
 
   const copyUrl = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(screenUrl);
+      await navigator.clipboard.writeText(openUrl);
     } catch {
       // http（LAN内アクセス等）ではclipboard APIが使えないため旧方式で代替
       const ta = document.createElement('textarea');
-      ta.value = screenUrl;
+      ta.value = openUrl;
       document.body.appendChild(ta);
       ta.select();
       document.execCommand('copy');
@@ -102,7 +127,7 @@ export default function MonitorPanel({
     }
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
-  }, [screenUrl]);
+  }, [openUrl]);
 
   // self=1 を付けた画面では参加用QRと「音を鳴らす」を出さない。
   // 先生自身の端末で開くもので、生徒に見せるものでも音を出す先でもないため
@@ -138,7 +163,11 @@ export default function MonitorPanel({
       try {
         // 先にサーバへ知らせておく（チャンクが届いたときに中継先が決まっている状態にする）
         socket.emit('camera_state', { on: true });
-        const bc = await startCameraBroadcast(socket, deviceId || undefined);
+        const bc = await startCameraBroadcast(
+          socket,
+          deviceId || undefined,
+          avFormatsRef.current
+        );
         broadcastRef.current = bc;
         // マイクが取れず映像だけになった場合は、受け手が音声のみの配信を鳴らし続ける
         socket.emit('camera_state', { on: true, hasAudio: bc.hasAudio });
@@ -175,6 +204,11 @@ export default function MonitorPanel({
     [socketRef]
   );
 
+  const setPipPos = useCallback(
+    (p: PipPos) => socketRef.current?.emit('set_av_config', { pipPos: p }),
+    [socketRef]
+  );
+
   return (
     <>
       <div className="monitor-status">
@@ -189,10 +223,13 @@ export default function MonitorPanel({
       <div className="monitor-open">
         <div className="monitor-open-col">
           <span className="monitor-open-label">URL</span>
-          <code className="monitor-url">{screenUrl || '準備中…'}</code>
-          <button className="btn" onClick={() => void copyUrl()} disabled={!screenUrl}>
+          <code className="monitor-url">{openUrl || '準備中…'}</code>
+          <button className="btn" onClick={() => void copyUrl()} disabled={!openUrl}>
             {copied ? 'コピーしました' : 'URLをコピー'}
           </button>
+          {shortUrl && (
+            <p className="muted small">リモコンでも打てる短いURLです（大文字・小文字どちらでも）</p>
+          )}
         </div>
         <div className="monitor-open-col">
           <span className="monitor-open-label">QR</span>
@@ -247,17 +284,22 @@ export default function MonitorPanel({
 
             <div className="layout-choices">
               {LAYOUTS.map((l) => (
-                <button
+                <LayoutChoice
                   key={l}
-                  className={`layout-choice ${screenLayout === l ? 'layout-choice-on' : ''}`}
-                  onClick={() => setLayout(l)}
-                >
-                  <LayoutPreview layout={l} stream={stream} />
-                  <span className="layout-choice-label">{SCREEN_LAYOUT_LABELS[l]}</span>
-                </button>
+                  layout={l}
+                  selected={screenLayout === l}
+                  stream={stream}
+                  pipPos={pipPos}
+                  onSelect={() => setLayout(l)}
+                  onMovePip={setPipPos}
+                />
               ))}
             </div>
-            <p className="muted small">授業中にも切り替えられます。</p>
+            <p className="muted small">
+              授業中にも切り替えられます。
+              {screenLayout !== 'slide-only' &&
+                ' 小さい方は、この見本の中でドラッグして動かせます。'}
+            </p>
 
             <label className="classroom-check">
               <input
@@ -280,33 +322,118 @@ export default function MonitorPanel({
  * 見せ方の見本。いま映っているカメラをそのまま縮小して置く。
  * 「スライド主体」と「映像主体」は言葉だけではどちらがどちらか分かりにくいので、
  * 縮図で示して選ばせる。
+ *
+ * 選んでいる見本の中では、小窓をつまんで動かせる。教卓・板書・掲示物と重なる場所は
+ * 教室ごとに違うので、隅に固定だと現地で直せないため。
  */
-function LayoutPreview({ layout, stream }: { layout: ScreenLayout; stream: MediaStream | null }) {
-  const ref = useRef<HTMLVideoElement>(null);
+function LayoutChoice({
+  layout,
+  selected,
+  stream,
+  pipPos,
+  onSelect,
+  onMovePip,
+}: {
+  layout: ScreenLayout;
+  selected: boolean;
+  stream: MediaStream | null;
+  pipPos: PipPos;
+  onSelect: () => void;
+  onMovePip: (p: PipPos) => void;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const lpRef = useRef<HTMLSpanElement>(null);
+  const subRef = useRef<HTMLSpanElement>(null);
+  // つまんだ位置と、動かしたかどうか（動かしたときは選択のクリックを起こさない）
+  const dragRef = useRef<{ dx: number; dy: number } | null>(null);
+  const movedRef = useRef(false);
+
   useEffect(() => {
-    if (ref.current) ref.current.srcObject = stream;
+    if (videoRef.current) videoRef.current.srcObject = stream;
   }, [stream]);
+
+  const draggable = selected && layout !== 'slide-only';
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    if (!draggable || !subRef.current) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const box = subRef.current.getBoundingClientRect();
+    dragRef.current = { dx: e.clientX - box.left, dy: e.clientY - box.top };
+    movedRef.current = false;
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {
+      /* 取れなくてもドラッグ自体は動く */
+    }
+  };
+
+  const onPointerMove = (e: React.PointerEvent) => {
+    const d = dragRef.current;
+    if (!d || !lpRef.current || !subRef.current) return;
+    const lp = lpRef.current.getBoundingClientRect();
+    const box = subRef.current.getBoundingClientRect();
+    const availX = lp.width - box.width;
+    const availY = lp.height - box.height;
+    if (availX <= 0 || availY <= 0) return;
+    const x = (e.clientX - d.dx - lp.left) / availX;
+    const y = (e.clientY - d.dy - lp.top) / availY;
+    movedRef.current = true;
+    onMovePip({ x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) });
+  };
+
+  const endDrag = () => {
+    dragRef.current = null;
+  };
 
   const cam = (
     <span className="lp-cam">
-      <video ref={ref} muted playsInline autoPlay />
+      <video ref={videoRef} muted playsInline autoPlay />
       {!stream && <span className="lp-cam-off">カメラ</span>}
     </span>
   );
 
-  return (
-    <span className="lp">
-      {layout === 'video' ? (
-        <>
-          <span className="lp-main lp-main-cam">{cam}</span>
-          <span className="lp-sub lp-slide">スライド</span>
-        </>
-      ) : (
-        <>
-          <span className="lp-main lp-slide">スライド</span>
-          {layout === 'slide' && <span className="lp-sub">{cam}</span>}
-        </>
-      )}
+  const subBox = (content: React.ReactNode, extra = '') => (
+    <span
+      ref={subRef}
+      className={`lp-sub ${extra} ${draggable ? 'lp-sub-drag' : ''}`}
+      style={{ '--pip-x': pipPos.x, '--pip-y': pipPos.y } as React.CSSProperties}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={endDrag}
+      onPointerCancel={endDrag}
+      title={draggable ? 'ドラッグで位置を変えられます' : undefined}
+    >
+      {content}
     </span>
+  );
+
+  return (
+    <button
+      className={`layout-choice ${selected ? 'layout-choice-on' : ''}`}
+      onClick={() => {
+        // ドラッグの終わりをクリックと取り違えない
+        if (movedRef.current) {
+          movedRef.current = false;
+          return;
+        }
+        onSelect();
+      }}
+    >
+      <span className="lp" ref={lpRef}>
+        {layout === 'video' ? (
+          <>
+            <span className="lp-main lp-main-cam">{cam}</span>
+            {subBox('スライド', 'lp-slide')}
+          </>
+        ) : (
+          <>
+            <span className="lp-main lp-slide">スライド</span>
+            {layout === 'slide' && subBox(cam)}
+          </>
+        )}
+      </span>
+      <span className="layout-choice-label">{SCREEN_LAYOUT_LABELS[layout]}</span>
+    </button>
   );
 }
