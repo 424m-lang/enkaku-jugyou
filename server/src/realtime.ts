@@ -3,6 +3,8 @@ import type { FastifyInstance } from 'fastify';
 import type { Server, Socket } from 'socket.io';
 import { eq } from 'drizzle-orm';
 import type {
+  AudioCanPlay,
+  AudioFormat,
   ClientToServerEvents,
   PollType,
   ScreenLayout,
@@ -10,7 +12,15 @@ import type {
   VideoCanPlay,
   VideoFormat,
 } from '@shared';
-import { MAX_CAPTION_CHARS, MAX_TASKS, VIDEO_FORMATS, clampPipPos, videoFormatFor } from '@shared';
+import {
+  AUDIO_FORMATS,
+  MAX_CAPTION_CHARS,
+  MAX_TASKS,
+  VIDEO_FORMATS,
+  audioFormatFor,
+  clampPipPos,
+  videoFormatFor,
+} from '@shared';
 import { db, schema } from './db';
 import { verifyParticipantToken } from './auth';
 import { captionHistory } from './live/captions';
@@ -72,13 +82,19 @@ type SocketData = {
   lessonId: string;
   participantId?: string;
   participantName?: string;
-  /** その端末が再生できる映像形式（接続時の申告。先生の端末では使わない） */
-  canPlay?: VideoCanPlay;
+  /** その端末が再生できる形式（接続時の申告。先生の端末では使わない） */
+  videoCanPlay?: VideoCanPlay;
+  audioCanPlay?: AudioCanPlay;
 };
 
 /** 映像の配信先は形式ごとに分ける。受け手は自分が再生できる方の部屋にだけ入る */
 function avRoomOf(room: string, format: VideoFormat): string {
   return `${room}:av:${format}`;
+}
+
+/** 音声も形式別の部屋へ分け、受け手にはOpusかAACの片方だけを送る */
+function audioRoomOf(room: string, format: AudioFormat): string {
+  return `${room}:audio:${format}`;
 }
 
 export type TypedServer = Server<ClientToServerEvents, ServerToClientEvents, object, SocketData>;
@@ -109,16 +125,27 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         lessonId?: string;
         participantToken?: string;
         screenToken?: string;
-        canPlay?: VideoCanPlay;
+        // 新しい画面は音声・映像を分けて申告する。旧画面の平坦な映像申告も受ける
+        canPlay?: {
+          video?: VideoCanPlay;
+          audio?: AudioCanPlay;
+          webm?: boolean;
+          mp4?: boolean;
+        };
       };
       const lessonId = auth.lessonId;
       if (!lessonId) return next(new Error('lessonId が必要です'));
       // 再生できる形式は接続時に受け取る。あとからイベントで届く形にすると
       // 「まだ分からない相手」を抱えた一瞬ができ、先生の録画器が無駄に切り替わる
-      const canPlay: VideoCanPlay | undefined =
-        auth.canPlay && typeof auth.canPlay === 'object'
-          ? { webm: !!auth.canPlay.webm, mp4: !!auth.canPlay.mp4 }
-          : undefined;
+      const rawCanPlay = auth.canPlay;
+      const rawVideo = rawCanPlay?.video ?? rawCanPlay;
+      const videoCanPlay: VideoCanPlay | undefined = rawVideo
+        ? { webm: !!rawVideo.webm, mp4: !!rawVideo.mp4 }
+        : undefined;
+      const rawAudio = rawCanPlay?.audio;
+      const audioCanPlay: AudioCanPlay | undefined = rawAudio
+        ? { webm: !!rawAudio.webm, mp4: !!rawAudio.mp4 }
+        : undefined;
 
       // 教室スクリーン: 先生がログインしていない教室の端末から開くためのトークン。
       // 表示専用なので生徒トークンより先に判定し、参加者としては扱わない
@@ -128,7 +155,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           .from(schema.lessons)
           .where(eq(schema.lessons.id, lessonId));
         if (lesson?.screenToken && safeEqual(lesson.screenToken, auth.screenToken)) {
-          socket.data = { role: 'screen', lessonId, canPlay };
+          socket.data = { role: 'screen', lessonId, videoCanPlay, audioCanPlay };
           return next();
         }
         return next(new Error('認証に失敗しました'));
@@ -143,7 +170,8 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           lessonId,
           participantId: participant.id,
           participantName: participant.displayName,
-          canPlay,
+          videoCanPlay,
+          audioCanPlay,
         };
         return next();
       }
@@ -191,10 +219,11 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
     const teacherRoom = `${room}:teacher`;
     // カメラ映像の配信先。教室モニターは常に入り、生徒は先生が映像を送るときだけ入る。
     // 部屋は形式ごとに分かれていて、この接続が入るのは自分が再生できる方だけ
-    const myAvRoom = avRoomOf(room, videoFormatFor(socket.data.canPlay));
+    const myAvRoom = avRoomOf(room, videoFormatFor(socket.data.videoCanPlay));
     // 音声のみの配信先。教室モニターは常に入り、生徒は音声を鳴らす設定の生徒だけ入る
     // （教室で受ける生徒はミュートなので、そもそも音声を送る必要が無い）
-    const audioRoom = `${room}:audio`;
+    const myAudioFormat = audioFormatFor(socket.data.audioCanPlay);
+    const myAudioRoom = audioRoomOf(room, myAudioFormat);
 
     await socket.join(room);
     if (role === 'teacher') {
@@ -202,7 +231,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
     }
     if (role === 'screen') {
       await socket.join(myAvRoom);
-      await socket.join(audioRoom);
+      await socket.join(myAudioRoom);
     }
     if (role === 'student' && socket.data.participantId) {
       const pid = socket.data.participantId;
@@ -214,7 +243,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         const mine = myPollAnswer(s, pid, s.openPollId);
         if (mine) socket.emit('my_poll_answer', { pollId: s.openPollId, answer: mine });
       }
-      if (shouldReceiveAudio(s, pid)) await socket.join(audioRoom);
+      if (shouldReceiveAudio(s, pid)) await socket.join(myAudioRoom);
       if (shouldReceiveVideo(s, pid)) await socket.join(myAvRoom);
     }
     if (role === 'teacher') {
@@ -230,6 +259,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       avHasAudio: s.avHasAudio,
       pipPos: s.pipPos,
     });
+    let audioRestartRequested = false;
 
     // 字幕を使う生徒が増減したことを全員に配る。
     // 先生の端末はこの lesson_state を見て音声認識を始める・止める
@@ -252,19 +282,38 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       io.to(teacherRoom).emit('av_formats', { formats });
     };
 
+    /** 音声を受け取る端末が現在必要としている形式だけを先生へ知らせる */
+    const sendAudioFormats = () => {
+      const formats = AUDIO_FORMATS.filter(
+        (f) => (io.sockets.adapter.rooms.get(audioRoomOf(room, f))?.size ?? 0) > 0
+      );
+      io.to(teacherRoom).emit('audio_formats', { formats });
+    };
+
     // 参加直後に現在のライブ状態のスナップショットを送る
     // （形式未申告の相手には従来のWebMを既定にしておく）
     socket.emit('lesson_state', toLiveState(s));
     socket.emit('av_state', avState());
     // 受け手が増えたので、先生に「いま必要な形式」を配り直す
     sendAvFormats();
+    sendAudioFormats();
     if (role === 'teacher') socket.emit('caption_users', captionUserCount(s));
+    if (role === 'teacher' && s.status === 'live' && s.audioStreams.size === 0) {
+      audioRestartRequested = true;
+      socket.emit('audio_restart');
+    }
     // 音声配信中で、この接続が音声を受け取る対象なら、デコーダ初期化用のヘッダチャンクを送る
-    if (s.audioInitSegment && s.status === 'live' && socket.rooms.has(audioRoom)) {
-      socket.emit('audio_init', toArrayBuffer(s.audioInitSegment), s.audioSeq, audioMimeOf(s));
+    const myAudioStream = s.audioStreams.get(myAudioFormat);
+    if (myAudioStream && s.status === 'live' && socket.rooms.has(myAudioRoom)) {
+      socket.emit(
+        'audio_init',
+        toArrayBuffer(myAudioStream.init),
+        myAudioStream.seq,
+        myAudioStream.mime
+      );
     }
     // カメラ配信中で、この接続が映像を受け取る対象ならヘッダを送る
-    const myStream = s.avStreams.get(videoFormatFor(socket.data.canPlay));
+    const myStream = s.avStreams.get(videoFormatFor(socket.data.videoCanPlay));
     if (myStream && s.cameraOn && socket.rooms.has(myAvRoom)) {
       socket.emit('av_init', toArrayBuffer(myStream.init), myStream.seq, myStream.mime);
     }
@@ -320,14 +369,27 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
 
       // 音声（文字起こし用の録音と共通）。教室で受けている生徒には音が要らないので、
       // 教室モニターと、音声を鳴らす設定の生徒だけに中継する
-      socket.on('audio_chunk', async (chunk, mime) => {
+      socket.on('audio_chunk', async (chunk, mime, archive) => {
         if (s.status !== 'live') return;
         try {
           const buf = Buffer.from(chunk as ArrayBuffer);
-          const { isInit, seq } = await handleAudioChunk(s, buf, mime);
+          const result = await handleAudioChunk(s, buf, mime, archive !== false);
+          if (!result) {
+            // サーバ再起動後にヘッダより後ろの欠片だけ届いた。録音器を張り直してinitを得る
+            if (!audioRestartRequested) {
+              audioRestartRequested = true;
+              socket.emit('audio_restart');
+            }
+            return;
+          }
+          if (result.isInit) audioRestartRequested = false;
+          const target = audioRoomOf(room, result.format);
           // 先頭チャンクだけは形式を添える（受け手はこれを見てデコーダを作る）
-          if (isInit) io.to(audioRoom).emit('audio_init', chunk, seq, audioMimeOf(s));
-          else io.to(audioRoom).emit('audio_chunk', chunk, seq);
+          if (result.isInit) {
+            io.to(target).emit('audio_init', chunk, result.seq, result.mime);
+          } else {
+            io.to(target).emit('audio_chunk', chunk, result.seq);
+          }
         } catch (err) {
           app.log.error(err);
         }
@@ -365,7 +427,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         if (pip) s.pipPos = pip;
         if (typeof p?.videoToStudents === 'boolean' && p.videoToStudents !== s.videoToStudents) {
           s.videoToStudents = p.videoToStudents;
-          void syncStudentAv(io, s, room, audioRoom).catch((err) => app.log.error(err));
+          void syncStudentAv(io, s, room).catch((err) => app.log.error(err));
         }
         io.to(room).emit('av_state', avState());
       });
@@ -376,7 +438,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           if (p?.mode !== 'on' && p?.mode !== 'off') return cb({ ok: false });
           await setAudioDefault(s, p.mode);
           io.to(room).emit('lesson_state', toLiveState(s));
-          await syncStudentAv(io, s, room, audioRoom);
+          await syncStudentAv(io, s, room);
           await broadcastParticipants(io, s, room, teacherRoom);
           cb({ ok: true });
         } catch (err) {
@@ -392,7 +454,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           if (mode !== 'on' && mode !== 'off' && mode !== null) return cb({ ok: false });
           if (typeof p?.participantId !== 'string') return cb({ ok: false });
           await setParticipantAudio(s, p.participantId, mode);
-          await syncStudentAv(io, s, room, audioRoom);
+          await syncStudentAv(io, s, room);
           await broadcastParticipants(io, s, room, teacherRoom);
           cb({ ok: true });
         } catch (err) {
@@ -679,7 +741,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         if (!pid) return cb({ ok: false });
         if (p?.on) s.videoClosedBy.delete(pid);
         else s.videoClosedBy.add(pid);
-        void syncStudentAv(io, s, room, audioRoom).catch((err) => app.log.error(err));
+        void syncStudentAv(io, s, room).catch((err) => app.log.error(err));
         cb({ ok: true });
       });
 
@@ -806,6 +868,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
     socket.on('disconnect', async () => {
       // ここに来る時点で部屋からは外れているので、そのまま数え直せばよい
       sendAvFormats();
+      sendAudioFormats();
       // 端末を閉じた生徒のぶんで音声認識を回し続けない
       if (dropCaptionWant(s, socket.id)) broadcastCaptionUse();
       // 映像を送っていた先生が抜けたら、カメラは止まったものとして扱う。
@@ -880,20 +943,10 @@ function shouldReceiveVideo(s: LiveSession, participantId: string): boolean {
  * 教室で受けている（ミュートの）生徒には音声も映像も送らないので通信量を使わない。
  * 音声の設定を変えると両方の対象が変わるため、常にまとめて更新する。
  */
-/**
- * 中継する音声・映像の形式。
- * 先生の環境がAAC/MP4を選べばそれを、選べなければWebM/Opusを配る。
- * 形式が届いていない場合（古いクライアント）は従来のWebMとみなす。
- */
-function audioMimeOf(s: LiveSession): string {
-  return s.audioMime ?? 'audio/webm;codecs=opus';
-}
-
 async function syncStudentAv(
   io: TypedServer,
   s: LiveSession,
-  room: string,
-  audioRoom: string
+  room: string
 ): Promise<void> {
   const sockets = await io.in(room).fetchSockets();
   for (const sock of sockets) {
@@ -902,21 +955,24 @@ async function syncStudentAv(
     sock.emit('audio_permission', { audio: effectiveAudio(s, pid) });
 
     const wantsAudio = shouldReceiveAudio(s, pid);
+    const audioFormat = audioFormatFor(sock.data.audioCanPlay);
+    const audioRoom = audioRoomOf(room, audioFormat);
     if (wantsAudio && !sock.rooms.has(audioRoom)) {
       sock.join(audioRoom);
       // 途中から音声を受け取り始める端末にはデコーダ初期化用のヘッダが要る
-      if (s.audioInitSegment && s.status === 'live') {
-        sock.emit('audio_init', toArrayBuffer(s.audioInitSegment), s.audioSeq, audioMimeOf(s));
+      const stream = s.audioStreams.get(audioFormat);
+      if (stream && s.status === 'live') {
+        sock.emit('audio_init', toArrayBuffer(stream.init), stream.seq, stream.mime);
       }
     } else if (!wantsAudio && sock.rooms.has(audioRoom)) {
       sock.leave(audioRoom);
     }
 
     const wantsVideo = shouldReceiveVideo(s, pid);
-    const avRoom = avRoomOf(room, videoFormatFor(sock.data.canPlay));
+    const avRoom = avRoomOf(room, videoFormatFor(sock.data.videoCanPlay));
     if (wantsVideo && !sock.rooms.has(avRoom)) {
       sock.join(avRoom);
-      const stream = s.avStreams.get(videoFormatFor(sock.data.canPlay));
+      const stream = s.avStreams.get(videoFormatFor(sock.data.videoCanPlay));
       if (stream && s.cameraOn) {
         sock.emit('av_init', toArrayBuffer(stream.init), stream.seq, stream.mime);
       }
@@ -930,6 +986,12 @@ async function syncStudentAv(
     (f) => (io.sockets.adapter.rooms.get(avRoomOf(room, f))?.size ?? 0) > 0
   );
   io.to(`${room}:teacher`).emit('av_formats', { formats });
+
+  // 音声を受け取る生徒の設定変更でも、先生が動かす録音器の組を更新する
+  const audioFormats = AUDIO_FORMATS.filter(
+    (f) => (io.sockets.adapter.rooms.get(audioRoomOf(room, f))?.size ?? 0) > 0
+  );
+  io.to(`${room}:teacher`).emit('audio_formats', { formats: audioFormats });
 }
 
 async function broadcastParticipantCount(io: TypedServer, room: string): Promise<void> {

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { asc, eq, inArray } from 'drizzle-orm';
 import type {
+  AudioFormat,
   AudioMode,
   LessonTask,
   LiveLessonState,
@@ -49,6 +50,8 @@ function extForMime(mime: string | null): string {
 type AudioPart = {
   file: string; // レッスンディレクトリ内のファイル名
   startMs: number;
+  /** 2形式を中継していても、保存するのはこの形式だけ */
+  format: AudioFormat;
   stream: fs.WriteStream;
 };
 
@@ -123,13 +126,10 @@ export type LiveSession = {
    */
   composing: Map<string, { slideId: string; startTMs: number; atEpochMs: number }>;
 
-  // 音声（1レッスン=原則1ファイル。先生のリロード時のみ新パートに切替）
+  // 音声（中継は受け手に合わせて2形式、授業後の録音は原則Opusの1形式だけ）
   currentAudioPart: AudioPart | null;
-  audioSeq: number;
-  /** 先生が実際に使っている音声形式。生徒側のデコーダ生成に必要 */
-  audioMime: string | null;
-  /** 現在パートの先頭チャンク（WebMヘッダ）。新規参加者のデコーダ初期化用 */
-  audioInitSegment: Buffer | null;
+  /** 形式ごとの中継用ヘッダ・連番。途中参加者は自分の形式だけを受け取る */
+  audioStreams: Map<AudioFormat, { init: Buffer; mime: string; seq: number }>;
 
   // 生徒端末の音声（教室モニターから音を出す授業は既定 'off'）
   audioDefault: AudioMode;
@@ -232,9 +232,7 @@ export async function getSession(lessonId: string): Promise<LiveSession | null> 
     pollAnswers: await loadPollAnswers(lessonId),
     composing: new Map(),
     currentAudioPart: null,
-    audioSeq: 0,
-    audioMime: null,
-    audioInitSegment: null,
+    audioStreams: new Map(),
     audioDefault: lesson.audioDefault,
     audioOverrides: new Map(),
     cameraOn: false,
@@ -287,6 +285,7 @@ export async function getSession(lessonId: string): Promise<LiveSession | null> 
       s.currentAudioPart = {
         file: lastAudioPart.file,
         startMs: lastAudioPart.startMs,
+        format: lastAudioPart.file.endsWith('.mp4') ? 'mp4' : 'webm',
         stream: fs.createWriteStream(path.join(lessonDir(lessonId), lastAudioPart.file), {
           flags: 'a',
         }),
@@ -676,9 +675,14 @@ export async function listParticipants(
 
 // ---- カメラ映像 ----
 
-/** 受け取ったチャンクがどちらの形式か。先生が実際に使った mime から判断する */
-function formatOfMime(mime: string | undefined): VideoFormat {
+/** 受け取った映像チャンクがどちらの形式か。実際の mime から判断する */
+function videoFormatOfMime(mime: string | undefined): VideoFormat {
   return mime?.startsWith('video/mp4') ? 'mp4' : 'webm';
+}
+
+/** 受け取った音声チャンクがどちらの形式か。実際の mime から判断する */
+function audioFormatOfMime(mime: string | undefined): AudioFormat {
+  return mime?.startsWith('audio/mp4') ? 'mp4' : 'webm';
 }
 
 /**
@@ -694,7 +698,7 @@ export function handleAvChunk(
   buf: Buffer,
   mime?: string
 ): { format: VideoFormat; isInit: boolean; seq: number; mime: string } | null {
-  const format = formatOfMime(mime);
+  const format = videoFormatOfMime(mime);
   const isInit = isInitSegment(buf);
   if (isInit) {
     s.avStreams.set(format, {
@@ -712,38 +716,46 @@ export function handleAvChunk(
 
 /**
  * 先生からの音声チャンクを処理する。
- * 先頭チャンク（WebMのEBMLヘッダ、またはMP4のftypボックス）は録音（再）開始とみなし、
- * 新しいパートファイルへ切り替える。通常は1レッスンで1パート=1ファイル。
+ * 形式ごとに中継用ヘッダと連番を持つ。授業後の録音は二重保存せず、
+ * Opus/WebMを優先し、作れない先生端末でだけAAC/MP4を保存する。
  */
 export async function handleAudioChunk(
   s: LiveSession,
   buf: Buffer,
-  mime?: string
-): Promise<{ isInit: boolean; seq: number }> {
-  const isHeader = isInitSegment(buf);
+  mime?: string,
+  archive = true
+): Promise<{ format: AudioFormat; isInit: boolean; seq: number; mime: string } | null> {
+  const format = audioFormatOfMime(mime);
+  const isInit = isInitSegment(buf);
+  if (isInit) {
+    s.audioStreams.set(format, {
+      init: buf,
+      mime: mime ?? (format === 'mp4' ? 'audio/mp4' : 'audio/webm;codecs=opus'),
+      seq: 0,
+    });
 
-  if (isHeader) {
-    if (s.currentAudioPart) {
-      s.currentAudioPart.stream.end();
+    // 先生側が明示した1形式だけを保存する。旧画面はarchive引数を送らないためtrue扱い。
+    if (archive) {
+      if (s.currentAudioPart) s.currentAudioPart.stream.end();
+      const startMs = tMs(s);
+      const actualMime = mime ?? null;
+      const file = `audio_${startMs}.${extForMime(actualMime)}`;
+      const stream = fs.createWriteStream(path.join(lessonDir(s.lessonId), file), { flags: 'w' });
+      s.currentAudioPart = { file, startMs, format, stream };
+      await recordEvent(s, 'audio_part', { file }, startMs);
     }
-    s.audioMime = mime ?? null;
-    const startMs = tMs(s);
-    const file = `audio_${startMs}.${extForMime(s.audioMime)}`;
-    const stream = fs.createWriteStream(path.join(lessonDir(s.lessonId), file), { flags: 'w' });
-    s.currentAudioPart = { file, startMs, stream };
-    s.audioInitSegment = buf;
-    s.audioSeq = 0;
-    await recordEvent(s, 'audio_part', { file }, startMs);
   }
 
-  if (!s.currentAudioPart) {
-    // ヘッダ未受信のままデータが来た場合は破棄（リロード直後の残骸など）
-    return { isInit: false, seq: s.audioSeq };
+  const liveStream = s.audioStreams.get(format);
+  if (!liveStream) {
+    // サーバ再起動直後は中継ヘッダだけ失う。保存ファイルは復元済みなので欠片は追記し、
+    // 呼び出し元へnullを返して先生の録音器を再起動（init再送）させる。
+    if (archive && s.currentAudioPart?.format === format) s.currentAudioPart.stream.write(buf);
+    return null;
   }
 
-  s.currentAudioPart.stream.write(buf);
-  s.audioSeq++;
-  return { isInit: isHeader, seq: s.audioSeq };
+  if (archive && s.currentAudioPart?.format === format) s.currentAudioPart.stream.write(buf);
+  return { format, isInit, seq: liveStream.seq++, mime: liveStream.mime };
 }
 
 // ---- 授業の開始・終了 ----
@@ -756,8 +768,7 @@ export async function startLesson(s: LiveSession): Promise<void> {
   s.counts = {};
   s.recentReactions = [];
   s.composing.clear();
-  s.audioSeq = 0;
-  s.audioInitSegment = null;
+  s.audioStreams.clear();
   s.currentAudioPart = null;
   s.transcriptSegments = [];
   s.transcribedUntilMs = 0;

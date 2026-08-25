@@ -22,6 +22,17 @@ function videoCanPlay() {
   };
 }
 
+/**
+ * この端末がライブ音声として再生できる形式。
+ * 通常の <audio> の対応ではなく、実際の配信で使うMSE/MMSの対応を調べる。
+ */
+function audioCanPlay() {
+  return {
+    webm: canPlayMime('audio/webm;codecs=opus'),
+    mp4: canPlayMime('audio/mp4;codecs=mp4a.40.2'),
+  };
+}
+
 export function connectLessonSocket(lessonId: string, screenToken?: string): AppSocket {
   // 教室モニターはURLのトークンだけで表示専用の接続をする（先生のログイン不要）
   const participantToken = screenToken
@@ -31,7 +42,12 @@ export function connectLessonSocket(lessonId: string, screenToken?: string): App
     // 再生できる映像形式は接続時に申告する。イベントで後から送ると、
     // サーバが「まだ分からない相手」を抱えた一瞬ができてしまう。
     // 認証情報と一緒なら再接続時にも自動で送り直される
-    auth: { lessonId, participantToken, screenToken, canPlay: videoCanPlay() },
+    auth: {
+      lessonId,
+      participantToken,
+      screenToken,
+      canPlay: { video: videoCanPlay(), audio: audioCanPlay() },
+    },
     withCredentials: true,
     reconnection: true,
     reconnectionAttempts: Infinity,

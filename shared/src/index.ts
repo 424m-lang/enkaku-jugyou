@@ -495,6 +495,20 @@ export function videoFormatFor(canPlay: VideoCanPlay | undefined): VideoFormat {
   return canPlay?.webm ? 'webm' : 'mp4';
 }
 
+/** ライブ音声のコンテナ形式。webm=Opus、mp4=AACとして扱う */
+export type AudioFormat = 'webm' | 'mp4';
+
+/** 通信量の少ないOpusを優先し、再生できない端末だけAACへ回す */
+export const AUDIO_FORMATS: AudioFormat[] = ['webm', 'mp4'];
+
+/** その端末がMSE/MMSでライブ音声を再生できる形式 */
+export type AudioCanPlay = { webm: boolean; mp4: boolean };
+
+/** 受け手に届ける音声形式。申告のない古い画面には互換性優先でAACを送る */
+export function audioFormatFor(canPlay: AudioCanPlay | undefined): AudioFormat {
+  return canPlay?.webm ? 'webm' : 'mp4';
+}
+
 export const SCREEN_LAYOUT_LABELS: Record<ScreenLayout, string> = {
   slide: 'スライド主体',
   video: '映像主体',
@@ -556,6 +570,12 @@ export interface ServerToClientEvents {
    * 受け手が全員Chrome系なら ['webm'] の1本で済み、Apple系が混じったときだけ2本になる
    */
   av_formats: (p: { formats: VideoFormat[] }) => void;
+
+  /** いま受け手が必要としている音声形式（先生向け）。録音用Opusは別に常時維持する */
+  audio_formats: (p: { formats: AudioFormat[] }) => void;
+
+  /** サーバ再起動で中継用ヘッダを失ったとき、先生の録音器からinitを出し直す */
+  audio_restart: () => void;
 
   /**
    * 自動字幕。final=false は認識途中の暫定で、後から同じ発話の確定版が届く。
@@ -620,8 +640,8 @@ export interface ClientToServerEvents {
   // 先生
   start_lesson: (cb: (res: { ok: boolean; error?: string }) => void) => void;
   end_lesson: (cb: (res: { ok: boolean; error?: string }) => void) => void;
-  /** mime は MediaRecorder が実際に使った形式。受け手のデコーダ生成に必要 */
-  audio_chunk: (chunk: ArrayBuffer, mime?: string) => void;
+  /** mime は実物の形式。archive=true の1本だけを授業後の録音として保存する */
+  audio_chunk: (chunk: ArrayBuffer, mime?: string, archive?: boolean) => void;
   /** カメラ映像（音声込み）。文字起こしには使わず、保存もしない */
   av_chunk: (chunk: ArrayBuffer, mime?: string) => void;
   camera_state: (p: { on: boolean; hasAudio?: boolean }) => void;

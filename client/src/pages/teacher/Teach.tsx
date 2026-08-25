@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import type {
+  AudioFormat,
   CommentInsight,
   LessonStatus,
   ParticipantInfo,
@@ -14,7 +15,7 @@ import type {
   TaskProgressEntry,
 } from '@shared';
 import { api, ApiError } from '../../lib/api';
-import { startAudioBroadcast, supportedAudioMime } from '../../lib/audio';
+import { startAudioBroadcast, type AudioBroadcast } from '../../lib/audio';
 import { useWakeLock } from '../../lib/useWakeLock';
 import { startCaptions } from '../../lib/speech';
 import { applyDrawingEvent } from '../../lib/strokes';
@@ -93,11 +94,8 @@ export default function Teach() {
   // 操作の合間に暗転すると配信の状態が見えなくなる
   useWakeLock();
 
-  // この端末が配信に使う形式。WebM系だとSafari（iPad・Apple TV）とテレビで音が出ないため、
-  // 授業を始める前に気づけるよう警告する。Chrome・Edge・SafariならAAC/MP4が選ばれる
-  const broadcastMime = supportedAudioMime();
-  const opusOnly = !!broadcastMime && !broadcastMime.includes('mp4');
-  const [formatWarnClosed, setFormatWarnClosed] = useState(false);
+  // 対応判定は通ったのに実際には1バイトも作れなかった形式（AACの無音問題など）
+  const [audioUnavailable, setAudioUnavailable] = useState<AudioFormat[]>([]);
   // 字幕を作れない・続けられない場合の理由（対応時は null）
   const [captionError, setCaptionError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState('');
@@ -122,7 +120,7 @@ export default function Teach() {
   const [undoStacks, setUndoStacks] = useState<Record<string, DrawCommand[]>>({});
   const [redoStacks, setRedoStacks] = useState<Record<string, DrawCommand[]>>({});
 
-  const audioStopRef = useRef<{ stop: () => void } | null>(null);
+  const audioStopRef = useRef<AudioBroadcast | null>(null);
   const audioStartingRef = useRef(false);
   // 「直近のリアクション」の判定に使う授業タイムライン時計（サーバ時刻基準）
   const lessonClockRef = useRef<{ startedAtEpochMs: number | null; offsetMs: number }>({
@@ -156,6 +154,7 @@ export default function Teach() {
     screenLayout,
     pipPos,
     avFormats,
+    audioFormats,
     videoToStudents,
     tasks,
     taskMode,
@@ -174,6 +173,7 @@ export default function Teach() {
     },
     setup: (socket) => {
       // 先生画面だけが受け取るイベント
+      socket.on('audio_restart', () => audioStopRef.current?.restart());
       socket.on('participant_count', (n) => setParticipantCount(n));
       socket.on('participants', (list) => setParticipants(list));
       socket.on('screen_count', (n) => setScreenCount(n));
@@ -308,14 +308,23 @@ export default function Teach() {
     try {
       const socket = socketRef.current;
       if (!socket) return;
-      audioStopRef.current = await startAudioBroadcast(socket);
+      setAudioUnavailable([]);
+      audioStopRef.current = await startAudioBroadcast(socket, audioFormats, {
+        onUnavailable: (format) =>
+          setAudioUnavailable((prev) => (prev.includes(format) ? prev : [...prev, format])),
+      });
       setAudioState('on');
     } catch {
       setAudioState('error');
     } finally {
       audioStartingRef.current = false;
     }
-  }, [socketRef]);
+  }, [socketRef, audioFormats]);
+
+  // 受け手の出入りで必要形式が変わっても、マイクは取り直さず録音器だけ足し引きする
+  useEffect(() => {
+    audioStopRef.current?.setFormats(audioFormats);
+  }, [audioFormats]);
 
   // 授業中にこの画面を開き直した（再読み込み・端末チェックから戻った）ときは、
   // マイクが止まったままにならないよう入れ直す。止まっていることに先生が
@@ -746,19 +755,17 @@ export default function Teach() {
         </div>
       </header>
 
-      {opusOnly && !formatWarnClosed && (
+      {audioUnavailable.length > 0 && (
         <div className="teach-format-warn" role="alert">
           <div>
-            <strong>この端末はOpus形式で配信します</strong>
+            <strong>一部の音声形式を作れません</strong>
             <span>
-              iPad・iPhone・Mac・Apple TV・テレビ内蔵ブラウザでは音が出ません。
-              教室モニターや生徒がこれらの端末なら、Chrome・Edge で開き直してください。
-              各端末での可否は <a href="/check" target="_blank" rel="noreferrer">/check</a> で確認できます。
+              {audioUnavailable.includes('mp4')
+                ? 'AAC音声が生成されなかったため、AACだけに対応する端末では音が出ません。'
+                : 'Opus音声が生成されなかったため、AACへ切り替えて録音・配信を続けています。'}
+              {' '}各端末での可否は <a href="/check" target="_blank" rel="noreferrer">/check</a> で確認できます。
             </span>
           </div>
-          <button className="btn-link" onClick={() => setFormatWarnClosed(true)} title="閉じる">
-            ×
-          </button>
         </div>
       )}
 
