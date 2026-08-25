@@ -1,6 +1,7 @@
 import { io, type Socket } from 'socket.io-client';
 import type { ClientToServerEvents, ServerToClientEvents } from '@shared';
 import { canPlayMime } from './liveMedia';
+import { readStored } from './storage';
 
 export type AppSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
 
@@ -25,7 +26,7 @@ export function connectLessonSocket(lessonId: string, screenToken?: string): App
   // 教室モニターはURLのトークンだけで表示専用の接続をする（先生のログイン不要）
   const participantToken = screenToken
     ? undefined
-    : (sessionStorage.getItem('participantToken') ?? undefined);
+    : (readStored('session', 'participantToken') ?? undefined);
   return io({
     // 再生できる映像形式は接続時に申告する。イベントで後から送ると、
     // サーバが「まだ分からない相手」を抱えた一瞬ができてしまう。

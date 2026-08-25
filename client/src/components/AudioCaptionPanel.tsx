@@ -142,13 +142,15 @@ export default function AudioCaptionPanel({
           >
             🖥 教室モニター
           </button>
-          <span className={captionsForStudents ? 'caption-users on' : 'caption-users'}>
+          {/* 人数そのもので色を決める。captionsForStudents を使うと、
+              人数が届く前の一瞬「0人が使用中」が強調されて出ることがある */}
+          <span className={captionUsers > 0 ? 'caption-users on' : 'caption-users'}>
             📱 生徒の端末{' '}
-            {captionsForStudents ? `${captionUsers}人が使用中` : '誰も使っていません'}
+            {captionUsers > 0 ? `${captionUsers}人が使用中` : '誰も使っていません'}
           </span>
         </div>
         <p className="muted small">
-          生徒は各自の端末で字幕を出せます。
+          遠隔で参加している生徒は各自の端末で字幕を出せます。
           {captionsEnabled
             ? '先生の話を文字にしています。自動認識なので誤変換があります。Chrome・Edgeでのみ動きます。'
             : '教室モニターに出すか、生徒が1人でも字幕を出すと、認識が始まります。'}

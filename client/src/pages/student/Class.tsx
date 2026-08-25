@@ -18,6 +18,7 @@ import SlideCanvas from '../../components/SlideCanvas';
 import TaskBar from '../../components/TaskBar';
 import PollBar, { PollResultView } from '../../components/PollBar';
 import CaptionBar from '../../components/CaptionBar';
+import { readStored, writeStored } from '../../lib/storage';
 
 /**
  * 音声チャンクがこの時間届かなければ「届いていない」と判断する。
@@ -42,10 +43,15 @@ const CAPTION_KEEP_LINES = 20;
  */
 const CAPTIONS_ON_KEY = 'captionsOn';
 
+/** 保存しておいた字幕の設定を読む（保存領域が使えない端末でも落ちない） */
+function readCaptionsOn(): boolean {
+  return readStored('local', CAPTIONS_ON_KEY) === '1';
+}
+
 export default function Class() {
   const navigate = useNavigate();
-  const lessonId = sessionStorage.getItem('lessonId');
-  const hasToken = !!sessionStorage.getItem('participantToken');
+  const lessonId = readStored('session', 'lessonId');
+  const hasToken = !!readStored('session', 'participantToken');
 
   const [pointer, setPointer] = useState<PointerPayload | null>(null);
   // 自動再生の制限があるため、一度は本人の操作で再生を始める必要がある
@@ -61,7 +67,7 @@ export default function Class() {
   // 選んだ結果はこの端末に覚えさせる（読み込み直すたびに選び直させない）
   const [captionLines, setCaptionLines] = useState<{ tMs: number; text: string }[]>([]);
   const [captionInterim, setCaptionInterim] = useState('');
-  const [captionsOn, setCaptionsOn] = useState(() => localStorage.getItem(CAPTIONS_ON_KEY) === '1');
+  const [captionsOn, setCaptionsOn] = useState(() => readCaptionsOn());
   // スライドを見ているだけの時間が長く、触らないので端末が自動ロックされやすい
   useWakeLock();
   const [videoLive, setVideoLive] = useState(false);
@@ -150,9 +156,7 @@ export default function Class() {
       // 字幕の希望は接続ごとに送り直す。サーバは接続単位で数えていて、
       // 再接続すると前の申告は消えるため（端末を閉じた生徒のぶんで認識を回さないための作り）
       socket.on('connect', () => {
-        if (localStorage.getItem(CAPTIONS_ON_KEY) === '1') {
-          socket.emit('set_my_captions', { on: true }, () => {});
-        }
+        if (readCaptionsOn()) socket.emit('set_my_captions', { on: true }, () => {});
       });
       socket.on('caption', (p) => {
         if (p.final) {
@@ -184,11 +188,7 @@ export default function Class() {
   const setCaptionsOnPersisted = useCallback(
     (on: boolean) => {
       setCaptionsOn(on);
-      try {
-        localStorage.setItem(CAPTIONS_ON_KEY, on ? '1' : '0');
-      } catch {
-        /* プライベートモードなどで保存できなくても、いまの表示は切り替わる */
-      }
+      writeStored('local', CAPTIONS_ON_KEY, on ? '1' : '0');
       socketRef.current?.emit('set_my_captions', { on }, () => {});
     },
     [socketRef]
@@ -398,7 +398,14 @@ export default function Class() {
           />
         )}
         {/* 先生のカメラ映像（実演を見せている間だけ届く）。要素は残したまま隠す */}
-        <div className={videoLive && status === 'live' ? 'class-video' : 'screen-hidden'}>
+        {/* 映像が届くのは「遠隔で参加」の生徒だけ（サーバ側の条件と同じ）。
+            教室で受ける設定に変わると配信は止まるが、それを知らせるイベントは無いので、
+            音声の可否と同じ条件で隠す。でないと最後のコマが止まったまま残る */}
+        <div
+          className={
+            videoLive && status === 'live' && audioAllowed === 'on' ? 'class-video' : 'screen-hidden'
+          }
+        >
           <video ref={videoElRef} className="class-video-el" playsInline autoPlay />
         </div>
         {status === 'live' && captionsOn && (

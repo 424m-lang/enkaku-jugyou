@@ -227,9 +227,6 @@ export default function MonitorPanel({
           <button className="btn" onClick={() => void copyUrl()} disabled={!openUrl}>
             {copied ? 'コピーしました' : 'URLをコピー'}
           </button>
-          {shortUrl && (
-            <p className="muted small">リモコンでも打てる短いURLです（大文字・小文字どちらでも）</p>
-          )}
         </div>
         <div className="monitor-open-col">
           <span className="monitor-open-label">QR</span>
@@ -311,6 +308,12 @@ export default function MonitorPanel({
               />
               遠隔の生徒にも映像を送る
             </label>
+            {/* 届く相手は「音声・字幕設定」で決まる。ここだけ入れても届かないことがあり、
+                原因が分からないまま「映像が来ない」となりやすいので明示する */}
+            <p className="muted small">
+              「音声・字幕設定」で<strong>遠隔で参加</strong>にしている生徒にだけ届きます。
+              教室で受けている（ミュートの）生徒には送りません。
+            </p>
           </>
         )}
       </div>

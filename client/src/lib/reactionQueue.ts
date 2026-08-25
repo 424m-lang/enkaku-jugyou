@@ -1,5 +1,6 @@
 import type { ReactionInput } from '@shared';
 import type { AppSocket } from './socket';
+import { readStored, writeStored } from './storage';
 
 type QueuedReaction = {
   kind: string;
@@ -28,14 +29,14 @@ export class ReactionQueue {
 
   private load(): QueuedReaction[] {
     try {
-      return JSON.parse(localStorage.getItem(this.key) ?? '[]') as QueuedReaction[];
+      return JSON.parse(readStored('local', this.key) ?? '[]') as QueuedReaction[];
     } catch {
       return [];
     }
   }
 
   private save(items: QueuedReaction[]): void {
-    localStorage.setItem(this.key, JSON.stringify(items));
+    writeStored('local', this.key, JSON.stringify(items));
   }
 
   get pendingCount(): number {

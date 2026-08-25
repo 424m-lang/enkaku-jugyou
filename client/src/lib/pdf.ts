@@ -1,6 +1,7 @@
 import * as pdfjs from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { screenTokenFromUrl } from './screenToken';
+import { readStored } from './storage';
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -92,7 +93,7 @@ async function loadPdfFrom(url: string, init?: RequestInit): Promise<PdfCache | 
 }
 
 export async function loadLessonPdf(lessonId: string): Promise<PdfCache | null> {
-  const token = sessionStorage.getItem('participantToken');
+  const token = readStored('session', 'participantToken');
   const screenToken = screenTokenFromUrl();
   return loadPdfFrom(`/api/lessons/${lessonId}/pdf`, {
     credentials: 'same-origin',
