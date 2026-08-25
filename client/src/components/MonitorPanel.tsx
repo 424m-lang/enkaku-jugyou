@@ -70,6 +70,26 @@ export default function MonitorPanel({
     broadcastRef.current?.setFormats(avFormats);
   }, [avFormats]);
 
+  /**
+   * こちらは配信しているのに、サーバは「カメラOFF」だと思っている状態を直す。
+   *
+   * サーバの再起動（本番ではデプロイのたびに起きる）でセッションの状態は消える。
+   * こちらの録画器は動き続けるが、サーバは cameraOn=false なのでチャンクを
+   * 捨ててしまい、**誰にも映らないまま先生も気づけない**。しかも
+   * 「カメラを映す」を押しても、こちらは配信中のつもりなので何も起きない。
+   * 状態がずれていたら、こちらから言い直す
+   */
+  useEffect(() => {
+    const bc = broadcastRef.current;
+    if (!bc || cameraOn) return;
+    const t = setTimeout(() => {
+      if (broadcastRef.current === bc) {
+        socketRef.current?.emit('camera_state', { on: true, hasAudio: bc.hasAudio });
+      }
+    }, 1000); // 開始直後の一瞬のずれで送り直さないよう、少し待ってから
+    return () => clearTimeout(t);
+  }, [cameraOn, socketRef]);
+
   // ---- モニターを開くURL ----
   useEffect(() => {
     let disposed = false;

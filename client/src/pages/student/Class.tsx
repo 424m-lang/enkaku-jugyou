@@ -42,6 +42,10 @@ const CAPTION_KEEP_LINES = 20;
  * 以前の `captionsHidden`（既定＝表示）とは意味が逆なので、キーごと変えている
  */
 const CAPTIONS_ON_KEY = 'captionsOn';
+/** 先生の映像を閉じたか。閉じている間は配信そのものを止める */
+const VIDEO_OFF_KEY = 'teacherVideoOff';
+/** 映像の小窓の位置（0〜1の割合）。端末ごとに覚える */
+const VIDEO_POS_KEY = 'teacherVideoPos';
 
 /** 保存しておいた字幕の設定を読む（保存領域が使えない端末でも落ちない） */
 function readCaptionsOn(): boolean {
@@ -71,6 +75,25 @@ export default function Class() {
   // スライドを見ているだけの時間が長く、触らないので端末が自動ロックされやすい
   useWakeLock();
   const [videoLive, setVideoLive] = useState(false);
+  // 先生が映像を送っているか（送っていないときは「出す」ボタンも出さない）
+  const [videoOffered, setVideoOffered] = useState(false);
+  const [videoOff, setVideoOff] = useState(() => readStored('local', VIDEO_OFF_KEY) === '1');
+  // 小窓の位置。0=左上いっぱい、1=右下いっぱい。既定は右下
+  const [videoPos, setVideoPos] = useState<{ x: number; y: number }>(() => {
+    const raw = readStored('local', VIDEO_POS_KEY);
+    if (!raw) return { x: 1, y: 1 };
+    try {
+      const v = JSON.parse(raw) as { x: number; y: number };
+      if (typeof v?.x === 'number' && typeof v?.y === 'number') {
+        return { x: Math.min(1, Math.max(0, v.x)), y: Math.min(1, Math.max(0, v.y)) };
+      }
+    } catch {
+      /* 壊れていたら既定に戻す */
+    }
+    return { x: 1, y: 1 };
+  });
+  const videoBoxRef = useRef<HTMLDivElement>(null);
+  const videoDragRef = useRef<{ dx: number; dy: number } | null>(null);
   const [comment, setComment] = useState('');
   const [queuedCount, setQueuedCount] = useState(0);
   const [flash, setFlash] = useState<string | null>(null);
@@ -179,7 +202,15 @@ export default function Class() {
       });
       socket.on('av_chunk', (chunk) => videoPlayerRef.current?.push(chunk));
       socket.on('av_state', (p) => {
-        if (!p.cameraOn || !p.videoToStudents) setVideoLive(false);
+        const offered = p.cameraOn && p.videoToStudents;
+        setVideoOffered(offered);
+        if (!offered) setVideoLive(false);
+      });
+      // 閉じたままの状態は接続のたびに伝え直す（サーバは覚えていない）
+      socket.on('connect', () => {
+        if (readStored('local', VIDEO_OFF_KEY) === '1') {
+          socket.emit('set_my_video', { on: false }, () => {});
+        }
       });
     },
   });
@@ -199,6 +230,59 @@ export default function Class() {
       playerRef.current?.dispose();
       videoPlayerRef.current?.dispose();
     };
+  }, []);
+
+  /**
+   * 先生の映像を受け取るかを切り替える。
+   *
+   * 「隠す」ではなく**受け取るのをやめる**。見ていない映像に毎秒900kbpsを
+   * 使わせないため（回線の細い家庭ほど効く）
+   */
+  const setVideoOffPersisted = useCallback(
+    (off: boolean) => {
+      setVideoOff(off);
+      writeStored('local', VIDEO_OFF_KEY, off ? '1' : '0');
+      socketRef.current?.emit('set_my_video', { on: !off }, () => {});
+      if (off) setVideoLive(false);
+    },
+    [socketRef]
+  );
+
+  // ---- 小窓の移動（この端末のなかだけの話なのでサーバへは送らない） ----
+  const onVideoPointerDown = useCallback((e: React.PointerEvent) => {
+    if ((e.target as HTMLElement).closest('button')) return; // ×は動かさない
+    const box = videoBoxRef.current?.getBoundingClientRect();
+    if (!box) return;
+    e.preventDefault();
+    videoDragRef.current = { dx: e.clientX - box.left, dy: e.clientY - box.top };
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {
+      /* 取れなくても動かせる */
+    }
+  }, []);
+
+  const onVideoPointerMove = useCallback((e: React.PointerEvent) => {
+    const d = videoDragRef.current;
+    const box = videoBoxRef.current;
+    const area = box?.parentElement?.getBoundingClientRect();
+    if (!d || !box || !area) return;
+    const rect = box.getBoundingClientRect();
+    const availX = area.width - rect.width;
+    const availY = area.height - rect.height;
+    if (availX <= 0 || availY <= 0) return;
+    const x = Math.min(1, Math.max(0, (e.clientX - d.dx - area.left) / availX));
+    const y = Math.min(1, Math.max(0, (e.clientY - d.dy - area.top) / availY));
+    setVideoPos({ x, y });
+  }, []);
+
+  const onVideoPointerUp = useCallback(() => {
+    if (!videoDragRef.current) return;
+    videoDragRef.current = null;
+    setVideoPos((pos) => {
+      writeStored('local', VIDEO_POS_KEY, JSON.stringify(pos));
+      return pos;
+    });
   }, []);
 
   // 履歴は開いたときだけ取りに行く（常時配るには量が多いため）
@@ -356,6 +440,11 @@ export default function Class() {
               ⚠ 先生の音声が届いていません
             </span>
           )}
+          {status === 'live' && videoOffered && videoOff && (
+            <button className="btn" onClick={() => setVideoOffPersisted(false)}>
+              先生の映像を出す
+            </button>
+          )}
           {status === 'live' && !captionsOn && (
             <button className="btn" onClick={() => setCaptionsOnPersisted(true)}>
               字幕を出す
@@ -400,13 +489,30 @@ export default function Class() {
         {/* 先生のカメラ映像（実演を見せている間だけ届く）。要素は残したまま隠す */}
         {/* 映像が届くのは「遠隔で参加」の生徒だけ（サーバ側の条件と同じ）。
             教室で受ける設定に変わると配信は止まるが、それを知らせるイベントは無いので、
-            音声の可否と同じ条件で隠す。でないと最後のコマが止まったまま残る */}
+            音声の可否と同じ条件で隠す。でないと最後のコマが止まったまま残る。
+            位置は生徒が自分で決める（黒板のどこが隠れると困るかは本人にしか分からない） */}
         <div
+          ref={videoBoxRef}
           className={
-            videoLive && status === 'live' && audioAllowed === 'on' ? 'class-video' : 'screen-hidden'
+            videoLive && status === 'live' && audioAllowed === 'on' && !videoOff
+              ? 'class-video'
+              : 'screen-hidden'
           }
+          style={{ '--pip-x': videoPos.x, '--pip-y': videoPos.y } as React.CSSProperties}
+          onPointerDown={onVideoPointerDown}
+          onPointerMove={onVideoPointerMove}
+          onPointerUp={onVideoPointerUp}
+          onPointerCancel={onVideoPointerUp}
         >
           <video ref={videoElRef} className="class-video-el" playsInline autoPlay />
+          <button
+            type="button"
+            className="class-video-close"
+            onClick={() => setVideoOffPersisted(true)}
+            title="先生の映像を閉じる（通信も止まります）"
+          >
+            ×
+          </button>
         </div>
         {status === 'live' && captionsOn && (
           <CaptionBar
