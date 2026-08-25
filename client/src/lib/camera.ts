@@ -13,13 +13,16 @@ import { LiveMediaPlayer } from './liveMedia';
 /**
  * 送信に使う組み合わせ。形式ごとに、対応の広い順に並べる。
  *
- * どちらを使うかは**受け手が決める**（サーバが `av_format` で伝えてくる）。
- * MP4しか再生できない端末（Safari＝iPad・Mac・Apple TV、テレビ内蔵ブラウザ）が
- * 1台でも繋がればMP4、全員がWebMを再生できるならWebM。
+ * どの形式を流すかは**受け手が決める**（サーバが `av_formats` で伝えてくる）。
+ * 全員がWebMを再生できるならWebMだけ、Apple系（Safari＝iPad・Mac・Apple TV、
+ * テレビ内蔵ブラウザ）だけならMP4だけ、**混ざっていれば両方を同時に流す**。
  *
- * WebMを優先したい理由: ChromeのMediaRecorderはMP4だと**キーフレーム単位でしか
+ * 片方に決め打ちしない理由: ChromeのMediaRecorderはMP4だと**キーフレーム単位でしか
  * 断片を切らない**ため、timesliceに500msを指定しても実際には約4.1秒ごとにしか
  * データが出てこない。同一条件の実測で総遅延は WebM 1.4秒 / MP4 5.3秒。
+ * 全体をMP4に落とすと、Apple系が1台混じるだけで**全員が4秒損をする**。
+ * 2本流すぶん先生の端末の負荷と上り通信量は増えるが、それは混在時だけで済む。
+ *
  * 音声のみの配信にはこの問題が無い（AACでも約0.5秒ごとに出る）ので、そちらはMP4優先のまま。
  *
  * baseline profile（avc1.42E01E）は最も対応の広いプロファイル。
@@ -73,10 +76,10 @@ export async function listCameras(): Promise<CameraOption[]> {
 export type CameraBroadcast = {
   stop: () => void;
   /**
-   * 送信形式を切り替える。受け手の顔ぶれが変わったときにサーバから指示が来る。
-   * カメラは取り直さず録画器だけ作り直すので、先生の手元の映像は途切れない
+   * いま流す形式の組を指定する。受け手の顔ぶれが変わるとサーバから指示が来る。
+   * カメラは取り直さず録画器だけ足し引きするので、先生の手元の映像は途切れない
    */
-  setFormat: (format: VideoFormat) => void;
+  setFormats: (formats: VideoFormat[]) => void;
   /** 先生の手元に自分の映像を映すためのストリーム */
   stream: MediaStream;
   /**
@@ -90,7 +93,7 @@ export type CameraBroadcast = {
 export async function startCameraBroadcast(
   socket: AppSocket,
   deviceId?: string,
-  format: VideoFormat = 'webm'
+  formats: VideoFormat[] = ['webm']
 ): Promise<CameraBroadcast> {
   if (!supportedVideoMime()) throw new Error('この端末では映像の配信に対応していません');
 
@@ -120,9 +123,9 @@ export async function startCameraBroadcast(
   }
   const hasAudio = stream.getAudioTracks().length > 0;
 
-  let recorder: MediaRecorder | null = null;
-  let current: VideoFormat | null = null;
-  // 世代番号。古い録画器が stop() 後に吐く最後のチャンクを、新しい配信に混ぜないための目印
+  // 形式ごとの録画器。同じMediaStreamから同時に何本でも録れる
+  const recorders = new Map<VideoFormat, { rec: MediaRecorder; gen: number }>();
+  // 世代番号。止めた録画器が最後に吐くチャンクを、新しい配信に混ぜないための目印
   let generation = 0;
   let stopped = false;
 
@@ -138,32 +141,58 @@ export async function startCameraBroadcast(
     // ブラウザが指定と違う形式を選ぶことがあるため、宣言ではなく実物を受け手に伝える
     const actualMime = rec.mimeType || mime;
     rec.ondataavailable = (e) => {
-      if (e.data.size === 0 || gen !== generation) return;
+      if (e.data.size === 0 || recorders.get(f)?.gen !== gen) return;
       void e.data.arrayBuffer().then((buf) => {
-        if (gen === generation) socket.emit('av_chunk', buf, actualMime);
+        if (recorders.get(f)?.gen === gen) socket.emit('av_chunk', buf, actualMime);
       });
     };
     rec.start(CHUNK_MS);
-    recorder = rec;
-    current = f;
+    recorders.set(f, { rec, gen });
   };
 
-  startRecorder(format);
+  const stopRecorder = (f: VideoFormat) => {
+    const entry = recorders.get(f);
+    if (!entry) return;
+    recorders.delete(f); // 先に外す。stop() の最後のチャンクはもう送らない
+    if (entry.rec.state !== 'inactive') entry.rec.stop();
+  };
+
+  /**
+   * 流す形式を want に合わせる。
+   *
+   * want をそのまま使わないのは、**この端末で録れる形式が違うことがある**ため。
+   * 例えばSafariはWebMを録れないので、WebMを求められてもMP4に落ちる。
+   * 求められた形式のままキーにすると、WebMとMP4の両方を求められたときに
+   * MP4の録画器が2本立ち上がり、同じ部屋に2系統が混ざって再生できなくなる。
+   * 実際に録れる形式に読み替えてから集合にすることで、それが起きないようにする。
+   */
+  const apply = (want: VideoFormat[]) => {
+    const actual = new Set<VideoFormat>();
+    for (const f of want) {
+      const mime = supportedVideoMime(f);
+      if (mime) actual.add(mime.startsWith('video/mp4') ? 'mp4' : 'webm');
+    }
+    for (const f of [...recorders.keys()]) {
+      if (!actual.has(f)) stopRecorder(f);
+    }
+    for (const f of actual) {
+      if (!recorders.has(f)) startRecorder(f);
+    }
+  };
+
+  apply(formats.length > 0 ? formats : ['webm']);
 
   return {
     stream,
     hasAudio,
-    setFormat(f: VideoFormat) {
-      if (stopped || f === current) return;
-      // 先に世代を進めてから止める。stop() の最後のチャンクは新しい配信に混ぜない
-      generation++;
-      if (recorder && recorder.state !== 'inactive') recorder.stop();
-      startRecorder(f);
+    setFormats(want: VideoFormat[]) {
+      if (stopped) return;
+      // 受け手がまだ誰もいなくても、繋がった瞬間に映るように1本は流しておく
+      apply(want.length > 0 ? want : ['webm']);
     },
     stop() {
       stopped = true;
-      generation++;
-      if (recorder && recorder.state !== 'inactive') recorder.stop();
+      for (const f of [...recorders.keys()]) stopRecorder(f);
       stream.getTracks().forEach((t) => t.stop());
     },
   };

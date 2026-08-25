@@ -5,7 +5,6 @@ import type { CaptionLine, LessonSummary, PointerPayload } from '@shared';
 import { api } from '../../lib/api';
 import { LiveAudioPlayer } from '../../lib/audio';
 import { LiveVideoPlayer } from '../../lib/camera';
-import { canPlayMime } from '../../lib/liveMedia';
 import { useWakeLock } from '../../lib/useWakeLock';
 import CaptionBar from '../../components/CaptionBar';
 import { screenTokenFromUrl } from '../../lib/screenToken';
@@ -94,15 +93,6 @@ export default function Screen() {
         setVideoLive(true);
       });
       socket.on('av_chunk', (chunk) => videoPlayerRef.current?.push(chunk));
-      // この端末で再生できる形式を申告する。先生はこれを見て、届く範囲で
-      // いちばん遅れの少ない形式を選ぶ（WebMが通るなら約4秒速い）。
-      // 再接続のたびにサーバ側の socket.id が変わるので、connect ごとに送り直す
-      socket.on('connect', () => {
-        socket.emit('av_can_play', {
-          webm: canPlayMime('video/webm;codecs="vp8,opus"'),
-          mp4: canPlayMime('video/mp4;codecs="avc1.42E01E,mp4a.40.2"'),
-        });
-      });
       socket.on('av_state', (p) => {
         if (!p.cameraOn) setVideoLive(false);
       });

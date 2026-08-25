@@ -31,8 +31,8 @@ type Props = {
   videoToStudents: boolean;
   /** 小窓の置き場所（0〜1の割合） */
   pipPos: PipPos;
-  /** 受け手に合わせてサーバが選んだ映像形式 */
-  avFormat: VideoFormat;
+  /** いま流す必要のある映像形式（受け手の顔ぶれからサーバが決める） */
+  avFormats: VideoFormat[];
 };
 
 const LAYOUTS: ScreenLayout[] = ['slide', 'video', 'slide-only'];
@@ -45,7 +45,7 @@ export default function MonitorPanel({
   screenLayout,
   videoToStudents,
   pipPos,
-  avFormat,
+  avFormats,
 }: Props) {
   // 教室モニターを開くURL。長い方（トークン入り）は別ウィンドウ用、
   // 短い方（/m/コード）は人が打つ用。表示とQRは短い方を使う
@@ -61,14 +61,14 @@ export default function MonitorPanel({
   const broadcastRef = useRef<CameraBroadcast | null>(null);
   const videoSupported = supportedVideoMime() !== null;
   // start() のたびに最新の形式を渡せるように、描画とは別に保持する
-  const avFormatRef = useRef(avFormat);
-  avFormatRef.current = avFormat;
+  const avFormatsRef = useRef(avFormats);
+  avFormatsRef.current = avFormats;
 
-  // 受け手の顔ぶれが変わったら、配信中でも形式を切り替える
+  // 受け手の顔ぶれが変わったら、配信中でも流す形式を足し引きする
   // （Apple TVが後から繋がる、といったことが教室では普通に起きる）
   useEffect(() => {
-    broadcastRef.current?.setFormat(avFormat);
-  }, [avFormat]);
+    broadcastRef.current?.setFormats(avFormats);
+  }, [avFormats]);
 
   // ---- モニターを開くURL ----
   useEffect(() => {
@@ -166,7 +166,7 @@ export default function MonitorPanel({
         const bc = await startCameraBroadcast(
           socket,
           deviceId || undefined,
-          avFormatRef.current
+          avFormatsRef.current
         );
         broadcastRef.current = bc;
         // マイクが取れず映像だけになった場合は、受け手が音声のみの配信を鳴らし続ける

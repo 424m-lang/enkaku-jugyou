@@ -55,8 +55,8 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
   const [screenLayout, setScreenLayout] = useState<ScreenLayout>('slide');
   const [videoToStudents, setVideoToStudents] = useState(false);
   const [pipPos, setPipPos] = useState<PipPos>(DEFAULT_PIP_POS);
-  // 受け手全員に届く形式のうち、いちばん遅れの少ないもの（サーバが判断して伝えてくる）
-  const [avFormat, setAvFormat] = useState<VideoFormat>('webm');
+  // いま流す必要のある映像形式（サーバが受け手の顔ぶれから判断して伝えてくる）
+  const [avFormats, setAvFormats] = useState<VideoFormat[]>(['webm']);
   // タスク。誰がどこまで進んだかはここには入らない（進捗は画面ごとに別イベントで受ける）
   const [tasks, setTasks] = useState<LessonTask[]>([]);
   const [taskMode, setTaskMode] = useState<TaskMode>('sequential');
@@ -111,7 +111,7 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
       if (p.pipPos) setPipPos(p.pipPos);
     });
 
-    socket.on('av_format', (p) => setAvFormat(p.format));
+    socket.on('av_formats', (p) => setAvFormats(p.formats));
 
     socket.on('slides_updated', (sl) => setSlides(sl));
     socket.on('slide_change', (p) => setCurrentSlideId(p.slideId));
@@ -187,7 +187,7 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
     screenLayout,
     videoToStudents,
     pipPos,
-    avFormat,
+    avFormats,
     tasks,
     taskMode,
     tasksActive,

@@ -11,7 +11,6 @@ import type {
 import { applyTaskChange, visibleReactionButtons } from '@shared';
 import { LiveAudioPlayer } from '../../lib/audio';
 import { LiveVideoPlayer } from '../../lib/camera';
-import { canPlayMime } from '../../lib/liveMedia';
 import { useWakeLock } from '../../lib/useWakeLock';
 import { ReactionQueue } from '../../lib/reactionQueue';
 import { useLessonLive } from '../../lib/useLessonLive';
@@ -169,14 +168,6 @@ export default function Class() {
         setVideoLive(true);
       });
       socket.on('av_chunk', (chunk) => videoPlayerRef.current?.push(chunk));
-      // この端末で再生できる形式の申告。教室モニターと同じく、遅れの少ない形式を
-      // 選べるかの判断材料になる。再接続でsocket.idが変わるのでconnectごとに送り直す
-      socket.on('connect', () => {
-        socket.emit('av_can_play', {
-          webm: canPlayMime('video/webm;codecs="vp8,opus"'),
-          mp4: canPlayMime('video/mp4;codecs="avc1.42E01E,mp4a.40.2"'),
-        });
-      });
       socket.on('av_state', (p) => {
         if (!p.cameraOn || !p.videoToStudents) setVideoLive(false);
       });

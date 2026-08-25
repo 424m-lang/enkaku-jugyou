@@ -155,7 +155,7 @@ export default function Teach() {
     cameraOn,
     screenLayout,
     pipPos,
-    avFormat,
+    avFormats,
     videoToStudents,
     tasks,
     taskMode,
@@ -1020,7 +1020,7 @@ export default function Teach() {
             cameraOn={cameraOn}
             screenLayout={screenLayout}
             pipPos={pipPos}
-            avFormat={avFormat}
+            avFormats={avFormats}
             videoToStudents={videoToStudents}
           />
         </FloatingWindow>

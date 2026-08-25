@@ -129,22 +129,19 @@ export type LiveSession = {
   cameraOn: boolean;
   /** カメラ映像に音声が入っているか（マイクが使えない環境では映像だけになる） */
   avHasAudio: boolean;
+  /**
+   * 形式ごとのカメラ配信。同じ映像を2形式で同時に送ることがある。
+   *
+   * WebMしか再生できない端末は無いが、MP4しか再生できない端末（Safari系）はある。
+   * どちらか一方に決めると、Apple系が1台混じるだけで全員が4秒遅い映像になるため、
+   * **必要な形式だけを並行して流す**。受け手は自分の形式の部屋にだけ入る。
+   */
+  avStreams: Map<VideoFormat, { init: Buffer; mime: string; seq: number }>;
   screenLayout: ScreenLayout;
   /** 小窓（スライド主体ならカメラ、映像主体ならスライド）の置き場所 */
   pipPos: PipPos;
   /** 遠隔の生徒にも映像を届けるか（通信量が増えるため既定はOFF） */
   videoToStudents: boolean;
-  /**
-   * 映像を受け取る接続ごとの「再生できる形式」。socket.id をキーにする。
-   * 誰か1人でもWebMを再生できない端末（Safari・Apple TV・テレビ内蔵）がいると
-   * 全体をMP4に落とすため、常に現在の接続だけを見て判断する
-   */
-  avCanPlay: Map<string, { webm: boolean; mp4: boolean }>;
-  avSeq: number;
-  /** 先生が実際に使っている映像形式。受け手のデコーダ生成に必要 */
-  avMime: string | null;
-  /** 現在のカメラ配信の先頭チャンク（WebMヘッダ）。途中参加のデコーダ初期化用 */
-  avInitSegment: Buffer | null;
 
   // リアクション
   lastReactionAt: Map<string, number>; // key: participantId:kind → tMs（デバウンス用）
@@ -217,13 +214,10 @@ export async function getSession(lessonId: string): Promise<LiveSession | null> 
     audioOverrides: new Map(),
     cameraOn: false,
     avHasAudio: false,
+    avStreams: new Map(),
     screenLayout: 'slide',
     pipPos: DEFAULT_PIP_POS,
     videoToStudents: false,
-    avCanPlay: new Map(),
-    avSeq: 0,
-    avMime: null,
-    avInitSegment: null,
     lastReactionAt: new Map(),
     recentReactions: [],
     transcriptSegments: [],
@@ -627,39 +621,36 @@ export async function listParticipants(
 
 // ---- カメラ映像 ----
 
-/**
- * いま繋がっている受け手全員に届く形式のうち、いちばん遅れの少ないものを選ぶ。
- *
- * WebMを選べるなら選ぶ。ChromeのMediaRecorderはMP4だとキーフレーム単位でしか
- * 断片を出さず、実測で総遅延が 1.4秒 対 5.3秒 と大きく違うため。
- * ただしSafari系はWebMを一切再生できないので、1台でも混じればMP4に落とす。
- */
-export function preferredVideoFormat(s: LiveSession): VideoFormat {
-  const caps = [...s.avCanPlay.values()];
-  if (caps.length === 0) return 'webm'; // まだ誰も繋がっていない。遅れの少ない方から始める
-  if (caps.every((c) => c.webm)) return 'webm';
-  const mp4 = caps.filter((c) => c.mp4).length;
-  const webm = caps.filter((c) => c.webm).length;
-  return mp4 >= webm ? 'mp4' : 'webm';
+/** 受け取ったチャンクがどちらの形式か。先生が実際に使った mime から判断する */
+function formatOfMime(mime: string | undefined): VideoFormat {
+  return mime?.startsWith('video/mp4') ? 'mp4' : 'webm';
 }
 
 /**
  * 先生からのカメラ映像チャンクを処理する。
  * 音声と違い保存はせず、中継のためのヘッダ保持と連番付けだけを行う
  * （復習動画はPDFと音声から組み立てる設計のため、映像はライブ限定）。
+ *
+ * 2形式が同時に流れてくるので、形式ごとにヘッダと連番を分けて持つ。
+ * ヘッダより前の欠片は受け手がデコードできないため捨てる（null を返す）。
  */
 export function handleAvChunk(
   s: LiveSession,
   buf: Buffer,
   mime?: string
-): { isInit: boolean; seq: number } {
+): { format: VideoFormat; isInit: boolean; seq: number; mime: string } | null {
+  const format = formatOfMime(mime);
   const isInit = isInitSegment(buf);
   if (isInit) {
-    s.avInitSegment = buf;
-    s.avMime = mime ?? null;
-    s.avSeq = 0;
+    s.avStreams.set(format, {
+      init: buf,
+      mime: mime ?? (format === 'mp4' ? 'video/mp4' : 'video/webm'),
+      seq: 0,
+    });
   }
-  return { isInit, seq: s.avSeq++ };
+  const stream = s.avStreams.get(format);
+  if (!stream) return null;
+  return { format, isInit, seq: stream.seq++, mime: stream.mime };
 }
 
 // ---- 音声 ----

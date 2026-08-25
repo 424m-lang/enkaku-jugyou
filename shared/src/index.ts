@@ -470,15 +470,30 @@ export function clampPipPos(p: unknown): PipPos | null {
 }
 
 /**
- * ライブ映像の形式。受け手が再生できるものの中で、いちばん遅れの少ないものを選ぶ。
+ * ライブ映像の形式。
  *
  * webm(VP8/Opus) は要求どおり0.5秒ごとに断片が出るが、
  * mp4(H.264/AAC) はChromeのMediaRecorderが**キーフレーム単位でしか断片を切らない**ため
  * 4秒ごとにまとめて出てくる（実測）。同じ条件で総遅延は 1.4秒 対 5.3秒。
- * それでもSafari・Apple TV・テレビ内蔵ブラウザはWebMを再生できないので、
- * 受け手にひとつでもWebMを再生できない端末がいれば mp4 に落とす。
+ * それでもSafari・Apple TV・テレビ内蔵ブラウザはWebMを再生できない。
+ *
+ * どちらか一方に決めると、Apple系が1台混じるだけで全員が4秒損をするので、
+ * **必要な形式だけを同時に送る**。受け手は自分が再生できる方だけを受け取る。
  */
 export type VideoFormat = 'webm' | 'mp4';
+
+/** 遅れの少ない順。先に来る形式ほど優先して使う */
+export const VIDEO_FORMATS: VideoFormat[] = ['webm', 'mp4'];
+
+/** その端末が再生できる形式。接続時に申告する */
+export type VideoCanPlay = { webm: boolean; mp4: boolean };
+
+/** その端末に届けるべき形式。WebMを再生できるなら遅れの少ないWebMを選ぶ */
+export function videoFormatFor(canPlay: VideoCanPlay | undefined): VideoFormat {
+  // 申告が無い相手（古いページを開いたままの端末など）には、どこでも再生できるMP4を送る。
+  // 遅いより映らない方が困るため
+  return canPlay?.webm ? 'webm' : 'mp4';
+}
 
 export const SCREEN_LAYOUT_LABELS: Record<ScreenLayout, string> = {
   slide: 'スライド主体',
@@ -537,10 +552,10 @@ export interface ServerToClientEvents {
   }) => void;
 
   /**
-   * いま繋がっている受け手全員が再生できる形式のうち、いちばん遅れの少ないもの。
-   * 先生の端末だけが受け取り、違っていたら録画器を作り直す
+   * いま送る必要のある形式。先生の端末だけが受け取り、この数だけ録画器を動かす。
+   * 受け手が全員Chrome系なら ['webm'] の1本で済み、Apple系が混じったときだけ2本になる
    */
-  av_format: (p: { format: VideoFormat }) => void;
+  av_formats: (p: { formats: VideoFormat[] }) => void;
 
   /**
    * 自動字幕。final=false は認識途中の暫定で、後から同じ発話の確定版が届く。
@@ -630,12 +645,6 @@ export interface ClientToServerEvents {
     videoToStudents?: boolean;
     pipPos?: PipPos;
   }) => void;
-
-  /**
-   * 受け手が「この形式なら再生できる」と申告する。
-   * 教室モニターと、映像を受け取る生徒の端末が接続時に送る
-   */
-  av_can_play: (p: { webm: boolean; mp4: boolean }) => void;
   /** 全生徒の音声の既定を切り替える（個別指定は解除される） */
   set_audio_default: (p: { mode: AudioMode }, cb: (res: { ok: boolean }) => void) => void;
   /** 生徒1人の音声を個別に切り替える（mode:null で既定へ戻す） */
