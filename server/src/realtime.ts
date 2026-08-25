@@ -600,7 +600,9 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
 
       // カメラ映像（音声込み）。保存はせず、教室モニターと対象の生徒にだけ中継する
       socket.on('av_chunk', (chunk, mime) => {
-        if (!s.cameraOn) return;
+        // 最後にカメラをONにした先生タブだけを送信元として扱う。
+        // 複数タブの断片が同じストリームへ混ざると、受け手のデコーダが壊れる。
+        if (!s.cameraOn || s.cameraSocketId !== socket.id) return;
         try {
           const r = handleAvChunk(s, Buffer.from(chunk as ArrayBuffer), mime);
           if (!r) return; // ヘッダより前の欠片。受け手はデコードできない
@@ -619,8 +621,12 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       });
 
       socket.on('camera_state', (p) => {
+        const turningOn = !!p?.on;
+        // 新しいタブがONにした場合はそのタブへ所有権を移す。古いタブから遅れて届く
+        // OFFは、現在の配信を止めないよう無視する。
+        if (!turningOn && s.cameraSocketId && s.cameraSocketId !== socket.id) return;
         const wasOn = s.cameraOn;
-        s.cameraOn = !!p?.on;
+        s.cameraOn = turningOn;
         if (!wasOn && s.cameraOn && s.status !== 'ended') {
           s.telemetryCameraStartedAt = Date.now();
           updateTelemetry(s, (m) => {
@@ -961,16 +967,23 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       socket.on('set_my_video', (p, cb) => {
         const pid = socket.data.participantId;
         if (!pid) return cb({ ok: false });
+        const wasClosed = s.videoClosedBy.has(pid);
         if (p?.on) s.videoClosedBy.delete(pid);
-        else if (!s.videoClosedBy.has(pid)) {
+        else if (!wasClosed) {
           s.videoClosedBy.add(pid);
-          if (s.status !== 'ended') {
+          // 接続時の復元は「新しく閉じた」ではない。数えると再起動のたびに水増しされる
+          if (s.status !== 'ended' && !p?.restore) {
             updateTelemetry(s, (m) => {
               m.video.closedByStudents += 1;
             });
           }
         }
-        void syncStudentAv(io, s, room).catch((err) => app.log.error(err));
+        // 生徒は接続のたびに現在の希望を送り直すので、変わっていなければ何もしない。
+        // syncStudentAv は在室者**全員**へ audio_permission を送り直すため、
+        // そのままでは授業開始の一斉入室で人数の二乗ぶんの通信になる
+        if (s.videoClosedBy.has(pid) !== wasClosed) {
+          void syncStudentAv(io, s, room).catch((err) => app.log.error(err));
+        }
         cb({ ok: true });
       });
 
@@ -1003,12 +1016,31 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       socket.on('reaction', async (input, cb) => {
         try {
           if (s.status !== 'live') return cb({ ok: false });
+          const kind = typeof input?.kind === 'string' ? input.kind.trim() : '';
+          if (!kind || kind.length > 40) return cb({ ok: false });
+          const comment =
+            kind === 'comment' && typeof input?.comment === 'string'
+              ? input.comment.trim().slice(0, 200)
+              : undefined;
+          if (kind === 'comment' && !comment) return cb({ ok: false });
+          const sanitized = {
+            kind,
+            comment,
+            slideId:
+              typeof input?.slideId === 'string' && input.slideId.length <= 64
+                ? input.slideId
+                : undefined,
+            delayMs:
+              typeof input?.delayMs === 'number' && Number.isFinite(input.delayMs)
+                ? Math.max(0, input.delayMs)
+                : 0,
+          };
           // ボタンを使わない授業ではボタン反応を受け付けない（コメントは別扱いで残す）。
           // オフラインキューに溜まっていた反応が後から届いても記録されない
-          if (input.kind !== 'comment' && !s.reactionsEnabled) return cb({ ok: false });
+          if (kind !== 'comment' && !s.reactionsEnabled) return cb({ ok: false });
           if (
-            input.kind !== 'comment' &&
-            !s.reactionButtons.some((b) => b.key === input.kind)
+            kind !== 'comment' &&
+            !s.reactionButtons.some((b) => b.key === kind)
           ) {
             return cb({ ok: false });
           }
@@ -1016,7 +1048,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           const rec = await recordReaction(
             s,
             { id: pid, displayName: socket.data.participantName! },
-            input
+            sanitized
           );
           cb({ ok: true }); // デバウンスで集約された場合も生徒側には成功として返す
           if (rec) {
@@ -1029,8 +1061,8 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
                 participantName: item.participantName,
                 tMs: item.tMs,
                 slideId:
-                  typeof input.slideId === 'string' && input.slideId.length <= 64
-                    ? input.slideId
+                  typeof sanitized.slideId === 'string'
+                    ? sanitized.slideId
                     : null,
                 composeStartMs: composeStartMs ?? item.tMs,
               });

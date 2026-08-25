@@ -654,7 +654,6 @@ export interface ServerToClientEvents {
 
   // リアクション（先生向け）
   reaction_feed: (item: ReactionFeedItem, counts: ReactionCounts) => void;
-  reaction_counts: (counts: ReactionCounts) => void;
 
   // コメント・振り返り（先生向け。コメント到着時とAI分析完成時に同じidで届く → 上書き）
   comment_insight: (insight: CommentInsight) => void;
@@ -732,7 +731,20 @@ export interface ClientToServerEvents {
    * 見えないものに毎秒900kbps使わせない。回線の細い家庭ほど効くので、
    * 「隠す」ではなく「受け取らない」にしてある
    */
-  set_my_video: (p: { on: boolean }, cb: (res: { ok: boolean }) => void) => void;
+  set_my_video: (
+    p: {
+      on: boolean;
+      /**
+       * 接続時に、端末が覚えている希望を伝え直しているだけ、という印。
+       *
+       * サーバの `videoClosedBy` はメモリにしか無く、再起動のたびに空になる。
+       * 復元を「新しく閉じた」と数えると、匿名集計の「映像を閉じた回数」が
+       * 再起動のたびに水増しされる（[[/telemetry]] の判断が狂う）
+       */
+      restore?: boolean;
+    },
+    cb: (res: { ok: boolean }) => void
+  ) => void;
 
   /**
    * 先生の端末で音声認識を動かせなかったことを知らせる（先生→サーバ）。
@@ -867,7 +879,6 @@ export type LiveLessonState = {
   serverNowEpochMs: number;
   // 現時点までの描画状態を再構成するためのイベント（stroke/clearのみ）
   drawingEvents: TimelineEvent[];
-  counts: ReactionCounts;
   /** 生徒端末の音声の既定（教室モニターから音を出す授業では 'off'） */
   audioDefault: AudioMode;
   cameraOn: boolean;

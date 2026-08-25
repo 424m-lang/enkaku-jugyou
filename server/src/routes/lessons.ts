@@ -132,7 +132,13 @@ export async function lessonRoutes(app: FastifyInstance): Promise<void> {
       } else if (part.type === 'field' && part.fieldname === 'reactionsEnabled') {
         reactionsEnabled = String(part.value) !== 'false';
       } else if (part.type === 'field' && part.fieldname === 'reactionButtons') {
-        const parsed = buttonsSchema.safeParse(JSON.parse(String(part.value)));
+        let value: unknown;
+        try {
+          value = JSON.parse(String(part.value));
+        } catch {
+          return reply.code(400).send({ error: 'リアクションボタンの設定が不正です' });
+        }
+        const parsed = buttonsSchema.safeParse(value);
         if (!parsed.success) {
           return reply.code(400).send({ error: 'リアクションボタンの設定が不正です' });
         }

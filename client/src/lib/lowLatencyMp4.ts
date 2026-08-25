@@ -242,6 +242,11 @@ export async function startLowLatencyMp4(opts: Options): Promise<LowLatencyMp4 |
           sampleRate: firstAudio.sampleRate,
           numberOfChannels: firstAudio.numberOfChannels,
         };
+      } else {
+        // 映像に音声トラックがあると受け手は別音声をミュートする。
+        // ここで映像だけのMP4を続けると完全な無音になるため、従来方式へ戻す。
+        await audioReader.cancel().catch(() => {});
+        return null;
       }
     }
     if (stopped) return null;

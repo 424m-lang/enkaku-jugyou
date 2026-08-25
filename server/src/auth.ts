@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { eq } from 'drizzle-orm';
 import { db, schema } from './db';
+import { config } from './config';
 
 const TEACHER_COOKIE = 'teacher_session';
 
@@ -20,6 +21,7 @@ export function setTeacherSession(reply: FastifyReply, teacherId: string): void 
   reply.setCookie(TEACHER_COOKIE, teacherId, {
     signed: true,
     httpOnly: true,
+    secure: config.isProd,
     sameSite: 'lax',
     path: '/',
     maxAge: 60 * 60 * 24 * 30, // 30日

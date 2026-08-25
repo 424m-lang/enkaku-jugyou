@@ -93,7 +93,8 @@ export default function Screen() {
       socket.on('audio_init', (chunk, _seq, mime) => {
         lastAudioAtRef.current = Date.now();
         audioFormatRef.current = mime.includes('webm') ? 'webm' : 'mp4';
-        audioPlayerRef.current?.reset(chunk, mime);
+        const player = audioPlayerRef.current;
+        if (player?.reset(chunk, mime)) setUnsupportedAudio(null);
       });
       socket.on('audio_chunk', (chunk) => {
         lastAudioAtRef.current = Date.now();
@@ -113,8 +114,8 @@ export default function Screen() {
         };
       }
       socket.on('av_init', (chunk, _seq, mime) => {
-        videoPlayerRef.current?.reset(chunk, mime);
-        setVideoLive(true);
+        const player = videoPlayerRef.current;
+        setVideoLive(player ? player.reset(chunk, mime) : false);
       });
       socket.on('av_chunk', (chunk) => videoPlayerRef.current?.push(chunk));
       socket.on('av_state', (p) => {

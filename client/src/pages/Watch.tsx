@@ -144,15 +144,34 @@ export default function Watch() {
     };
     const onPlay = () => setPlaying(true);
     const onPause = () => setPlaying(false);
+    const onEnded = () => {
+      const currentIndex = page.audioParts.findIndex((p) => p.file === currentFileRef.current);
+      const nextPart = currentIndex >= 0 ? page.audioParts[currentIndex + 1] : undefined;
+      const cur = page.chapters[chapterIdxRef.current];
+      // 録音が再開・形式変更で複数ファイルに分かれていても、同じ章の中なら続ける。
+      if (nextPart && cur && nextPart.startMs < cur.endMs) {
+        seek(nextPart.startMs);
+        return;
+      }
+      const nextChapter = chapterIdxRef.current + 1;
+      if (nextChapter < page.chapters.length) {
+        setChapterIdx(nextChapter);
+        seek(page.chapters[nextChapter].startMs);
+      } else {
+        setPlaying(false);
+      }
+    };
     audio.addEventListener('loadedmetadata', onMeta);
     audio.addEventListener('timeupdate', onTime);
     audio.addEventListener('play', onPlay);
     audio.addEventListener('pause', onPause);
+    audio.addEventListener('ended', onEnded);
     return () => {
       audio.removeEventListener('loadedmetadata', onMeta);
       audio.removeEventListener('timeupdate', onTime);
       audio.removeEventListener('play', onPlay);
       audio.removeEventListener('pause', onPause);
+      audio.removeEventListener('ended', onEnded);
     };
   }, [page, seek]);
 

@@ -56,7 +56,9 @@ function readCaptionsOn(): boolean {
 export default function Class() {
   const navigate = useNavigate();
   const lessonId = readStored('session', 'lessonId');
-  const hasToken = !!readStored('session', 'participantToken');
+  const participantToken = readStored('session', 'participantToken');
+  const participantId = participantToken?.split('.', 1)[0] ?? '';
+  const hasToken = !!participantToken;
 
   const [pointer, setPointer] = useState<PointerPayload | null>(null);
   // 自動再生の制限があるため、一度は本人の操作で再生を始める必要がある
@@ -158,7 +160,8 @@ export default function Class() {
         setRevealed(p.poll && p.results ? { poll: p.poll, results: p.results } : null);
       });
       // 生徒画面だけが受け取るイベント
-      queueRef.current = new ReactionQueue(lessonId!, socket);
+      queueRef.current?.dispose();
+      queueRef.current = new ReactionQueue(lessonId!, participantId, socket, setQueuedCount);
       setQueuedCount(queueRef.current.pendingCount);
       if (audioElRef.current) {
         playerRef.current = new LiveAudioPlayer(audioElRef.current);
@@ -179,7 +182,8 @@ export default function Class() {
       socket.on('audio_init', (chunk, _seq, mime) => {
         lastAudioAtRef.current = Date.now();
         audioFormatRef.current = mime.includes('webm') ? 'webm' : 'mp4';
-        playerRef.current?.reset(chunk, mime);
+        const player = playerRef.current;
+        if (player) setMediaUnsupported(!player.reset(chunk, mime));
       });
       socket.on('audio_chunk', (chunk) => {
         lastAudioAtRef.current = Date.now();
@@ -213,8 +217,8 @@ export default function Class() {
         };
       }
       socket.on('av_init', (chunk, _seq, mime) => {
-        videoPlayerRef.current?.reset(chunk, mime);
-        setVideoLive(true);
+        const player = videoPlayerRef.current;
+        setVideoLive(player ? player.reset(chunk, mime) : false);
       });
       socket.on('av_chunk', (chunk) => videoPlayerRef.current?.push(chunk));
       socket.on('av_state', (p) => {
@@ -224,12 +228,23 @@ export default function Class() {
       });
       // 閉じたままの状態は接続のたびに伝え直す（サーバは覚えていない）
       socket.on('connect', () => {
-        if (readStored('local', VIDEO_OFF_KEY) === '1') {
-          socket.emit('set_my_video', { on: false }, () => {});
-        }
+        // 本人が操作したわけではなく、覚えている希望を伝え直しているだけ
+        socket.emit(
+          'set_my_video',
+          { on: readStored('local', VIDEO_OFF_KEY) !== '1', restore: true },
+          () => {}
+        );
       });
     },
   });
+
+  useEffect(
+    () => () => {
+      queueRef.current?.dispose();
+      queueRef.current = null;
+    },
+    []
+  );
 
   // 先生の端末で認識が始まる・止まるので、切り替えはサーバにも伝える
   const setCaptionsOnPersisted = useCallback(
@@ -300,6 +315,20 @@ export default function Class() {
       return pos;
     });
   }, []);
+
+  // Safariでは画面回転・アプリ切替の瞬間に要素側のpointercancelが届かないことがある。
+  // ドラッグ状態が残ると次の操作まで奪うため、ウィンドウ側でも必ず終了させる。
+  useEffect(() => {
+    const finish = () => onVideoPointerUp();
+    window.addEventListener('pointerup', finish);
+    window.addEventListener('pointercancel', finish);
+    window.addEventListener('blur', finish);
+    return () => {
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', finish);
+      window.removeEventListener('blur', finish);
+    };
+  }, [onVideoPointerUp]);
 
   // 履歴は開いたときだけ取りに行く（常時配るには量が多いため）
   const loadCaptionHistory = useCallback(
@@ -542,11 +571,13 @@ export default function Class() {
           onPointerMove={onVideoPointerMove}
           onPointerUp={onVideoPointerUp}
           onPointerCancel={onVideoPointerUp}
+          onLostPointerCapture={onVideoPointerUp}
         >
           <video ref={videoElRef} className="class-video-el" playsInline autoPlay />
           <button
             type="button"
             className="class-video-close"
+            onPointerDown={(e) => e.stopPropagation()}
             onClick={() => setVideoOffPersisted(true)}
             title="先生の映像を閉じる（通信も止まります）"
           >

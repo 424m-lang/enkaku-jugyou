@@ -30,10 +30,26 @@ type AudioRate = {
   /** 標準のOpusと、互換用AACを同じマイクで同時に測る */
   opusKbps: number | null;
   aacKbps: number | null;
+  /**
+   * その行を測るのに**実際に使われた**形式。
+   *
+   * ブラウザは指定と違う形式を選ぶことがある（isTypeSupported が true を返しても
+   * 別形式で録る端末がある）。要求した名前で表示すると、中身はAACなのに
+   * 「Opus」と読めてしまい、現地で判断を誤る
+   */
+  opusMime: string | null;
+  aacMime: string | null;
   channels: number | null;
   /** マイクのサンプリング周波数。48000以外だとAACが何も吐かないことがある */
   sampleRate: number | null;
 };
+
+/** 実際の形式が、その行が名乗っている形式と食い違っていないか */
+function mimeMatches(kind: 'opus' | 'aac', mime: string | null): boolean {
+  if (!mime) return true;
+  const isMp4 = mime.includes('mp4') || mime.includes('aac');
+  return kind === 'aac' ? isMp4 : !isMp4;
+}
 
 type State = 'pending' | 'ok' | 'warn' | 'ng' | 'skip';
 type Role = 'monitor' | 'student-remote' | 'student-room' | 'teacher';
@@ -315,6 +331,7 @@ export default function Check() {
     }
 
     const bytes: Record<string, number> = {};
+    const actualMime: Record<string, string> = {};
     const recs = targets.map(({ key, mime }) => {
       const rec = new MediaRecorder(stream, { mimeType: mime, audioBitsPerSecond: 48_000 });
       bytes[key] = 0;
@@ -322,6 +339,8 @@ export default function Check() {
         bytes[key] += e.data.size;
       };
       rec.start(500);
+      // start() のあとが確定した値。要求ではなく実物を控える
+      actualMime[key] = rec.mimeType || mime;
       return rec;
     });
 
@@ -342,6 +361,8 @@ export default function Check() {
     setRateResult({
       opusKbps: bytes.opus !== undefined ? kbps(bytes.opus) : null,
       aacKbps: bytes.aac !== undefined ? kbps(bytes.aac) : null,
+      opusMime: actualMime.opus ?? null,
+      aacMime: actualMime.aac ?? null,
       channels,
       sampleRate,
     });
@@ -588,7 +609,7 @@ export default function Check() {
                     ? '測れませんでした'
                     : `${rateResult.opusKbps} kbps ・ ${LESSON_MIN}分で約${Math.round(
                         (rateResult.opusKbps * LESSON_MIN * 60) / 8 / 1000
-                      )}MB（生徒1人あたり）`
+                      )}MB（生徒1人あたり） ・ 実際の形式 ${rateResult.opusMime ?? '不明'}`
                 }
               />
               {rateResult.aacKbps !== null && (
@@ -597,7 +618,7 @@ export default function Check() {
                   label="AAC（Opus非対応端末向け）"
                   detail={`${rateResult.aacKbps} kbps ・ ${LESSON_MIN}分で約${Math.round(
                     (rateResult.aacKbps * LESSON_MIN * 60) / 8 / 1000
-                  )}MB`}
+                  )}MB ・ 実際の形式 ${rateResult.aacMime ?? '不明'}`}
                 />
               )}
               <Row
@@ -609,6 +630,15 @@ export default function Check() {
               />
             </ul>
           )}
+          {rateResult &&
+            (!mimeMatches('opus', rateResult.opusMime) ||
+              !mimeMatches('aac', rateResult.aacMime)) && (
+              <p className="check-note check-ng-text">
+                この端末は、指定した形式とは違う形式で録っています。上の行の
+                「実際の形式」を見てください。名前だけで判断すると、
+                中身は別形式なのに対応していると読み違えます。
+              </p>
+            )}
           {(rateResult?.opusKbps === 0 || rateResult?.aacKbps === 0) && (
             <p className="check-note check-ng-text">
               {rateResult.opusKbps === 0 ? 'Opus' : 'AAC'}形式では音声が1バイトも出ていません。

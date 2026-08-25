@@ -36,38 +36,98 @@ export async function extractRangeToWav(
   const parts = await getAudioParts(lessonId);
   if (parts.length === 0) return null;
 
-  // 範囲の開始を含むパートを選ぶ（パート跨ぎの場合はパート末尾まで）
-  let part: AudioPartInfo = parts[0];
-  for (const p of parts) {
-    if (p.startMs <= startMs) part = p;
-  }
-  const srcPath = path.join(lessonDir(lessonId), part.file);
-  if (!fs.existsSync(srcPath)) return null;
-
-  const offsetSec = Math.max(0, (startMs - part.startMs) / 1000);
   const durationSec = Math.max(0.5, (endMs - startMs) / 1000);
   const outPath = path.join(os.tmpdir(), `clip_${lessonId}_${crypto.randomUUID()}.wav`);
 
-  await new Promise<void>((resolve, reject) => {
-    execFile(
-      ffmpegPath as string,
-      [
-        '-y',
-        '-ss', offsetSec.toFixed(3),
-        '-t', durationSec.toFixed(3),
-        '-i', srcPath,
-        '-ar', '16000',
-        '-ac', '1',
-        '-f', 'wav',
-        outPath,
-      ],
-      { timeout: 120_000 },
-      (err, _stdout, stderr) => {
-        if (err) reject(new Error(`ffmpeg失敗: ${stderr?.slice(-500)}`));
-        else resolve();
-      }
-    );
+  // 録音器の再起動・形式変更をまたぐ範囲では、関係する全パートをタイムライン上の
+  // 正しい位置へ重ねる。以前は開始時刻を含む1ファイルだけを読み、残りが欠けていた。
+  const overlaps = parts.flatMap((part, i) => {
+    const partEndMs = parts[i + 1]?.startMs ?? endMs;
+    const fromMs = Math.max(startMs, part.startMs);
+    const toMs = Math.min(endMs, partEndMs);
+    const srcPath = path.join(lessonDir(lessonId), part.file);
+    if (toMs <= fromMs || !fs.existsSync(srcPath)) return [];
+    return [{
+      srcPath,
+      offsetSec: Math.max(0, (fromMs - part.startMs) / 1000),
+      durationSec: (toMs - fromMs) / 1000,
+      delayMs: fromMs - startMs,
+    }];
   });
+  if (overlaps.length === 0) return null;
+
+  const buildArgs = (used: typeof overlaps): string[] => {
+    const a = [
+      '-y',
+      // 無音の土台を置くことで、録音再開までの隙間も時刻どおりに保つ
+      '-f', 'lavfi', '-t', durationSec.toFixed(3),
+      '-i', 'anullsrc=r=16000:cl=mono',
+    ];
+    for (const part of used) {
+      a.push(
+        '-ss', part.offsetSec.toFixed(3),
+        '-t', Math.max(0.001, part.durationSec).toFixed(3),
+        '-i', part.srcPath
+      );
+    }
+    const filters = [
+      `[0:a]aformat=sample_fmts=fltp:channel_layouts=mono,atrim=duration=${durationSec.toFixed(3)},asetpts=PTS-STARTPTS[base]`,
+      ...used.map(
+        (part, i) =>
+          `[${i + 1}:a]aresample=16000,aformat=sample_fmts=fltp:channel_layouts=mono,` +
+          `asetpts=PTS-STARTPTS,adelay=${Math.max(0, Math.round(part.delayMs))}:all=1[a${i}]`
+      ),
+      `[base]${used.map((_, i) => `[a${i}]`).join('')}amix=inputs=${used.length + 1}:` +
+        `duration=first:dropout_transition=0:normalize=0,atrim=duration=${durationSec.toFixed(3)},` +
+        'asetpts=PTS-STARTPTS[out]',
+    ];
+    a.push(
+      '-filter_complex', filters.join(';'),
+      '-map', '[out]',
+      '-ar', '16000',
+      '-ac', '1',
+      '-f', 'wav',
+      outPath
+    );
+    return a;
+  };
+
+  /** 失敗したら標準エラーの末尾を返す。成功なら null */
+  const runFfmpeg = (a: string[]): Promise<string | null> =>
+    new Promise((resolve) => {
+      execFile(ffmpegPath as string, a, { timeout: 120_000 }, (err, _stdout, stderr) =>
+        resolve(err ? (stderr?.slice(-500) ?? String(err)) : null)
+      );
+    });
+
+  let failed = await runFfmpeg(buildArgs(overlaps));
+
+  if (failed && overlaps.length > 1) {
+    // **壊れて読めないファイルが1つ混じると、ffmpegはコマンドごと中断する。**
+    // ファイルが「無い」場合は上の existsSync で除けているが、「あるが読めない」
+    // 場合（書き込み途中でプロセスが落ちた、形式が食い違うなど）はここに来る。
+    // そのままだと授業まるごとの文字起こし・コメント解析が何も返さなくなるので、
+    // 読めるものだけで組み直して一度やり直す。
+    // 健全なときは走らないので、通常の切り出しは重くならない
+    const readable: typeof overlaps = [];
+    for (const part of overlaps) {
+      const bad = await runFfmpeg(['-v', 'error', '-i', part.srcPath, '-t', '0.1', '-f', 'null', '-']);
+      if (!bad) readable.push(part);
+      else console.error('[audio] 読めない録音ファイルを飛ばします:', part.srcPath);
+    }
+    if (readable.length > 0 && readable.length < overlaps.length) {
+      failed = await runFfmpeg(buildArgs(readable));
+    }
+  }
+
+  if (failed) {
+    // 最後の録音がどこで終わったかはDBに無いため、要求された終わりまで続いていると
+    // 仮定している。実際にはもっと早く止まっていることがあり、その区間は何も読めない。
+    // **投げると呼び出し元の解析ごと落ちる**ので、切り出せなかったこととして扱う
+    console.error('[audio] 音声の切り出しに失敗:', failed);
+    fs.rmSync(outPath, { force: true });
+    return null;
+  }
 
   return fs.existsSync(outPath) ? outPath : null;
 }

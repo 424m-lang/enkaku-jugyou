@@ -78,7 +78,7 @@ export class LiveMediaPlayer {
     this.el.muted = muted;
   }
 
-  reset(initChunk: ArrayBuffer, mime: string): void {
+  reset(initChunk: ArrayBuffer, mime: string): boolean {
     this.dispose();
     this.el.playbackRate = 1; // 前の配信で追いつき中だった速度を持ち越さない
     const Ctor = getMediaSourceCtor();
@@ -86,7 +86,7 @@ export class LiveMediaPlayer {
       // 対応していない端末。黙って無音にせず、呼び出し元に知らせて表示させる
       this.mime = mime;
       this.onUnsupported?.(mime);
-      return;
+      return false;
     }
     this.mime = mime;
     const ms = new Ctor();
@@ -119,10 +119,15 @@ export class LiveMediaPlayer {
         return;
       }
       this.sourceBuffer = sb;
-      sb.addEventListener('updateend', () => this.pump());
+      sb.addEventListener('updateend', () => {
+        // appendBufferの完了後でなければ、追加した断片はbufferedへ反映されていない。
+        this.catchUp();
+        this.pump();
+      });
       this.pump();
     });
     if (this.enabled) void this.el.play().catch(() => {});
+    return true;
   }
 
   push(chunk: ArrayBuffer): void {
@@ -151,7 +156,6 @@ export class LiveMediaPlayer {
         }
         return;
       }
-      this.catchUp();
     }
   }
 
