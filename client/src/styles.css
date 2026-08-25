@@ -1213,16 +1213,40 @@ button.slide-thumb:hover {
 }
 
 /* 生徒画面に届く先生のカメラ映像（実演のときだけ届く） */
+/* 先生の映像。置き場所は生徒が自分で決める（スライドのどこが隠れると
+   困るかは本人にしか分からない）。0=左上いっぱい、1=右下いっぱい */
 .class-video {
   position: absolute;
-  right: 14px;
-  bottom: 14px;
-  width: min(40vw, 260px);
+  --pip-w: min(40vw, 260px);
+  left: calc(14px + (100% - 28px - var(--pip-w)) * var(--pip-x, 1));
+  top: calc(14px + (100% - 28px - var(--pip-w) * 9 / 16) * var(--pip-y, 1));
+  width: var(--pip-w);
   aspect-ratio: 16 / 9;
   overflow: hidden;
   border-radius: 8px;
   background: #000;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  cursor: grab;
+  touch-action: none;
+}
+
+.class-video:active {
+  cursor: grabbing;
+}
+
+.class-video-close {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
 }
 
 .class-video-el {

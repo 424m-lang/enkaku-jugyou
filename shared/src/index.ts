@@ -647,6 +647,14 @@ export interface ClientToServerEvents {
   set_my_captions: (p: { on: boolean }, cb: (res: { ok: boolean }) => void) => void;
 
   /**
+   * 生徒が先生の映像を受け取るかどうか。閉じたら**配信そのものを止める**。
+   *
+   * 見えないものに毎秒900kbps使わせない。回線の細い家庭ほど効くので、
+   * 「隠す」ではなく「受け取らない」にしてある
+   */
+  set_my_video: (p: { on: boolean }, cb: (res: { ok: boolean }) => void) => void;
+
+  /**
    * 先生の端末で音声認識を動かせなかったことを知らせる（先生→サーバ）。
    * 字幕をONにした生徒が、出てこない理由の分からないまま待つのを防ぐ
    */

@@ -100,6 +100,11 @@ export type LiveSession = {
   captionWants: Map<string, string>;
   /** 先生の端末で音声認識が動かない。字幕をONにした生徒に理由を返すために持つ */
   captionsUnavailable: boolean;
+  /**
+   * 先生の映像を「いらない」と閉じた生徒（participantId）。
+   * 見ていない相手に映像を送り続けない。授業をまたいで覚えるものではないので保存しない
+   */
+  videoClosedBy: Set<string>;
   /** participantId → 完了したタスクidの集合。task_progress イベントの畳み込み結果 */
   taskProgress: Map<string, Set<string>>;
   /** participantId → 最後に進捗が動いた tMs（止まっている生徒の検知に使う） */
@@ -219,6 +224,7 @@ export async function getSession(lessonId: string): Promise<LiveSession | null> 
     captionsEnabled: lesson.captionsOnScreen,
     captionWants: new Map(),
     captionsUnavailable: false,
+    videoClosedBy: new Set(),
     taskProgress: new Map(),
     taskUpdatedAt: new Map(),
     polls,

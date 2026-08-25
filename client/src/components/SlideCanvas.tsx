@@ -282,6 +282,8 @@ export default function SlideCanvas({ pdf, slide, strokes, progressStrokes, poin
   const [aspect, setAspect] = useState(DEFAULT_ASPECT);
   const [size, setSize] = useState({ w: 800, h: 450 });
   const bitmapRef = useRef<ImageBitmap | null>(null);
+  /** PDFページを描けなかったか（白紙と区別して案内を出すため） */
+  const baseFailedRef = useRef(false);
 
   // ローカル描画中ストローク（refで保持し再レンダリングを避ける）
   const localStrokeRef = useRef<StrokePayload | null>(null);
@@ -335,15 +337,20 @@ export default function SlideCanvas({ pdf, slide, strokes, progressStrokes, poin
     let cancelled = false;
     (async () => {
       let bmp: ImageBitmap | null = null;
+      let failed = false;
       if (pdf && slide && slide.kind === 'pdf_page' && slide.pdfPageIndex !== null) {
         try {
           bmp = await pdf.render(slide.pdfPageIndex);
+          // 次に進むページを裏で描いておく（全ページは描かない）
+          pdf.prefetchAround(slide.pdfPageIndex);
         } catch {
           bmp = null;
+          failed = true;
         }
       }
       if (cancelled) return;
       bitmapRef.current = bmp;
+      baseFailedRef.current = failed;
       if (bmp) setAspect(bmp.width / bmp.height);
       drawBase();
     })();
@@ -364,7 +371,26 @@ export default function SlideCanvas({ pdf, slide, strokes, progressStrokes, poin
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, size.w, size.h);
     const bmp = bitmapRef.current;
-    if (bmp) ctx.drawImage(bmp, 0, 0, size.w, size.h);
+    if (bmp) {
+      try {
+        ctx.drawImage(bmp, 0, 0, size.w, size.h);
+        return;
+      } catch {
+        // 破棄済みの画像を掴んでいた場合。白紙のまま黙らせず、下の案内を出す
+        bitmapRef.current = null;
+        baseFailedRef.current = true;
+      }
+    }
+    // 描けなかったことを画面に出す。無言で白紙のままだと、
+    // 生徒も先生も「そういうスライド」だと思って気づけない
+    if (baseFailedRef.current) {
+      ctx.fillStyle = '#6b7280';
+      ctx.font = `${Math.max(12, Math.round(size.w / 42))}px system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.fillText('スライドを表示できませんでした', size.w / 2, size.h / 2 - 10);
+      ctx.fillText('ページを読み込み直してください', size.w / 2, size.h / 2 + 16);
+      ctx.textAlign = 'start';
+    }
   }, [size]);
 
   useEffect(() => {

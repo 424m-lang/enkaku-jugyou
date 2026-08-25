@@ -239,14 +239,16 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
     };
 
     // 受け手の顔ぶれが変わるたびに、いま必要な形式を先生へ伝え直す。
-    // 誰も受け取っていない形式は止めさせ、そのぶんの符号化と通信量を使わせない
+    // 誰も受け取っていない形式は止めさせ、そのぶんの符号化と通信量を使わせない。
+    //
+    // **ここでヘッダ（avStreams）を捨ててはいけない**。受け手が一瞬いなくなった
+    // だけでもヘッダが消え、戻ってきた相手に何も渡せなくなる。ヘッダが作り直されるのは
+    // 録画器を start したときだけなので、先生がカメラを入れ直すまで二度と映らない。
+    // 古いヘッダが残っていても、新しい init が届いた時点で受け手が張り直すので害はない
     const sendAvFormats = () => {
       const formats = VIDEO_FORMATS.filter(
         (f) => (io.sockets.adapter.rooms.get(avRoomOf(room, f))?.size ?? 0) > 0
       );
-      for (const f of VIDEO_FORMATS) {
-        if (!formats.includes(f)) s.avStreams.delete(f); // 古いヘッダを次の受け手に渡さない
-      }
       io.to(teacherRoom).emit('av_formats', { formats });
     };
 
@@ -671,6 +673,16 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       // 自分の端末に字幕を出す / 消す。
       // 1人でもONなら先生の端末で音声認識が始まり、全員OFFで止まる。
       // 誰がONにしたかは先生にも他の生徒にも見せない（人数だけ先生に届く）
+      // 先生の映像を受け取るか。閉じたら配信を止める（見ていないものに帯域を使わせない）
+      socket.on('set_my_video', (p, cb) => {
+        const pid = socket.data.participantId;
+        if (!pid) return cb({ ok: false });
+        if (p?.on) s.videoClosedBy.delete(pid);
+        else s.videoClosedBy.add(pid);
+        void syncStudentAv(io, s, room, audioRoom).catch((err) => app.log.error(err));
+        cb({ ok: true });
+      });
+
       socket.on('set_my_captions', (p, cb) => {
         const pid = socket.data.participantId;
         if (!pid) return cb({ ok: false });
@@ -859,6 +871,7 @@ function shouldReceiveAudio(s: LiveSession, participantId: string): boolean {
  * （＝教室ではなく遠隔で受けている）生徒だけに配信する。
  */
 function shouldReceiveVideo(s: LiveSession, participantId: string): boolean {
+  if (s.videoClosedBy.has(participantId)) return false; // 本人が閉じている
   return s.videoToStudents && effectiveAudio(s, participantId) === 'on';
 }
 
