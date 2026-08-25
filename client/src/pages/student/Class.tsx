@@ -42,6 +42,21 @@ const CAPTION_KEEP_LINES = 20;
  */
 const CAPTIONS_ON_KEY = 'captionsOn';
 
+/**
+ * 保存しておいた字幕の設定を読む。
+ *
+ * localStorage は**読むだけで例外を投げる環境がある**（プライベートブラウズや、
+ * サイトのストレージを禁止している設定）。描画の途中で投げると画面が丸ごと
+ * 出なくなるので、必ず包む。字幕の設定が失われるだけなら授業は続けられる
+ */
+function readCaptionsOn(): boolean {
+  try {
+    return localStorage.getItem(CAPTIONS_ON_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
 export default function Class() {
   const navigate = useNavigate();
   const lessonId = sessionStorage.getItem('lessonId');
@@ -61,7 +76,7 @@ export default function Class() {
   // 選んだ結果はこの端末に覚えさせる（読み込み直すたびに選び直させない）
   const [captionLines, setCaptionLines] = useState<{ tMs: number; text: string }[]>([]);
   const [captionInterim, setCaptionInterim] = useState('');
-  const [captionsOn, setCaptionsOn] = useState(() => localStorage.getItem(CAPTIONS_ON_KEY) === '1');
+  const [captionsOn, setCaptionsOn] = useState(() => readCaptionsOn());
   // スライドを見ているだけの時間が長く、触らないので端末が自動ロックされやすい
   useWakeLock();
   const [videoLive, setVideoLive] = useState(false);
@@ -150,9 +165,7 @@ export default function Class() {
       // 字幕の希望は接続ごとに送り直す。サーバは接続単位で数えていて、
       // 再接続すると前の申告は消えるため（端末を閉じた生徒のぶんで認識を回さないための作り）
       socket.on('connect', () => {
-        if (localStorage.getItem(CAPTIONS_ON_KEY) === '1') {
-          socket.emit('set_my_captions', { on: true }, () => {});
-        }
+        if (readCaptionsOn()) socket.emit('set_my_captions', { on: true }, () => {});
       });
       socket.on('caption', (p) => {
         if (p.final) {
@@ -398,7 +411,14 @@ export default function Class() {
           />
         )}
         {/* 先生のカメラ映像（実演を見せている間だけ届く）。要素は残したまま隠す */}
-        <div className={videoLive && status === 'live' ? 'class-video' : 'screen-hidden'}>
+        {/* 映像が届くのは「遠隔で参加」の生徒だけ（サーバ側の条件と同じ）。
+            教室で受ける設定に変わると配信は止まるが、それを知らせるイベントは無いので、
+            音声の可否と同じ条件で隠す。でないと最後のコマが止まったまま残る */}
+        <div
+          className={
+            videoLive && status === 'live' && audioAllowed === 'on' ? 'class-video' : 'screen-hidden'
+          }
+        >
           <video ref={videoElRef} className="class-video-el" playsInline autoPlay />
         </div>
         {status === 'live' && captionsOn && (

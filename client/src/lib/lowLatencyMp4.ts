@@ -1,5 +1,3 @@
-import { Muxer, StreamTarget } from 'mp4-muxer';
-
 /**
  * MP4を自前で組み立てて配信する（WebCodecs）。
  *
@@ -247,6 +245,10 @@ export async function startLowLatencyMp4(opts: Options): Promise<LowLatencyMp4 |
       }
     }
     if (stopped) return null;
+
+    // muxerはここで初めて読み込む。生徒・教室モニターの初回読み込みに
+    // 含めないため（映像を送るのは先生だけで、しかもMP4が要るときだけ）
+    const { Muxer, StreamTarget } = await import('mp4-muxer');
 
     let mime = '';
     const splitter = new BoxSplitter(

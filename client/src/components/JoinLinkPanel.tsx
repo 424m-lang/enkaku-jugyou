@@ -17,11 +17,12 @@ type Props = {
  */
 export default function JoinLinkPanel({ joinCode }: Props) {
   const [qrDataUrl, setQrDataUrl] = useState('');
-  const [copied, setCopied] = useState<'url' | 'direct' | null>(null);
-  const baseUrl = `${window.location.origin}/join`;
-  const directUrl = `${baseUrl}?code=${joinCode}`;
+  const [copied, setCopied] = useState(false);
+  // 配るURLには最初から授業コードを入れておく。
+  // 生徒にコードを打たせる手順を残すと、聞き間違い・打ち間違いのぶんだけ入室が遅れる
+  const directUrl = `${window.location.origin}/join?code=${joinCode}`;
 
-  async function copy(text: string, which: 'url' | 'direct') {
+  async function copy(text: string) {
     try {
       await navigator.clipboard.writeText(text);
     } catch {
@@ -33,8 +34,8 @@ export default function JoinLinkPanel({ joinCode }: Props) {
       document.execCommand('copy');
       ta.remove();
     }
-    setCopied(which);
-    setTimeout(() => setCopied(null), 1500);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
   }
 
   useEffect(() => {
@@ -60,33 +61,20 @@ export default function JoinLinkPanel({ joinCode }: Props) {
     <>
       <div className="classroom-sec classroom-sec-divided">
         <span className="monitor-open-label">生徒の端末でこのURLを開く</span>
-        <code className="monitor-url">{baseUrl}</code>
-        <div className="classroom-row">
-          <button className="btn" onClick={() => void copy(baseUrl, 'url')}>
-            {copied === 'url' ? 'コピーしました' : 'URLをコピー'}
-          </button>
-          <span className="muted small">開いた画面でこのコードを入力</span>
-        </div>
-        <div className="join-code qr-code-text">{joinCode}</div>
+        <code className="monitor-url">{directUrl}</code>
+        <button className="btn" onClick={() => void copy(directUrl)}>
+          {copied ? 'コピーしました' : 'URLをコピー'}
+        </button>
+        <p className="muted small">授業コードは入っているので、名前を入れるだけで参加できます</p>
       </div>
 
       <div className="classroom-sec">
         <span className="monitor-open-label">カメラのある端末はQRでも入れます</span>
-        <div className="join-qr-row">
-          {qrDataUrl ? (
-            <img className="monitor-qr" src={qrDataUrl} alt={`参加用QRコード（${directUrl}）`} />
-          ) : (
-            <p className="muted small">QRコードを生成中...</p>
-          )}
-          <div className="join-qr-side">
-            <button className="btn" onClick={() => void copy(directUrl, 'direct')}>
-              {copied === 'direct' ? 'コピーしました' : 'コード入りURLをコピー'}
-            </button>
-            <p className="muted small">
-              このURLで開くと、コードの入力を省いて名前だけで参加できます
-            </p>
-          </div>
-        </div>
+        {qrDataUrl ? (
+          <img className="monitor-qr" src={qrDataUrl} alt={`参加用QRコード（${directUrl}）`} />
+        ) : (
+          <p className="muted small">QRコードを生成中...</p>
+        )}
       </div>
     </>
   );

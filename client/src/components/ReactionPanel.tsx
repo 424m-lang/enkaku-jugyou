@@ -53,12 +53,20 @@ export default function ReactionPanel({
   };
 
   const visible = buttons.filter((b) => !b.hidden);
+  /**
+   * 出ているボタンが1つも無ければ「使わない」と同じ状態なので、そう見せる。
+   *
+   * `enabled` の値だけで見せると、全部隠したまま「ボタンを使う」を押した場合に
+   * 「使う」と表示されているのに生徒側には何も出ない、という食い違いが残る。
+   * 窓を閉じて開き直したときに表示が変わって見えるのもこれが原因だった
+   */
+  const effectivelyOn = enabled && visible.length > 0;
 
   return (
     <>
       <div className="classroom-sec">
         <span className="classroom-label">直近5分の反応</span>
-        {enabled && visible.length > 0 ? (
+        {effectivelyOn ? (
           <div className="recent-reactions">
             {visible.map((b) => (
               <span key={b.key} className="kind-pill" style={{ background: b.color }}>
@@ -67,9 +75,7 @@ export default function ReactionPanel({
             ))}
           </div>
         ) : (
-          <p className="muted small">
-            {enabled ? '出しているボタンがありません' : 'いまボタンは出していません'}
-          </p>
+          <p className="muted small">いまボタンは出していません</p>
         )}
       </div>
 
@@ -77,13 +83,19 @@ export default function ReactionPanel({
         <span className="classroom-label">生徒画面のボタン</span>
         <div className="classroom-row">
           <button
-            className={`btn tool ${enabled ? 'tool-active' : ''}`}
+            className={`btn tool ${effectivelyOn ? 'tool-active' : ''}`}
             onClick={() => onSetEnabled(true)}
+            disabled={visible.length === 0}
+            title={
+              visible.length === 0
+                ? '出しているボタンが1つもありません。下で「出す」を押すと使えるようになります'
+                : '生徒画面にボタンの行を出します'
+            }
           >
             ボタンを使う
           </button>
           <button
-            className={`btn tool ${enabled ? '' : 'tool-active'}`}
+            className={`btn tool ${effectivelyOn ? '' : 'tool-active'}`}
             onClick={() => onSetEnabled(false)}
             title="生徒画面からボタンの行ごと消えます。設定は残るのでいつでも戻せます"
           >
