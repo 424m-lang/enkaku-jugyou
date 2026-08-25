@@ -2842,6 +2842,26 @@ button.slide-thumb:hover {
   padding: 8px 6px;
 }
 
+/* 生徒ぶんの字幕は先生が切り替えるものではないので、
+   ボタンではなく「いまどうなっているか」として見せる */
+.caption-users {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.caption-users.on {
+  border-style: solid;
+  border-color: var(--primary);
+  color: var(--primary);
+  font-weight: 700;
+}
+
 /* 設定の窓のなかで、話題が変わるところに線を入れる */
 .classroom-sec-divided {
   padding-bottom: 12px;

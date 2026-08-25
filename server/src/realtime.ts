@@ -29,7 +29,10 @@ import {
   endLesson,
   insertBlankSlide,
   touchParticipants,
-  setCaptionTargets,
+  setCaptionsOnScreen,
+  setStudentCaptions,
+  dropCaptionWant,
+  captionUserCount,
   setReactionButtons,
   setReactionsEnabled,
   setTasks,
@@ -228,6 +231,13 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       pipPos: s.pipPos,
     });
 
+    // 字幕を使う生徒が増減したことを全員に配る。
+    // 先生の端末はこの lesson_state を見て音声認識を始める・止める
+    const broadcastCaptionUse = () => {
+      io.to(room).emit('lesson_state', toLiveState(s));
+      io.to(teacherRoom).emit('caption_users', captionUserCount(s));
+    };
+
     // 受け手の顔ぶれが変わるたびに、いま必要な形式を先生へ伝え直す。
     // 誰も受け取っていない形式は止めさせ、そのぶんの符号化と通信量を使わせない
     const sendAvFormats = () => {
@@ -246,6 +256,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
     socket.emit('av_state', avState());
     // 受け手が増えたので、先生に「いま必要な形式」を配り直す
     sendAvFormats();
+    if (role === 'teacher') socket.emit('caption_users', captionUserCount(s));
     // 音声配信中で、この接続が音声を受け取る対象なら、デコーダ初期化用のヘッダチャンクを送る
     if (s.audioInitSegment && s.status === 'live' && socket.rooms.has(audioRoom)) {
       socket.emit('audio_init', toArrayBuffer(s.audioInitSegment), s.audioSeq, audioMimeOf(s));
@@ -532,16 +543,22 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
 
       socket.on('set_captions', async (p, cb) => {
         try {
-          const onScreen = typeof p?.onScreen === 'boolean' ? p.onScreen : undefined;
-          const forStudents = typeof p?.forStudents === 'boolean' ? p.forStudents : undefined;
-          if (onScreen === undefined && forStudents === undefined) return cb({ ok: false });
-          await setCaptionTargets(s, { onScreen, forStudents });
+          if (typeof p?.onScreen !== 'boolean') return cb({ ok: false });
+          await setCaptionsOnScreen(s, p.onScreen);
           io.to(room).emit('lesson_state', toLiveState(s));
           cb({ ok: true });
         } catch (err) {
           app.log.error(err);
           cb({ ok: false });
         }
+      });
+
+      // 音声認識が動かないことを生徒にも伝える（出てこない理由が分かるように）
+      socket.on('set_caption_status', (p) => {
+        const unavailable = !!p?.unavailable;
+        if (unavailable === s.captionsUnavailable) return;
+        s.captionsUnavailable = unavailable;
+        io.to(room).emit('lesson_state', toLiveState(s));
       });
 
       // ---- アンケート ----
@@ -650,6 +667,18 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
 
     // ================= 生徒のイベント =================
     if (role === 'student') {
+      // 自分の端末に字幕を出す / 消す。
+      // 1人でもONなら先生の端末で音声認識が始まり、全員OFFで止まる。
+      // 誰がONにしたかは先生にも他の生徒にも見せない（人数だけ先生に届く）
+      socket.on('set_my_captions', (p, cb) => {
+        const pid = socket.data.participantId;
+        if (!pid) return cb({ ok: false });
+        setStudentCaptions(s, socket.id, pid, !!p?.on);
+        // 人数の表示が変わるので、認識の要否が変わらなくても配り直す
+        broadcastCaptionUse();
+        cb({ ok: true });
+      });
+
       // コメント入力中の合図: 最初の合図の時刻を「入力開始時刻」として記録し、
       // コメント・振り返りのAI分析対象の音声範囲を決めるのに使う
       socket.on('comment_composing', (p) => {
@@ -764,6 +793,8 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
     socket.on('disconnect', async () => {
       // ここに来る時点で部屋からは外れているので、そのまま数え直せばよい
       sendAvFormats();
+      // 端末を閉じた生徒のぶんで音声認識を回し続けない
+      if (dropCaptionWant(s, socket.id)) broadcastCaptionUse();
       await broadcastParticipantCount(io, room);
       await broadcastScreenCount(io, room, teacherRoom);
       if (socket.data.participantId) {

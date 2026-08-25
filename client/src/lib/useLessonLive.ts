@@ -65,6 +65,9 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
   // 字幕の出し先。作るかどうかはこの2つから決まる
   const [captionsOnScreen, setCaptionsOnScreen] = useState(false);
   const [captionsForStudents, setCaptionsForStudents] = useState(false);
+  const [captionsUnavailable, setCaptionsUnavailable] = useState(false);
+  // 字幕を使っている生徒の人数（先生だけに届く）
+  const [captionUsers, setCaptionUsers] = useState(0);
   // いま開いているアンケート（開始・締め切りは全画面が同じ状態を見る）
   const [openPoll, setOpenPoll] = useState<PublicPoll | null>(null);
 
@@ -99,6 +102,7 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
       setCaptionsEnabled(st.captionsEnabled);
       setCaptionsOnScreen(st.captionsOnScreen);
       setCaptionsForStudents(st.captionsForStudents);
+      setCaptionsUnavailable(st.captionsUnavailable);
       setOpenPoll(st.openPoll);
       optionsRef.current.onLessonState?.(st);
     });
@@ -112,6 +116,7 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
     });
 
     socket.on('av_formats', (p) => setAvFormats(p.formats));
+    socket.on('caption_users', (n) => setCaptionUsers(n));
 
     socket.on('slides_updated', (sl) => setSlides(sl));
     socket.on('slide_change', (p) => setCurrentSlideId(p.slideId));
@@ -194,6 +199,8 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
     captionsEnabled,
     captionsOnScreen,
     captionsForStudents,
+    captionsUnavailable,
+    captionUsers,
     openPoll,
   };
 }

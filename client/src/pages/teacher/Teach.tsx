@@ -161,6 +161,7 @@ export default function Teach() {
     taskMode,
     tasksActive,
     captionsEnabled,
+    captionUsers,
     captionsOnScreen,
     captionsForStudents,
     openPoll,
@@ -266,19 +267,31 @@ export default function Teach() {
   // 先生の端末のブラウザ音声認識を、授業中かつONの間だけ動かして文字を配る。
   // サーバ側の文字起こしは10秒以上遅れて教室の字幕には使えないため、
   // ライブはこちらで賄い、用語の正しい版は履歴側でWhisperに差し替える。
+  // 字幕は生徒がONにしても始まるので、動かなかったことは生徒にも伝える。
+  // でないと「出るはずの字幕が出てこない」理由が生徒側から分からない
+  const reportCaptionStatus = useCallback(
+    (unavailable: boolean) => socketRef.current?.emit('set_caption_status', { unavailable }),
+    [socketRef]
+  );
+
   useEffect(() => {
     if (status !== 'live' || !captionsEnabled) return;
     const src = startCaptions({
       onText: (text, final) => socketRef.current?.emit('caption', { text, final }),
-      onFatal: (err) => setCaptionError(err),
+      onFatal: (err) => {
+        setCaptionError(err);
+        reportCaptionStatus(true);
+      },
     });
     if (!src) {
       setCaptionError('unsupported');
+      reportCaptionStatus(true);
       return;
     }
     setCaptionError(null);
+    reportCaptionStatus(false);
     return () => src.stop();
-  }, [status, captionsEnabled, socketRef]);
+  }, [status, captionsEnabled, socketRef, reportCaptionStatus]);
 
   // 「直近のリアクション」: 授業中は30秒ごとに再集計して窓から外れた反応を落とす
   useEffect(() => {
@@ -1040,6 +1053,7 @@ export default function Teach() {
           audioDefault={audioDefault}
           captionsOnScreen={captionsOnScreen}
           captionsForStudents={captionsForStudents}
+          captionUsers={captionUsers}
         />
       </FloatingWindow>
 

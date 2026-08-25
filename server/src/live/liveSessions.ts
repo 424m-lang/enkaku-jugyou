@@ -90,6 +90,16 @@ export type LiveSession = {
   captionsForStudents: boolean;
   /** 字幕を作っているか。出し先のどちらかがONなら作る（導出値） */
   captionsEnabled: boolean;
+  /**
+   * いま字幕を出している生徒（socket.id → participantId）。
+   *
+   * 先生に「生徒の端末に出す」というスイッチは無く、ここが空でなければ
+   * 先生の端末で音声認識が始まる。socket.id をキーにしているのは、
+   * 端末を閉じた生徒のぶんで認識を回し続けないようにするため
+   */
+  captionWants: Map<string, string>;
+  /** 先生の端末で音声認識が動かない。字幕をONにした生徒に理由を返すために持つ */
+  captionsUnavailable: boolean;
   /** participantId → 完了したタスクidの集合。task_progress イベントの畳み込み結果 */
   taskProgress: Map<string, Set<string>>;
   /** participantId → 最後に進捗が動いた tMs（止まっている生徒の検知に使う） */
@@ -199,7 +209,10 @@ export async function getSession(lessonId: string): Promise<LiveSession | null> 
     tasksActive: lesson.tasksActive,
     captionsOnScreen: lesson.captionsOnScreen,
     captionsForStudents: lesson.captionsForStudents,
-    captionsEnabled: lesson.captionsOnScreen || lesson.captionsForStudents,
+    // 生徒ぶんは接続している生徒から決まるので、読み込み時は必ず0人から始める
+    captionsEnabled: lesson.captionsOnScreen,
+    captionWants: new Map(),
+    captionsUnavailable: false,
     taskProgress: new Map(),
     taskUpdatedAt: new Map(),
     polls,
@@ -383,6 +396,7 @@ export function toLiveState(s: LiveSession): LiveLessonState {
     taskMode: s.taskMode,
     tasksActive: s.tasksActive,
     captionsEnabled: s.captionsEnabled,
+    captionsUnavailable: s.captionsUnavailable,
     captionsOnScreen: s.captionsOnScreen,
     captionsForStudents: s.captionsForStudents,
     openPoll: (() => {
@@ -408,22 +422,50 @@ export function toLiveState(s: LiveSession): LiveLessonState {
  * 誤変換が問題になったときにすぐ止められるよう、授業中でも切り替えられる。
  * 記録済みの字幕は消さない（読み返しに使うため）。
  */
-export async function setCaptionTargets(
-  s: LiveSession,
-  p: { onScreen?: boolean; forStudents?: boolean }
-): Promise<void> {
-  if (typeof p.onScreen !== 'boolean' && typeof p.forStudents !== 'boolean') return;
-  if (typeof p.onScreen === 'boolean') s.captionsOnScreen = p.onScreen;
-  if (typeof p.forStudents === 'boolean') s.captionsForStudents = p.forStudents;
+function recomputeCaptions(s: LiveSession): void {
+  s.captionsForStudents = s.captionWants.size > 0;
   s.captionsEnabled = s.captionsOnScreen || s.captionsForStudents;
+  // 誰も字幕を出していない間は「動かない」の表示を持ち越さない。
+  // 次にONにした人が、その時点の状況で判断し直せるようにする
+  if (!s.captionsEnabled) s.captionsUnavailable = false;
+}
+
+/**
+ * 教室モニターに字幕を出すか（先生の操作）。
+ * 生徒ぶんはここでは触らない。保存するのも教室モニターぶんだけで、
+ * 生徒の希望は「いま繋がっている生徒」から毎回決め直す
+ */
+export async function setCaptionsOnScreen(s: LiveSession, onScreen: boolean): Promise<void> {
+  s.captionsOnScreen = onScreen;
+  recomputeCaptions(s);
   await db
     .update(schema.lessons)
-    .set({
-      captionsOnScreen: s.captionsOnScreen,
-      captionsForStudents: s.captionsForStudents,
-      captionsEnabled: s.captionsEnabled,
-    })
+    .set({ captionsOnScreen: s.captionsOnScreen, captionsEnabled: s.captionsEnabled })
     .where(eq(schema.lessons.id, s.lessonId));
+}
+
+/** 生徒1人ぶんの字幕の希望。保存しない（授業をまたいで引き継ぐものではない） */
+export function setStudentCaptions(
+  s: LiveSession,
+  socketId: string,
+  participantId: string,
+  on: boolean
+): void {
+  if (on) s.captionWants.set(socketId, participantId);
+  else s.captionWants.delete(socketId);
+  recomputeCaptions(s);
+}
+
+/** 接続が切れた端末のぶんを外す。変化があったときだけ true */
+export function dropCaptionWant(s: LiveSession, socketId: string): boolean {
+  if (!s.captionWants.delete(socketId)) return false;
+  recomputeCaptions(s);
+  return true;
+}
+
+/** 字幕を使っている生徒の人数。同じ生徒が2台開いていても1人と数える */
+export function captionUserCount(s: LiveSession): number {
+  return new Set(s.captionWants.values()).size;
 }
 
 /** リアクションボタンの上限（先生画面の1行に収まる数） */

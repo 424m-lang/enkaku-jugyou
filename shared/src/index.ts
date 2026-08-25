@@ -566,6 +566,9 @@ export interface ServerToClientEvents {
   /** その端末で音声を鳴らしてよいか（生徒ごとに異なるため個別に届く） */
   audio_permission: (p: { audio: AudioMode }) => void;
 
+  /** いま字幕を使っている生徒の人数（先生向け。誰が使っているかは送らない） */
+  caption_users: (count: number) => void;
+
   // 教室モニターの接続台数（先生向け。0なら教室モニターが映っていない）
   screen_count: (count: number) => void;
   // 参加者一覧（先生向け。音声の個別切替に使う）
@@ -625,15 +628,29 @@ export interface ClientToServerEvents {
   /** 先生の端末のブラウザ音声認識の結果 */
   caption: (p: { text: string; final: boolean }) => void;
   /**
-   * 字幕の出し先の切り替え（先生）。指定した項目だけが変わる。
-   * どちらかがONなら字幕を作り、両方OFFなら作るのをやめる（「作る」単体のスイッチは無い）。
-   * - onScreen: 教室モニターに字幕の帯を出す
-   * - forStudents: 生徒の端末に字幕を出してよい（出すかどうかは生徒が各自で決める）
+   * 教室モニターに字幕の帯を出すか（先生）。
+   * 「字幕を作る」という単体のスイッチは無く、出し先がひとつでもONなら作り始める。
+   * 生徒の端末ぶんは先生が決めない（`set_my_captions` を参照）
    */
   set_captions: (
-    p: { onScreen?: boolean; forStudents?: boolean },
+    p: { onScreen?: boolean },
     cb: (res: { ok: boolean; error?: string }) => void
   ) => void;
+
+  /**
+   * 生徒が自分の端末で字幕を出す / 消す。
+   *
+   * 先生に「生徒の端末に出す」というスイッチを置かないのは、誰に字幕が要るかは
+   * 本人にしか分からず、先生が押し忘れれば必要な生徒が読めなくなるため。
+   * 1人でもONにすれば先生の端末で音声認識が始まり、全員がOFFにすれば止まる
+   */
+  set_my_captions: (p: { on: boolean }, cb: (res: { ok: boolean }) => void) => void;
+
+  /**
+   * 先生の端末で音声認識を動かせなかったことを知らせる（先生→サーバ）。
+   * 字幕をONにした生徒が、出てこない理由の分からないまま待つのを防ぐ
+   */
+  set_caption_status: (p: { unavailable: boolean }) => void;
   /** 字幕の履歴を取り出す（生徒・教室モニターが開いたときだけ呼ぶ） */
   get_captions: (cb: (res: { lines: CaptionLine[] }) => void) => void;
   /**
@@ -775,10 +792,15 @@ export type LiveLessonState = {
   tasksActive: boolean;
   /** 字幕を作っているか（出し先のどちらかがONなら true。導出値） */
   captionsEnabled: boolean;
-  /** 教室モニターに字幕の帯を出すか */
+  /** 教室モニターに字幕の帯を出すか（先生が決める） */
   captionsOnScreen: boolean;
-  /** 生徒の端末に字幕を出してよいか（出すかどうかは生徒が各自で決める） */
+  /** いま字幕を出している生徒がいるか（生徒の操作から決まる導出値） */
   captionsForStudents: boolean;
+  /**
+   * 先生の端末で音声認識が動かない（対応していない・マイクが許可されない）。
+   * 字幕をONにした生徒に、待っても出てこないことを伝えるために配る
+   */
+  captionsUnavailable: boolean;
   /**
    * いま開いているアンケート（無ければ null）。
    * 開いている1問だけなので、途中参加・再接続の生徒にそのまま渡してよい
