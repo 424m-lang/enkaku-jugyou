@@ -426,6 +426,12 @@ export type CommentInsight = {
   kinds: ReactionCounts; // コメント周辺に届いた全生徒のボタン反応数
   summary: string | null; // コメントに関連する先生の話の重要ポイント（録音なしはnull）
   status: 'pending' | 'ready' | 'failed';
+  /**
+   * 先生が拾い終えた印。
+   * カードが増えると「どれをまだ見ていないか」が分からなくなり、同じ質問に二度答えたり
+   * 答え漏れたりする。消さずに印を付けるだけにして、後から読み返せるようにしてある
+   */
+  resolved: boolean;
 };
 
 // ---- 教室モニター（教室モニターへの投影） ----
@@ -565,12 +571,13 @@ export interface ClientToServerEvents {
   /** 先生の端末のブラウザ音声認識の結果 */
   caption: (p: { text: string; final: boolean }) => void;
   /**
-   * 自動字幕の切り替え（先生）。指定した項目だけが変わる。
-   * - enabled: 字幕を作るかどうか（生徒の端末に出るかはこれで決まる。表示/非表示は生徒が各自で選ぶ）
-   * - onScreen: 教室モニターに字幕の帯を出すかどうか（教室モニターが未接続なら意味を持たない）
+   * 字幕の出し先の切り替え（先生）。指定した項目だけが変わる。
+   * どちらかがONなら字幕を作り、両方OFFなら作るのをやめる（「作る」単体のスイッチは無い）。
+   * - onScreen: 教室モニターに字幕の帯を出す
+   * - forStudents: 生徒の端末に字幕を出してよい（出すかどうかは生徒が各自で決める）
    */
   set_captions: (
-    p: { enabled?: boolean; onScreen?: boolean },
+    p: { onScreen?: boolean; forStudents?: boolean },
     cb: (res: { ok: boolean; error?: string }) => void
   ) => void;
   /** 字幕の履歴を取り出す（生徒・教室モニターが開いたときだけ呼ぶ） */
@@ -604,6 +611,11 @@ export interface ClientToServerEvents {
   set_tasks: (
     p: { tasks: { id?: string; label: string }[] },
     cb: (res: { ok: boolean; tasks?: LessonTask[]; error?: string }) => void
+  ) => void;
+  /** コメント・振り返りカードに「対応済み」の印を付ける・外す */
+  set_insight_resolved: (
+    p: { insightId: string; resolved: boolean },
+    cb: (res: { ok: boolean }) => void
   ) => void;
   /** リアクションボタンを使うかどうかの切替（授業前でも授業中でも変えられる） */
   set_reactions_enabled: (
@@ -703,13 +715,12 @@ export type LiveLessonState = {
   taskMode: TaskMode;
   /** 生徒画面にタスクバーを出すか（先生が開始・終了を切り替える） */
   tasksActive: boolean;
-  /** 先生が自動字幕を有効にしているか */
+  /** 字幕を作っているか（出し先のどちらかがONなら true。導出値） */
   captionsEnabled: boolean;
-  /**
-   * 教室モニターに字幕の帯を出すか。
-   * 遠隔の生徒は各自の端末で出し入れできるので、先生が決めるのは共有画面のぶんだけ
-   */
+  /** 教室モニターに字幕の帯を出すか */
   captionsOnScreen: boolean;
+  /** 生徒の端末に字幕を出してよいか（出すかどうかは生徒が各自で決める） */
+  captionsForStudents: boolean;
   /**
    * いま開いているアンケート（無ければ null）。
    * 開いている1問だけなので、途中参加・再接続の生徒にそのまま渡してよい

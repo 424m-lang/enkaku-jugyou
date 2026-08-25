@@ -92,7 +92,7 @@ export default function Class() {
 
   const {
     socketRef,
-    captionsEnabled,
+    captionsForStudents,
     connected,
     title,
     status,
@@ -336,7 +336,7 @@ export default function Class() {
               ⚠ 先生の音声が届いていません
             </span>
           )}
-          {status === 'live' && captionsEnabled && captionsHidden && (
+          {status === 'live' && captionsForStudents && captionsHidden && (
             <button className="btn" onClick={() => setCaptionsHiddenPersisted(false)}>
               字幕を出す
             </button>
@@ -376,7 +376,7 @@ export default function Class() {
         <div className={videoLive && status === 'live' ? 'class-video' : 'screen-hidden'}>
           <video ref={videoElRef} className="class-video-el" playsInline autoPlay />
         </div>
-        {status === 'live' && captionsEnabled && !captionsHidden && (
+        {status === 'live' && captionsForStudents && !captionsHidden && (
           <CaptionBar
             lines={captionLines}
             interim={captionInterim}

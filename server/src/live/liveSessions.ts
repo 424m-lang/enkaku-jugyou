@@ -82,10 +82,12 @@ export type LiveSession = {
   taskMode: TaskMode;
   /** 生徒画面にタスクバーを出しているか */
   tasksActive: boolean;
-  /** 自動字幕を作るか */
-  captionsEnabled: boolean;
   /** 教室モニターに字幕の帯を出すか */
   captionsOnScreen: boolean;
+  /** 生徒の端末に字幕を出してよいか（出すかどうかは生徒が各自で決める） */
+  captionsForStudents: boolean;
+  /** 字幕を作っているか。出し先のどちらかがONなら作る（導出値） */
+  captionsEnabled: boolean;
   /** participantId → 完了したタスクidの集合。task_progress イベントの畳み込み結果 */
   taskProgress: Map<string, Set<string>>;
   /** participantId → 最後に進捗が動いた tMs（止まっている生徒の検知に使う） */
@@ -188,8 +190,9 @@ export async function getSession(lessonId: string): Promise<LiveSession | null> 
     tasks: lesson.tasks ?? [],
     taskMode: lesson.taskMode,
     tasksActive: lesson.tasksActive,
-    captionsEnabled: lesson.captionsEnabled,
     captionsOnScreen: lesson.captionsOnScreen,
+    captionsForStudents: lesson.captionsForStudents,
+    captionsEnabled: lesson.captionsOnScreen || lesson.captionsForStudents,
     taskProgress: new Map(),
     taskUpdatedAt: new Map(),
     polls,
@@ -225,8 +228,10 @@ export async function getSession(lessonId: string): Promise<LiveSession | null> 
     if (p.audioOverride) s.audioOverrides.set(p.id, p.audioOverride);
   }
 
-  // サーバ再起動後の復元: live中ならタイムラインから描画状態・現在スライドを再構成
-  if (lesson.status === 'live') {
+  // サーバ再起動後の復元: タイムラインから描画状態・現在スライドを再構成する。
+  // 開始前（draft）も対象にするのは、授業前に板書を仕込んでおく使い方があるため。
+  // 終了した授業はライブ状態を持たない（振り返りはDBから直接読む）
+  if (lesson.status !== 'ended') {
     const events = await db
       .select()
       .from(schema.timelineEvents)
@@ -373,6 +378,7 @@ export function toLiveState(s: LiveSession): LiveLessonState {
     tasksActive: s.tasksActive,
     captionsEnabled: s.captionsEnabled,
     captionsOnScreen: s.captionsOnScreen,
+    captionsForStudents: s.captionsForStudents,
     openPoll: (() => {
       const p = s.polls.find((x) => x.id === s.openPollId);
       return p ? toPublicPoll(p) : null;
@@ -386,25 +392,32 @@ export function toLiveState(s: LiveSession): LiveLessonState {
  * ボタンの定義は消さないので、戻せば元の設定がそのまま復活する
  */
 /**
- * 自動字幕のON/OFF。
- * 誤変換が問題になったときに先生がすぐ止められる必要があるため、
- * 授業中でも切り替えられる。記録済みの字幕は消さない（読み返しに使うため）。
+ * 字幕の出し先の切り替え。
+ *
+ * 「字幕を作る」というスイッチは置かない。作ることは目的ではなく、
+ * どこかに出すための副作用なので、出し先がひとつでもONなら作り、
+ * すべてOFFになったら止める。先生が大元のスイッチを入れ忘れて
+ * 「モニターの字幕をONにしたのに出ない」という失敗が起きないようにする。
+ *
+ * 誤変換が問題になったときにすぐ止められるよう、授業中でも切り替えられる。
+ * 記録済みの字幕は消さない（読み返しに使うため）。
  */
-export async function setCaptionsEnabled(
+export async function setCaptionTargets(
   s: LiveSession,
-  p: { enabled?: boolean; onScreen?: boolean }
+  p: { onScreen?: boolean; forStudents?: boolean }
 ): Promise<void> {
-  const patch: { captionsEnabled?: boolean; captionsOnScreen?: boolean } = {};
-  if (typeof p.enabled === 'boolean') {
-    s.captionsEnabled = p.enabled;
-    patch.captionsEnabled = p.enabled;
-  }
-  if (typeof p.onScreen === 'boolean') {
-    s.captionsOnScreen = p.onScreen;
-    patch.captionsOnScreen = p.onScreen;
-  }
-  if (Object.keys(patch).length === 0) return;
-  await db.update(schema.lessons).set(patch).where(eq(schema.lessons.id, s.lessonId));
+  if (typeof p.onScreen !== 'boolean' && typeof p.forStudents !== 'boolean') return;
+  if (typeof p.onScreen === 'boolean') s.captionsOnScreen = p.onScreen;
+  if (typeof p.forStudents === 'boolean') s.captionsForStudents = p.forStudents;
+  s.captionsEnabled = s.captionsOnScreen || s.captionsForStudents;
+  await db
+    .update(schema.lessons)
+    .set({
+      captionsOnScreen: s.captionsOnScreen,
+      captionsForStudents: s.captionsForStudents,
+      captionsEnabled: s.captionsEnabled,
+    })
+    .where(eq(schema.lessons.id, s.lessonId));
 }
 
 /** リアクションボタンの上限（先生画面の1行に収まる数） */

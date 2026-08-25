@@ -3186,3 +3186,20 @@ button.slide-thumb:hover {
     gap: 8px;
   }
 }
+
+/* 対応済みのコメント。消さずに沈めるだけにして、後から読み返せるようにする */
+.insight-card.resolved {
+  opacity: 0.55;
+  border-left: 3px solid var(--ok);
+}
+
+.insight-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+
+.feed-count-done {
+  background: var(--ok);
+  font-weight: 600;
+}

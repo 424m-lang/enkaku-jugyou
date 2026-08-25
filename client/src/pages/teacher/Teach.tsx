@@ -63,6 +63,16 @@ function insightSortKey(p: CommentInsight): number {
   return p.comments[p.comments.length - 1]?.tMs ?? p.windowStartMs;
 }
 
+/**
+ * まだ拾っていないカードを上に、その中では新しい順に並べる。
+ * 授業中に見るのは「これから答えるもの」なので、済んだものが上に残っていると
+ * カードが増えるほど探す手間が増える（対応済みも消さずに下へ残す）
+ */
+function compareInsights(a: CommentInsight, b: CommentInsight): number {
+  if (a.resolved !== b.resolved) return a.resolved ? 1 : -1;
+  return insightSortKey(b) - insightSortKey(a);
+}
+
 export default function Teach() {
   const { id: lessonId } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -150,6 +160,7 @@ export default function Teach() {
     tasksActive,
     captionsEnabled,
     captionsOnScreen,
+    captionsForStudents,
     openPoll,
   } = useLessonLive(lessonId, {
     onLessonState: (st) => {
@@ -171,11 +182,7 @@ export default function Teach() {
       });
       // コメント・振り返り（コメント到着時とAI分析完成時に同じidで届く → 上書き）
       socket.on('comment_insight', (p) => {
-        setInsights((prev) =>
-          [p, ...prev.filter((x) => x.id !== p.id)].sort(
-            (a, b) => insightSortKey(b) - insightSortKey(a)
-          )
-        );
+        setInsights((prev) => [p, ...prev.filter((x) => x.id !== p.id)].sort(compareInsights));
       });
       // 既存カードへ統合されて不要になったカードを取り除く
       socket.on('comment_insight_removed', (id) => {
@@ -224,7 +231,7 @@ export default function Teach() {
           api<{ items: ReactionFeedItem[] }>(`/api/lessons/${lessonId}/reactions`),
         ]);
         if (disposed) return;
-        setInsights([...ins].sort((a, b) => insightSortKey(b) - insightSortKey(a)));
+        setInsights([...ins].sort(compareInsights));
         setReactions([...rec.items].reverse()); // 新しい順に保持
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) navigate('/login');
@@ -514,6 +521,9 @@ export default function Teach() {
     return counts;
   }, [reactions, nowTick]);
 
+  // まだ拾っていないコメントの数。カードが増えても取りこぼしに気づけるようにする
+  const openInsightCount = insights.filter((p) => !p.resolved).length;
+
   // ボタンを開かなくても反応があったことに気づけるよう、合計だけ外に出す
   const recentTotal = useMemo(
     () => Object.values(recentCounts).reduce((a, b) => a + b, 0),
@@ -530,6 +540,14 @@ export default function Teach() {
   const setReactionsEnabledRemote = useCallback(
     (enabled: boolean) => {
       socketRef.current?.emit('set_reactions_enabled', { enabled }, () => {});
+    },
+    [socketRef]
+  );
+
+  // 「対応済み」の印。消さずに印だけ付けて、下へ送る
+  const setInsightResolved = useCallback(
+    (insightId: string, resolved: boolean) => {
+      socketRef.current?.emit('set_insight_resolved', { insightId, resolved }, () => {});
     },
     [socketRef]
   );
@@ -885,7 +903,10 @@ export default function Teach() {
           <div className="card feed-card">
             <h3>
               コメント・振り返り
-              {insights.length > 0 && <span className="feed-count">{insights.length}</span>}
+              {openInsightCount > 0 && <span className="feed-count">{openInsightCount}</span>}
+              {insights.length > 0 && openInsightCount === 0 && (
+                <span className="feed-count feed-count-done">すべて対応済み</span>
+              )}
             </h3>
             <div className="insight-list">
               {insights.length === 0 && (
@@ -894,7 +915,7 @@ export default function Teach() {
                 </p>
               )}
               {insights.map((p) => (
-                <div key={p.id} className="insight-card">
+                <div key={p.id} className={p.resolved ? 'insight-card resolved' : 'insight-card'}>
                   {slideNoOf(p.slideId) && (
                     <span className="insight-slide">
                       スライド {slideNoOf(p.slideId)}
@@ -932,9 +953,10 @@ export default function Teach() {
                           <span className="muted small">録音がないため要約はありません</span>
                         )}
                       </div>
-                      <div className="insight-sec">
-                        <span className="point-label">周辺の反応</span>
-                        {Object.keys(p.kinds).length > 0 ? (
+                      {/* 周辺の反応は、あったときだけ出す（「なし」は読む手間だけ増やす） */}
+                      {Object.keys(p.kinds).length > 0 && (
+                        <div className="insight-sec">
+                          <span className="point-label">周辺の反応</span>
                           <span className="clip-kinds">
                             {Object.entries(p.kinds).map(([k, n]) => (
                               <span
@@ -946,12 +968,23 @@ export default function Teach() {
                               </span>
                             ))}
                           </span>
-                        ) : (
-                          <span className="muted small">なし</span>
-                        )}
-                      </div>
+                        </div>
+                      )}
                     </>
                   )}
+                  <div className="insight-actions">
+                    <button
+                      className={p.resolved ? 'btn-link' : 'btn small'}
+                      onClick={() => setInsightResolved(p.id, !p.resolved)}
+                      title={
+                        p.resolved
+                          ? 'まだ拾えていない扱いに戻します'
+                          : 'このコメントは拾ったという印を付けます（記録は残ります）'
+                      }
+                    >
+                      {p.resolved ? '✓ 対応済み（戻す）' : '対応済みにする'}
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -990,8 +1023,8 @@ export default function Teach() {
           screenCount={screenCount}
           participants={participants}
           audioDefault={audioDefault}
-          captionsEnabled={captionsEnabled}
           captionsOnScreen={captionsOnScreen}
+          captionsForStudents={captionsForStudents}
         />
       </FloatingWindow>
 

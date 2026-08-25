@@ -58,10 +58,14 @@ export const lessons = pgTable('lessons', {
     .default('sequential'),
   // 生徒画面にタスクバーを出しているか（先生が授業中に開始・終了する）
   tasksActive: boolean('tasks_active').notNull().default(false),
-  /** 自動字幕を作るか。先生が授業ごとに決める */
+  /**
+   * 字幕の出し先。作るかどうかはこの2つから決まる（どちらかがONなら作る）。
+   * 「作る」を別のスイッチにすると、作っているのに誰にも出ていない状態を作れてしまう
+   */
+  captionsOnScreen: boolean('captions_on_screen').notNull().default(false),
+  captionsForStudents: boolean('captions_for_students').notNull().default(false),
+  /** @deprecated 0014以降は captions_on_screen / captions_for_students から導出する */
   captionsEnabled: boolean('captions_enabled').notNull().default(false),
-  /** 教室モニターに字幕の帯を出すか（遠隔の生徒は各自の端末で出し入れする） */
-  captionsOnScreen: boolean('captions_on_screen').notNull().default(true),
   // 教室モニターを先生のログイン無しで開くためのトークン
   screenToken: text('screen_token').unique(),
   // 復習動画（章立て再生ページ）の公開用トークン。未公開ならnull
@@ -219,6 +223,8 @@ export const commentInsights = pgTable(
     status: text('status', { enum: ['pending', 'ready', 'failed'] })
       .notNull()
       .default('pending'),
+    /** 先生が拾い終えた印。授業中に「どれをまだ見ていないか」を見失わないために持つ */
+    resolved: boolean('resolved').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('comment_insights_lesson_idx').on(t.lessonId, t.windowStartMs)]

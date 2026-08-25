@@ -56,8 +56,9 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
   const [taskMode, setTaskMode] = useState<TaskMode>('sequential');
   const [tasksActive, setTasksActive] = useState(false);
   const [captionsEnabled, setCaptionsEnabled] = useState(false);
-  // 教室モニターに字幕の帯を出すか（遠隔の生徒は各自の端末で出し入れする）
-  const [captionsOnScreen, setCaptionsOnScreen] = useState(true);
+  // 字幕の出し先。作るかどうかはこの2つから決まる
+  const [captionsOnScreen, setCaptionsOnScreen] = useState(false);
+  const [captionsForStudents, setCaptionsForStudents] = useState(false);
   // いま開いているアンケート（開始・締め切りは全画面が同じ状態を見る）
   const [openPoll, setOpenPoll] = useState<PublicPoll | null>(null);
 
@@ -91,6 +92,7 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
       setTasksActive(st.tasksActive);
       setCaptionsEnabled(st.captionsEnabled);
       setCaptionsOnScreen(st.captionsOnScreen);
+      setCaptionsForStudents(st.captionsForStudents);
       setOpenPoll(st.openPoll);
       optionsRef.current.onLessonState?.(st);
     });
@@ -180,6 +182,7 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
     tasksActive,
     captionsEnabled,
     captionsOnScreen,
+    captionsForStudents,
     openPoll,
   };
 }

@@ -15,8 +15,8 @@ type Props = {
   screenCount: number;
   participants: ParticipantInfo[];
   audioDefault: AudioMode;
-  captionsEnabled: boolean;
   captionsOnScreen: boolean;
+  captionsForStudents: boolean;
 };
 
 export default function AudioCaptionPanel({
@@ -25,8 +25,8 @@ export default function AudioCaptionPanel({
   screenCount,
   participants,
   audioDefault,
-  captionsEnabled,
   captionsOnScreen,
+  captionsForStudents,
 }: Props) {
   const [showParticipants, setShowParticipants] = useState(false);
 
@@ -45,7 +45,7 @@ export default function AudioCaptionPanel({
   );
 
   const setCaptions = useCallback(
-    (p: { enabled?: boolean; onScreen?: boolean }) => {
+    (p: { onScreen?: boolean; forStudents?: boolean }) => {
       socketRef.current?.emit('set_captions', p, () => {});
     },
     [socketRef]
@@ -53,6 +53,8 @@ export default function AudioCaptionPanel({
 
   const remoteCount = participants.filter((p) => p.audio === 'on').length;
   const roomCount = participants.length - remoteCount;
+  // 出し先がひとつでもONなら字幕を作っている（サーバ側と同じ導出）
+  const captionsEnabled = captionsOnScreen || captionsForStudents;
 
   return (
     <>
@@ -116,43 +118,43 @@ export default function AudioCaptionPanel({
       </div>
 
       {/* ---- 自動字幕 ---- */}
+      {/* 「字幕を作る」というスイッチは置かない。出し先をONにすれば作り始め、
+          両方OFFにすればやめる。作っているのに誰にも出ていない状態を作らせない */}
       <div className="classroom-sec">
-        <span className="classroom-label">自動字幕</span>
-        <div className="classroom-row">
-          <button
-            className={`btn tool ${captionsEnabled ? 'tool-active' : ''}`}
-            onClick={() => setCaptions({ enabled: !captionsEnabled })}
-            title="先生の話を文字にします。遠隔の生徒は自分の画面で出し入れできます"
-          >
-            {captionsEnabled ? '字幕オン' : '字幕オフ'}
-          </button>
-        </div>
-        <p className="muted small">
-          自動認識なので誤変換があります。気になるときはいつでも切れます。
-          {captionsEnabled && ' Chrome・Edgeでのみ動きます。'}
-        </p>
-      </div>
-
-      <div className="classroom-sec">
-        <span className="classroom-label">教室モニターの字幕</span>
+        <span className="classroom-label">自動字幕を出す先</span>
         <div className="classroom-row">
           <button
             className={`btn tool ${captionsOnScreen ? 'tool-active' : ''}`}
             onClick={() => setCaptions({ onScreen: !captionsOnScreen })}
-            disabled={screenCount === 0}
+            disabled={screenCount === 0 && !captionsOnScreen}
             title={
               screenCount === 0
                 ? '教室モニターが接続されていません'
                 : '教室モニターの下に字幕の帯を出します'
             }
           >
-            {captionsOnScreen ? 'モニターに出す' : 'モニターには出さない'}
+            🖥 教室モニター
+          </button>
+          <button
+            className={`btn tool ${captionsForStudents ? 'tool-active' : ''}`}
+            onClick={() => setCaptions({ forStudents: !captionsForStudents })}
+            title="生徒の端末に字幕を出せるようにします。出すかどうかは生徒が各自で決めます"
+          >
+            📱 生徒の端末
           </button>
         </div>
         <p className="muted small">
-          {screenCount === 0
-            ? '教室モニターが接続されると選べます。'
-            : '教室で受ける生徒はモニターの字幕を見ます。遠隔の生徒は各自の画面で出し入れします。'}
+          {captionsEnabled ? (
+            <>
+              先生の話を文字にしています。自動認識なので誤変換があります。
+              Chrome・Edgeでのみ動きます。
+              {captionsForStudents && ' 生徒は自分の画面で字幕を消せます。'}
+            </>
+          ) : screenCount === 0 ? (
+            '押した先に字幕が出ます。教室モニターは接続されると選べます。'
+          ) : (
+            '押した先に字幕が出ます。どちらも押さなければ字幕は作りません。'
+          )}
         </p>
       </div>
     </>

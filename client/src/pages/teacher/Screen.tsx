@@ -56,7 +56,6 @@ export default function Screen() {
   const {
     socketRef,
     connected,
-    captionsEnabled,
     captionsOnScreen,
     title,
     status,
@@ -267,7 +266,7 @@ export default function Screen() {
         )}
       </div>
 
-      {inLesson && captionsEnabled && captionsOnScreen && (
+      {inLesson && captionsOnScreen && (
         <CaptionBar
           lines={captionLines}
           interim={captionInterim}

@@ -22,7 +22,7 @@ import {
   endLesson,
   insertBlankSlide,
   touchParticipants,
-  setCaptionsEnabled,
+  setCaptionTargets,
   setReactionButtons,
   setReactionsEnabled,
   setTasks,
@@ -45,7 +45,7 @@ import {
   toPublicPoll,
 } from './live/polls';
 import { recordReaction } from './live/reactions';
-import { handleCommentForInsight } from './live/commentInsights';
+import { handleCommentForInsight, setInsightResolved } from './live/commentInsights';
 import {
   ensureTranscribedUntil,
   restoreLiveTranscript,
@@ -148,7 +148,16 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
 
   io.on('connection', async (socket) => {
     const { role, lessonId } = socket.data;
-    const s = await getSession(lessonId);
+    // ここでの例外はプロセスごと落ちる（socket.ioは接続ハンドラのrejectを拾わない）。
+    // 1人の接続の失敗で授業中の全員が切れるのは重すぎるので、その接続だけ切る
+    let s: Awaited<ReturnType<typeof getSession>>;
+    try {
+      s = await getSession(lessonId);
+    } catch (err) {
+      app.log.error(err);
+      socket.disconnect(true);
+      return;
+    }
     if (!s) {
       socket.disconnect(true);
       return;
@@ -345,8 +354,11 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         socket.to(room).emit('slide_change', { ...p, tMs: ev.tMs });
       });
 
+      // 開始前の書き込みも記録する（tMsは0＝「授業が始まった時点で既に書いてあった」）。
+      // 板書を準備してから授業を始める使い方があり、開いたまま放置して
+      // 読み込み直したときに消えてしまうのを防ぐ
       socket.on('stroke', async (p) => {
-        if (s.status !== 'live') return;
+        if (s.status === 'ended') return;
         const ev = await recordEvent(s, 'stroke', p);
         socket.to(room).emit('stroke', { ...p, tMs: ev.tMs });
       });
@@ -364,7 +376,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       });
 
       socket.on('clear_slide', async (p) => {
-        if (s.status !== 'live') return;
+        if (s.status === 'ended') return;
         const ev = await recordEvent(s, 'clear_slide', p);
         socket.to(room).emit('clear_slide', { ...p, tMs: ev.tMs });
       });
@@ -428,6 +440,20 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         }
       });
 
+      socket.on('set_insight_resolved', async (p, cb) => {
+        try {
+          if (typeof p?.insightId !== 'string' || typeof p?.resolved !== 'boolean') {
+            return cb({ ok: false });
+          }
+          const updated = await setInsightResolved(s.lessonId, p.insightId, p.resolved);
+          if (updated) io.to(teacherRoom).emit('comment_insight', updated);
+          cb({ ok: !!updated });
+        } catch (err) {
+          app.log.error(err);
+          cb({ ok: false });
+        }
+      });
+
       socket.on('set_reaction_buttons', async (p, cb) => {
         try {
           if (!Array.isArray(p?.buttons)) return cb({ ok: false });
@@ -463,10 +489,10 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
 
       socket.on('set_captions', async (p, cb) => {
         try {
-          const enabled = typeof p?.enabled === 'boolean' ? p.enabled : undefined;
           const onScreen = typeof p?.onScreen === 'boolean' ? p.onScreen : undefined;
-          if (enabled === undefined && onScreen === undefined) return cb({ ok: false });
-          await setCaptionsEnabled(s, { enabled, onScreen });
+          const forStudents = typeof p?.forStudents === 'boolean' ? p.forStudents : undefined;
+          if (onScreen === undefined && forStudents === undefined) return cb({ ok: false });
+          await setCaptionTargets(s, { onScreen, forStudents });
           io.to(room).emit('lesson_state', toLiveState(s));
           cb({ ok: true });
         } catch (err) {

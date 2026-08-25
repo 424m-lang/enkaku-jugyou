@@ -37,7 +37,33 @@ function rowToInsight(r: InsightRow): CommentInsight {
     kinds: r.kinds,
     summary: r.summary,
     status: r.status,
+    resolved: r.resolved,
   };
+}
+
+/**
+ * 「対応済み」の印を付ける・外す。
+ * カードは消さない。授業後の振り返りで読み返すため、印だけを持つ
+ */
+export async function setInsightResolved(
+  lessonId: string,
+  insightId: string,
+  resolved: boolean
+): Promise<CommentInsight | null> {
+  await db
+    .update(schema.commentInsights)
+    .set({ resolved })
+    .where(
+      and(
+        eq(schema.commentInsights.id, insightId),
+        eq(schema.commentInsights.lessonId, lessonId)
+      )
+    );
+  const [row] = await db
+    .select()
+    .from(schema.commentInsights)
+    .where(eq(schema.commentInsights.id, insightId));
+  return row ? rowToInsight(row) : null;
 }
 
 // 統合判定と分析が同時に走って矛盾しないよう、授業ごとに直列処理する
@@ -87,6 +113,7 @@ export function handleCommentForInsight(
     kinds: {},
     summary: null,
     status: 'pending',
+    resolved: false,
   };
 
   enqueue(s.lessonId, async () => {
@@ -149,6 +176,8 @@ async function tryMerge(
       windowEndMs: Math.max(cand.windowEndMs, insight.windowEndMs),
       comments: [...cand.comments, newComment],
       status: 'pending',
+      // 同じ話題でも新しい声が届いたので、拾い直す対象に戻す
+      resolved: false,
     };
     await db.delete(schema.commentInsights).where(eq(schema.commentInsights.id, insight.id));
     io.to(`lesson:${s.lessonId}:teacher`).emit('comment_insight_removed', insight.id);
@@ -159,6 +188,7 @@ async function tryMerge(
         windowEndMs: merged.windowEndMs,
         comments: merged.comments,
         status: 'pending',
+        resolved: false,
       })
       .where(eq(schema.commentInsights.id, cand.id));
     emitInsight(io, s.lessonId, merged);
