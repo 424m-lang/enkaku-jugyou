@@ -137,6 +137,12 @@ export type LiveSession = {
    * 復習動画には残さないため保存もしない（ライブ配信のみ）。
    */
   cameraOn: boolean;
+  /**
+   * いま映像を送っている先生の接続。
+   * 送り手が居なくなったのに cameraOn が立ったままだと、教室モニターは
+   * 止まった絵を映し続け、先生の画面も「カメラを止める」のまま戻せなくなる
+   */
+  cameraSocketId: string | null;
   /** カメラ映像に音声が入っているか（マイクが使えない環境では映像だけになる） */
   avHasAudio: boolean;
   /**
@@ -226,6 +232,7 @@ export async function getSession(lessonId: string): Promise<LiveSession | null> 
     audioDefault: lesson.audioDefault,
     audioOverrides: new Map(),
     cameraOn: false,
+    cameraSocketId: null,
     avHasAudio: false,
     avStreams: new Map(),
     screenLayout: 'slide',

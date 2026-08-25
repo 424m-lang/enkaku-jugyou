@@ -1,6 +1,7 @@
 import type { VideoFormat } from '@shared';
 import type { AppSocket } from './socket';
 import { LiveMediaPlayer } from './liveMedia';
+import { startLowLatencyMp4, lowLatencyMp4Supported, type LowLatencyMp4 } from './lowLatencyMp4';
 
 /**
  * 先生のカメラ映像（顔・手元の実演）を教室モニターへ届けるための配信。
@@ -22,6 +23,9 @@ import { LiveMediaPlayer } from './liveMedia';
  * データが出てこない。同一条件の実測で総遅延は WebM 1.4秒 / MP4 5.3秒。
  * 全体をMP4に落とすと、Apple系が1台混じるだけで**全員が4秒損をする**。
  * 2本流すぶん先生の端末の負荷と上り通信量は増えるが、それは混在時だけで済む。
+ *
+ * なおMP4は、使える環境ではWebCodecsで自前に組み立てて断片を0.5秒ごとに切る
+ * （`lowLatencyMp4.ts`）。ここのMediaRecorderは、それが使えない環境の受け皿。
  *
  * 音声のみの配信にはこの問題が無い（AACでも約0.5秒ごとに出る）ので、そちらはMP4優先のまま。
  *
@@ -57,6 +61,11 @@ export function supportedVideoMime(format?: VideoFormat): string | null {
   }
   // 指定の形式で録れない環境（例: Firefoxにmp4を求めた）は、録れる方に落として配信は続ける
   return format ? supportedVideoMime() : null;
+}
+
+/** Uint8Array を、送信でそのまま使える ArrayBuffer にする（余った領域を含めない） */
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
 export type CameraOption = { deviceId: string; label: string };
@@ -123,16 +132,15 @@ export async function startCameraBroadcast(
   }
   const hasAudio = stream.getAudioTracks().length > 0;
 
-  // 形式ごとの録画器。同じMediaStreamから同時に何本でも録れる
-  const recorders = new Map<VideoFormat, { rec: MediaRecorder; gen: number }>();
+  // 形式ごとの配信。同じMediaStreamから同時に何本でも録れる
+  const recorders = new Map<VideoFormat, { stop: () => void; gen: number }>();
   // 世代番号。止めた録画器が最後に吐くチャンクを、新しい配信に混ぜないための目印
   let generation = 0;
   let stopped = false;
 
-  const startRecorder = (f: VideoFormat) => {
+  const startMediaRecorder = (f: VideoFormat, gen: number) => {
     const mime = supportedVideoMime(f);
     if (!mime) return;
-    const gen = ++generation;
     const rec = new MediaRecorder(stream, {
       mimeType: mime,
       videoBitsPerSecond: VIDEO_BITS_PER_SECOND,
@@ -147,14 +155,61 @@ export async function startCameraBroadcast(
       });
     };
     rec.start(CHUNK_MS);
-    recorders.set(f, { rec, gen });
+    recorders.set(f, {
+      gen,
+      stop: () => {
+        if (rec.state !== 'inactive') rec.stop();
+      },
+    });
+  };
+
+  /**
+   * MP4はWebCodecsで組み立てる。キーフレームを自分で打てるので断片が0.5秒ごとになり、
+   * MediaRecorderの約4.1秒から大きく縮む。使えない環境・失敗した場合はMediaRecorderへ。
+   */
+  const startWebCodecsMp4 = (gen: number) => {
+    // 先に席だけ取っておく。準備中に setFormats が来ても二重に立ち上げない
+    recorders.set('mp4', { gen, stop: () => {} });
+    void startLowLatencyMp4({
+      stream,
+      bitrate: VIDEO_BITS_PER_SECOND,
+      onSegment: (bytes, mime) => {
+        if (recorders.get('mp4')?.gen !== gen) return;
+        socket.emit('av_chunk', toArrayBuffer(bytes), mime);
+      },
+      onFailure: () => {
+        // 途中で符号化に失敗しても授業は続くので、黙って従来の経路に戻す
+        if (recorders.get('mp4')?.gen !== gen || stopped) return;
+        startMediaRecorder('mp4', gen);
+      },
+    })
+      .then((session: LowLatencyMp4 | null) => {
+        if (!session) {
+          if (recorders.get('mp4')?.gen === gen && !stopped) startMediaRecorder('mp4', gen);
+          return;
+        }
+        if (recorders.get('mp4')?.gen !== gen || stopped) {
+          session.stop(); // 準備している間に止められていた
+          return;
+        }
+        recorders.set('mp4', { gen, stop: () => session.stop() });
+      })
+      .catch(() => {
+        if (recorders.get('mp4')?.gen === gen && !stopped) startMediaRecorder('mp4', gen);
+      });
+  };
+
+  const startRecorder = (f: VideoFormat) => {
+    const gen = ++generation;
+    if (f === 'mp4' && lowLatencyMp4Supported()) startWebCodecsMp4(gen);
+    else startMediaRecorder(f, gen);
   };
 
   const stopRecorder = (f: VideoFormat) => {
     const entry = recorders.get(f);
     if (!entry) return;
-    recorders.delete(f); // 先に外す。stop() の最後のチャンクはもう送らない
-    if (entry.rec.state !== 'inactive') entry.rec.stop();
+    recorders.delete(f); // 先に外す。止めたあとの最後のチャンクはもう送らない
+    entry.stop();
   };
 
   /**

@@ -347,6 +347,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
 
       socket.on('camera_state', (p) => {
         s.cameraOn = !!p?.on;
+        s.cameraSocketId = s.cameraOn ? socket.id : null;
         s.avHasAudio = s.cameraOn && p?.hasAudio !== false;
         if (!s.cameraOn) {
           s.avStreams.clear();
@@ -795,6 +796,16 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       sendAvFormats();
       // 端末を閉じた生徒のぶんで音声認識を回し続けない
       if (dropCaptionWant(s, socket.id)) broadcastCaptionUse();
+      // 映像を送っていた先生が抜けたら、カメラは止まったものとして扱う。
+      // 先生がページを読み込み直しただけでも送信は途切れるので、
+      // 教室モニターに止まった絵を映し続けさせない
+      if (s.cameraSocketId === socket.id) {
+        s.cameraOn = false;
+        s.cameraSocketId = null;
+        s.avStreams.clear();
+        if (s.screenLayout === 'video') s.screenLayout = 'slide';
+        io.to(room).emit('av_state', avState());
+      }
       await broadcastParticipantCount(io, room);
       await broadcastScreenCount(io, room, teacherRoom);
       if (socket.data.participantId) {
