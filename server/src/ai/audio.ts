@@ -56,50 +56,78 @@ export async function extractRangeToWav(
   });
   if (overlaps.length === 0) return null;
 
-  const args = [
-    '-y',
-    // 無音の土台を置くことで、録音再開までの隙間も時刻どおりに保つ
-    '-f', 'lavfi', '-t', durationSec.toFixed(3),
-    '-i', 'anullsrc=r=16000:cl=mono',
-  ];
-  for (const part of overlaps) {
-    args.push(
-      '-ss', part.offsetSec.toFixed(3),
-      '-t', Math.max(0.001, part.durationSec).toFixed(3),
-      '-i', part.srcPath
+  const buildArgs = (used: typeof overlaps): string[] => {
+    const a = [
+      '-y',
+      // 無音の土台を置くことで、録音再開までの隙間も時刻どおりに保つ
+      '-f', 'lavfi', '-t', durationSec.toFixed(3),
+      '-i', 'anullsrc=r=16000:cl=mono',
+    ];
+    for (const part of used) {
+      a.push(
+        '-ss', part.offsetSec.toFixed(3),
+        '-t', Math.max(0.001, part.durationSec).toFixed(3),
+        '-i', part.srcPath
+      );
+    }
+    const filters = [
+      `[0:a]aformat=sample_fmts=fltp:channel_layouts=mono,atrim=duration=${durationSec.toFixed(3)},asetpts=PTS-STARTPTS[base]`,
+      ...used.map(
+        (part, i) =>
+          `[${i + 1}:a]aresample=16000,aformat=sample_fmts=fltp:channel_layouts=mono,` +
+          `asetpts=PTS-STARTPTS,adelay=${Math.max(0, Math.round(part.delayMs))}:all=1[a${i}]`
+      ),
+      `[base]${used.map((_, i) => `[a${i}]`).join('')}amix=inputs=${used.length + 1}:` +
+        `duration=first:dropout_transition=0:normalize=0,atrim=duration=${durationSec.toFixed(3)},` +
+        'asetpts=PTS-STARTPTS[out]',
+    ];
+    a.push(
+      '-filter_complex', filters.join(';'),
+      '-map', '[out]',
+      '-ar', '16000',
+      '-ac', '1',
+      '-f', 'wav',
+      outPath
     );
-  }
-  const filters = [
-    `[0:a]aformat=sample_fmts=fltp:channel_layouts=mono,atrim=duration=${durationSec.toFixed(3)},asetpts=PTS-STARTPTS[base]`,
-    ...overlaps.map(
-      (part, i) =>
-        `[${i + 1}:a]aresample=16000,aformat=sample_fmts=fltp:channel_layouts=mono,` +
-        `asetpts=PTS-STARTPTS,adelay=${Math.max(0, Math.round(part.delayMs))}:all=1[a${i}]`
-    ),
-    `[base]${overlaps.map((_, i) => `[a${i}]`).join('')}amix=inputs=${overlaps.length + 1}:` +
-      `duration=first:dropout_transition=0:normalize=0,atrim=duration=${durationSec.toFixed(3)},` +
-      'asetpts=PTS-STARTPTS[out]',
-  ];
-  args.push(
-    '-filter_complex', filters.join(';'),
-    '-map', '[out]',
-    '-ar', '16000',
-    '-ac', '1',
-    '-f', 'wav',
-    outPath
-  );
+    return a;
+  };
 
-  await new Promise<void>((resolve, reject) => {
-    execFile(
-      ffmpegPath as string,
-      args,
-      { timeout: 120_000 },
-      (err, _stdout, stderr) => {
-        if (err) reject(new Error(`ffmpeg失敗: ${stderr?.slice(-500)}`));
-        else resolve();
-      }
-    );
-  });
+  /** 失敗したら標準エラーの末尾を返す。成功なら null */
+  const runFfmpeg = (a: string[]): Promise<string | null> =>
+    new Promise((resolve) => {
+      execFile(ffmpegPath as string, a, { timeout: 120_000 }, (err, _stdout, stderr) =>
+        resolve(err ? (stderr?.slice(-500) ?? String(err)) : null)
+      );
+    });
+
+  let failed = await runFfmpeg(buildArgs(overlaps));
+
+  if (failed && overlaps.length > 1) {
+    // **壊れて読めないファイルが1つ混じると、ffmpegはコマンドごと中断する。**
+    // ファイルが「無い」場合は上の existsSync で除けているが、「あるが読めない」
+    // 場合（書き込み途中でプロセスが落ちた、形式が食い違うなど）はここに来る。
+    // そのままだと授業まるごとの文字起こし・コメント解析が何も返さなくなるので、
+    // 読めるものだけで組み直して一度やり直す。
+    // 健全なときは走らないので、通常の切り出しは重くならない
+    const readable: typeof overlaps = [];
+    for (const part of overlaps) {
+      const bad = await runFfmpeg(['-v', 'error', '-i', part.srcPath, '-t', '0.1', '-f', 'null', '-']);
+      if (!bad) readable.push(part);
+      else console.error('[audio] 読めない録音ファイルを飛ばします:', part.srcPath);
+    }
+    if (readable.length > 0 && readable.length < overlaps.length) {
+      failed = await runFfmpeg(buildArgs(readable));
+    }
+  }
+
+  if (failed) {
+    // 最後の録音がどこで終わったかはDBに無いため、要求された終わりまで続いていると
+    // 仮定している。実際にはもっと早く止まっていることがあり、その区間は何も読めない。
+    // **投げると呼び出し元の解析ごと落ちる**ので、切り出せなかったこととして扱う
+    console.error('[audio] 音声の切り出しに失敗:', failed);
+    fs.rmSync(outPath, { force: true });
+    return null;
+  }
 
   return fs.existsSync(outPath) ? outPath : null;
 }

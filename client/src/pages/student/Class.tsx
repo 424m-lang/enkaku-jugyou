@@ -228,9 +228,10 @@ export default function Class() {
       });
       // 閉じたままの状態は接続のたびに伝え直す（サーバは覚えていない）
       socket.on('connect', () => {
+        // 本人が操作したわけではなく、覚えている希望を伝え直しているだけ
         socket.emit(
           'set_my_video',
-          { on: readStored('local', VIDEO_OFF_KEY) !== '1' },
+          { on: readStored('local', VIDEO_OFF_KEY) !== '1', restore: true },
           () => {}
         );
       });

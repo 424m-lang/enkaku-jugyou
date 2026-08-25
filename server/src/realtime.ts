@@ -971,7 +971,8 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         if (p?.on) s.videoClosedBy.delete(pid);
         else if (!wasClosed) {
           s.videoClosedBy.add(pid);
-          if (s.status !== 'ended') {
+          // 接続時の復元は「新しく閉じた」ではない。数えると再起動のたびに水増しされる
+          if (s.status !== 'ended' && !p?.restore) {
             updateTelemetry(s, (m) => {
               m.video.closedByStudents += 1;
             });
