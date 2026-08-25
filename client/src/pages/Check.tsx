@@ -33,6 +33,8 @@ type AudioRate = {
   /** 比較用のOpus（本番がOpusならnull） */
   opusKbps: number | null;
   channels: number | null;
+  /** マイクのサンプリング周波数。48000以外だとAACが何も吐かないことがある */
+  sampleRate: number | null;
 };
 
 type State = 'pending' | 'ok' | 'warn' | 'ng' | 'skip';
@@ -336,7 +338,9 @@ export default function Check() {
     recs.forEach((r) => r.state !== 'inactive' && r.stop());
     // stop() のあとに最後のチャンクが届くので少し待ってから集計する
     await new Promise((r) => setTimeout(r, 400));
-    const channels = stream.getAudioTracks()[0]?.getSettings().channelCount ?? null;
+    const st = stream.getAudioTracks()[0]?.getSettings();
+    const channels = st?.channelCount ?? null;
+    const sampleRate = st?.sampleRate ?? null;
     stream.getTracks().forEach((t) => t.stop());
 
     const kbps = (n: number) => Math.round((n * 8) / MEASURE_SEC / 1000);
@@ -345,6 +349,7 @@ export default function Check() {
       liveKbps: bytes.live !== undefined ? kbps(bytes.live) : null,
       opusKbps: bytes.opus !== undefined ? kbps(bytes.opus) : null,
       channels,
+      sampleRate,
     });
   }, []);
 
@@ -573,7 +578,7 @@ export default function Check() {
             <ul className="check-list">
               <Row
                 state={
-                  rateResult.liveKbps === null
+                  rateResult.liveKbps === null || rateResult.liveKbps === 0
                     ? 'ng'
                     : rateResult.liveKbps <= THROTTLED_KBPS * 0.6
                       ? 'ok'
@@ -599,12 +604,23 @@ export default function Check() {
               )}
               <Row
                 state="skip"
-                label="チャンネル数"
-                detail={rateResult.channels === 1 ? 'モノラル' : `${rateResult.channels ?? '不明'}`}
+                label="マイクの形式"
+                detail={`${rateResult.channels === 1 ? 'モノラル' : `${rateResult.channels ?? '不明'}ch`} / ${
+                  rateResult.sampleRate ? `${rateResult.sampleRate / 1000}kHz` : '周波数不明'
+                }`}
               />
             </ul>
           )}
-          {rateResult?.liveKbps != null && rateResult.liveKbps > THROTTLED_KBPS * 0.6 && (
+          {rateResult?.liveKbps === 0 && (
+            <p className="check-note check-ng-text">
+              この形式では音声が1バイトも出ていません。このまま授業をすると
+              <strong>誰にも音が届きません</strong>。
+              マイクの周波数が48kHz以外だとAAC形式で起きることがあります
+              （配信時は自動でWebM形式に切り替わりますが、その場合Apple系の端末では聞けません）。
+              別のマイクを試すか、端末の音声設定を確認してください。
+            </p>
+          )}
+          {rateResult?.liveKbps != null && rateResult.liveKbps > 0 && rateResult.liveKbps > THROTTLED_KBPS * 0.6 && (
             <p className="check-note">
               速度制限のかかった回線（{THROTTLED_KBPS}kbps程度）で受ける生徒がいる場合、
               この値だと苦しくなります。通常の光・モバイル回線であれば問題ありません。
