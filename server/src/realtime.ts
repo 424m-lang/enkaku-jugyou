@@ -967,8 +967,9 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       socket.on('set_my_video', (p, cb) => {
         const pid = socket.data.participantId;
         if (!pid) return cb({ ok: false });
+        const wasClosed = s.videoClosedBy.has(pid);
         if (p?.on) s.videoClosedBy.delete(pid);
-        else if (!s.videoClosedBy.has(pid)) {
+        else if (!wasClosed) {
           s.videoClosedBy.add(pid);
           if (s.status !== 'ended') {
             updateTelemetry(s, (m) => {
@@ -976,7 +977,12 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
             });
           }
         }
-        void syncStudentAv(io, s, room).catch((err) => app.log.error(err));
+        // 生徒は接続のたびに現在の希望を送り直すので、変わっていなければ何もしない。
+        // syncStudentAv は在室者**全員**へ audio_permission を送り直すため、
+        // そのままでは授業開始の一斉入室で人数の二乗ぶんの通信になる
+        if (s.videoClosedBy.has(pid) !== wasClosed) {
+          void syncStudentAv(io, s, room).catch((err) => app.log.error(err));
+        }
         cb({ ok: true });
       });
 

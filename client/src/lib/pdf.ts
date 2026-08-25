@@ -160,6 +160,8 @@ async function loadPdfFrom(url: string, init?: RequestInit): Promise<PdfCache | 
       // 権限・不存在は待っても直らない。サーバ障害や通信失敗だけ一度やり直す。
       if (!res.ok) {
         if (res.status < 500 || attempt > 0) return null;
+        // 間を置かずに叩き直しても同じ結果になりやすいので、通信失敗と同じだけ待つ
+        await new Promise((resolve) => setTimeout(resolve, 300));
         continue;
       }
       const data = await res.arrayBuffer();
