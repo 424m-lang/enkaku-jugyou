@@ -59,7 +59,8 @@ export default function AudioCaptionPanel({
   return (
     <>
       {/* ---- 生徒端末の音声 ---- */}
-      <div className="classroom-sec">
+      {/* 音声と字幕は決める内容が別なので、教室モニター設定と同じように線で区切る */}
+      <div className="classroom-sec classroom-sec-divided">
         <span className="classroom-label">生徒の端末の音声</span>
         <div className="classroom-row">
           <button
@@ -67,14 +68,16 @@ export default function AudioCaptionPanel({
             onClick={() => setAudioDefault('off')}
             title="教室で受ける授業。音は教室モニターのスピーカーからだけ出します"
           >
-            🔇 全員ミュート
+            🔇 全員 教室から参加
+            <span className="btn-sub">全端末ミュート</span>
           </button>
           <button
             className={`btn tool ${audioDefault === 'on' ? 'tool-active' : ''}`}
             onClick={() => setAudioDefault('on')}
-            title="全員が遠隔で受ける授業"
+            title="全員が遠隔で受ける授業。各自の端末から音が出ます"
           >
-            🔊 全員 音声あり
+            🔊 全員 遠隔で参加
+            <span className="btn-sub">全端末 音声ON</span>
           </button>
         </div>
         <p className="muted small">

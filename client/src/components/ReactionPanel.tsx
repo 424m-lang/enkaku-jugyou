@@ -29,14 +29,26 @@ export default function ReactionPanel({
 }: Props) {
   const [draft, setDraft] = useState('');
 
+  /**
+   * ボタンを書き換える。あわせて「使う / 使わない」を実態に合わせる。
+   *
+   * 全部隠したのに「ボタンを使う」のままだと、生徒画面に空の行だけが残って
+   * 先生からは分からない。逆に1つでも出せば使う気があるということなので、
+   * 二度目の操作を求めない。
+   */
   const patch = (i: number, p: Partial<ReactionButtonDef>) => {
-    onSetButtons(buttons.map((b, j) => (j === i ? { ...b, ...p } : b)));
+    const next = buttons.map((b, j) => (j === i ? { ...b, ...p } : b));
+    onSetButtons(next);
+    const visibleCount = next.filter((b) => !b.hidden).length;
+    if (visibleCount === 0 && enabled) onSetEnabled(false);
+    else if (visibleCount > 0 && !enabled) onSetEnabled(true);
   };
 
   const add = () => {
     const label = draft.trim();
     if (!label || buttons.length >= MAX_BUTTONS) return;
     onSetButtons([...buttons, { key: `btn_${Date.now()}`, label, color: '#2563eb' }]);
+    if (!enabled) onSetEnabled(true);
     setDraft('');
   };
 
@@ -80,6 +92,7 @@ export default function ReactionPanel({
         </div>
         <p className="muted small">
           タスクやアンケートで様子が分かるなら、ボタンは無しでも授業は成立します。
+          下で全部隠すと「使わない」に、1つでも出すと「ボタンを使う」に切り替わります。
         </p>
       </div>
 

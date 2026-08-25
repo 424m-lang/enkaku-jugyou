@@ -8,6 +8,7 @@ import type {
   LiveLessonState,
   LessonStatus,
   ParticipantInfo,
+  PipPos,
   Poll,
   PollAnswer,
   ReactionButtonDef,
@@ -20,8 +21,9 @@ import type {
   TimelineEvent,
   TimelineEventType,
   TranscriptSegment,
+  VideoFormat,
 } from '@shared';
-import { MAX_TASKS, applyTaskChange } from '@shared';
+import { DEFAULT_PIP_POS, MAX_TASKS, applyTaskChange } from '@shared';
 import { db, schema } from '../db';
 import { lessonDir } from '../storage';
 import { loadPolls, loadPollAnswers, toPublicPoll } from './polls';
@@ -128,8 +130,16 @@ export type LiveSession = {
   /** カメラ映像に音声が入っているか（マイクが使えない環境では映像だけになる） */
   avHasAudio: boolean;
   screenLayout: ScreenLayout;
+  /** 小窓（スライド主体ならカメラ、映像主体ならスライド）の置き場所 */
+  pipPos: PipPos;
   /** 遠隔の生徒にも映像を届けるか（通信量が増えるため既定はOFF） */
   videoToStudents: boolean;
+  /**
+   * 映像を受け取る接続ごとの「再生できる形式」。socket.id をキーにする。
+   * 誰か1人でもWebMを再生できない端末（Safari・Apple TV・テレビ内蔵）がいると
+   * 全体をMP4に落とすため、常に現在の接続だけを見て判断する
+   */
+  avCanPlay: Map<string, { webm: boolean; mp4: boolean }>;
   avSeq: number;
   /** 先生が実際に使っている映像形式。受け手のデコーダ生成に必要 */
   avMime: string | null;
@@ -208,7 +218,9 @@ export async function getSession(lessonId: string): Promise<LiveSession | null> 
     cameraOn: false,
     avHasAudio: false,
     screenLayout: 'slide',
+    pipPos: DEFAULT_PIP_POS,
     videoToStudents: false,
+    avCanPlay: new Map(),
     avSeq: 0,
     avMime: null,
     avInitSegment: null,
@@ -614,6 +626,22 @@ export async function listParticipants(
 }
 
 // ---- カメラ映像 ----
+
+/**
+ * いま繋がっている受け手全員に届く形式のうち、いちばん遅れの少ないものを選ぶ。
+ *
+ * WebMを選べるなら選ぶ。ChromeのMediaRecorderはMP4だとキーフレーム単位でしか
+ * 断片を出さず、実測で総遅延が 1.4秒 対 5.3秒 と大きく違うため。
+ * ただしSafari系はWebMを一切再生できないので、1台でも混じればMP4に落とす。
+ */
+export function preferredVideoFormat(s: LiveSession): VideoFormat {
+  const caps = [...s.avCanPlay.values()];
+  if (caps.length === 0) return 'webm'; // まだ誰も繋がっていない。遅れの少ない方から始める
+  if (caps.every((c) => c.webm)) return 'webm';
+  const mp4 = caps.filter((c) => c.mp4).length;
+  const webm = caps.filter((c) => c.webm).length;
+  return mp4 >= webm ? 'mp4' : 'webm';
+}
 
 /**
  * 先生からのカメラ映像チャンクを処理する。

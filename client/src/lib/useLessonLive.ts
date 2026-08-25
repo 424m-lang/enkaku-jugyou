@@ -4,13 +4,16 @@ import type {
   LessonStatus,
   LessonTask,
   LiveLessonState,
+  PipPos,
   PublicPoll,
   ReactionButtonDef,
   ScreenLayout,
   SlideInfo,
   StrokePayload,
   TaskMode,
+  VideoFormat,
 } from '@shared';
+import { DEFAULT_PIP_POS } from '@shared';
 import { connectLessonSocket, type AppSocket } from './socket';
 import { loadLessonPdf, type PdfCache } from './pdf';
 import { rebuildStrokes, applyDrawingEvent, type StrokesBySlide } from './strokes';
@@ -51,6 +54,9 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
   const [avHasAudio, setAvHasAudio] = useState(false);
   const [screenLayout, setScreenLayout] = useState<ScreenLayout>('slide');
   const [videoToStudents, setVideoToStudents] = useState(false);
+  const [pipPos, setPipPos] = useState<PipPos>(DEFAULT_PIP_POS);
+  // 受け手全員に届く形式のうち、いちばん遅れの少ないもの（サーバが判断して伝えてくる）
+  const [avFormat, setAvFormat] = useState<VideoFormat>('webm');
   // タスク。誰がどこまで進んだかはここには入らない（進捗は画面ごとに別イベントで受ける）
   const [tasks, setTasks] = useState<LessonTask[]>([]);
   const [taskMode, setTaskMode] = useState<TaskMode>('sequential');
@@ -102,7 +108,10 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
       setAvHasAudio(p.avHasAudio);
       setScreenLayout(p.layout);
       setVideoToStudents(p.videoToStudents);
+      if (p.pipPos) setPipPos(p.pipPos);
     });
+
+    socket.on('av_format', (p) => setAvFormat(p.format));
 
     socket.on('slides_updated', (sl) => setSlides(sl));
     socket.on('slide_change', (p) => setCurrentSlideId(p.slideId));
@@ -177,6 +186,8 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
     avHasAudio,
     screenLayout,
     videoToStudents,
+    pipPos,
+    avFormat,
     tasks,
     taskMode,
     tasksActive,

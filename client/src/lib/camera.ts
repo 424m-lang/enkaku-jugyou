@@ -1,3 +1,4 @@
+import type { VideoFormat } from '@shared';
 import type { AppSocket } from './socket';
 import { LiveMediaPlayer } from './liveMedia';
 
@@ -10,21 +11,27 @@ import { LiveMediaPlayer } from './liveMedia';
  */
 
 /**
- * 送信に使う組み合わせを、受け手の対応が広い順に並べる。
+ * 送信に使う組み合わせ。形式ごとに、対応の広い順に並べる。
  *
- * H.264/AAC のMP4を先頭にしているのは、Safari（iPad・Mac・Apple TV）と
- * テレビ内蔵ブラウザのMSEがWebMを再生できないため。Chrome系はどちらも再生できるので、
- * MP4で送れる環境ならMP4で送るのが最も多くの端末に届く。
+ * どちらを使うかは**受け手が決める**（サーバが `av_format` で伝えてくる）。
+ * MP4しか再生できない端末（Safari＝iPad・Mac・Apple TV、テレビ内蔵ブラウザ）が
+ * 1台でも繋がればMP4、全員がWebMを再生できるならWebM。
+ *
+ * WebMを優先したい理由: ChromeのMediaRecorderはMP4だと**キーフレーム単位でしか
+ * 断片を切らない**ため、timesliceに500msを指定しても実際には約4.1秒ごとにしか
+ * データが出てこない。同一条件の実測で総遅延は WebM 1.4秒 / MP4 5.3秒。
+ * 音声のみの配信にはこの問題が無い（AACでも約0.5秒ごとに出る）ので、そちらはMP4優先のまま。
+ *
  * baseline profile（avc1.42E01E）は最も対応の広いプロファイル。
  */
-const VIDEO_MIME_CANDIDATES = [
-  'video/mp4;codecs="avc1.42E01E,mp4a.40.2"',
-  'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
-  'video/mp4',
-  'video/webm;codecs="vp8,opus"',
-  'video/webm;codecs="vp9,opus"',
-  'video/webm',
-];
+const VIDEO_MIME_CANDIDATES: Record<VideoFormat, string[]> = {
+  webm: ['video/webm;codecs="vp8,opus"', 'video/webm;codecs="vp9,opus"', 'video/webm'],
+  mp4: [
+    'video/mp4;codecs="avc1.42E01E,mp4a.40.2"',
+    'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+    'video/mp4',
+  ],
+};
 
 const CHUNK_MS = 500;
 /** 授業の実演が見える範囲で通信量を抑える（720pの動きの少ない映像を想定） */
@@ -37,12 +44,16 @@ const VIDEO_BITS_PER_SECOND = 900_000;
  * 先生の端末ではない。先生の環境でたまたま再生できるかどうかで形式を決めると、
  * 受け手にとって不利な形式を選んでしまうため、送信できるかだけで判断する。
  */
-export function supportedVideoMime(): string | null {
+export function supportedVideoMime(format?: VideoFormat): string | null {
   if (typeof MediaRecorder === 'undefined') return null;
-  for (const mime of VIDEO_MIME_CANDIDATES) {
-    if (MediaRecorder.isTypeSupported(mime)) return mime;
+  const families: VideoFormat[] = format ? [format] : ['webm', 'mp4'];
+  for (const f of families) {
+    for (const mime of VIDEO_MIME_CANDIDATES[f]) {
+      if (MediaRecorder.isTypeSupported(mime)) return mime;
+    }
   }
-  return null;
+  // 指定の形式で録れない環境（例: Firefoxにmp4を求めた）は、録れる方に落として配信は続ける
+  return format ? supportedVideoMime() : null;
 }
 
 export type CameraOption = { deviceId: string; label: string };
@@ -61,6 +72,11 @@ export async function listCameras(): Promise<CameraOption[]> {
 
 export type CameraBroadcast = {
   stop: () => void;
+  /**
+   * 送信形式を切り替える。受け手の顔ぶれが変わったときにサーバから指示が来る。
+   * カメラは取り直さず録画器だけ作り直すので、先生の手元の映像は途切れない
+   */
+  setFormat: (format: VideoFormat) => void;
   /** 先生の手元に自分の映像を映すためのストリーム */
   stream: MediaStream;
   /**
@@ -73,10 +89,10 @@ export type CameraBroadcast = {
 
 export async function startCameraBroadcast(
   socket: AppSocket,
-  deviceId?: string
+  deviceId?: string,
+  format: VideoFormat = 'webm'
 ): Promise<CameraBroadcast> {
-  const mime = supportedVideoMime();
-  if (!mime) throw new Error('この端末では映像の配信に対応していません');
+  if (!supportedVideoMime()) throw new Error('この端末では映像の配信に対応していません');
 
   const video: MediaTrackConstraints = {
     ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
@@ -104,25 +120,50 @@ export async function startCameraBroadcast(
   }
   const hasAudio = stream.getAudioTracks().length > 0;
 
-  const recorder = new MediaRecorder(stream, {
-    mimeType: mime,
-    videoBitsPerSecond: VIDEO_BITS_PER_SECOND,
-    audioBitsPerSecond: 48_000,
-  });
-  // ブラウザが指定と違う形式を選ぶことがあるため、宣言ではなく実物を受け手に伝える
-  const actualMime = recorder.mimeType || mime;
-  recorder.ondataavailable = (e) => {
-    if (e.data.size > 0) {
-      void e.data.arrayBuffer().then((buf) => socket.emit('av_chunk', buf, actualMime));
-    }
+  let recorder: MediaRecorder | null = null;
+  let current: VideoFormat | null = null;
+  // 世代番号。古い録画器が stop() 後に吐く最後のチャンクを、新しい配信に混ぜないための目印
+  let generation = 0;
+  let stopped = false;
+
+  const startRecorder = (f: VideoFormat) => {
+    const mime = supportedVideoMime(f);
+    if (!mime) return;
+    const gen = ++generation;
+    const rec = new MediaRecorder(stream, {
+      mimeType: mime,
+      videoBitsPerSecond: VIDEO_BITS_PER_SECOND,
+      audioBitsPerSecond: 48_000,
+    });
+    // ブラウザが指定と違う形式を選ぶことがあるため、宣言ではなく実物を受け手に伝える
+    const actualMime = rec.mimeType || mime;
+    rec.ondataavailable = (e) => {
+      if (e.data.size === 0 || gen !== generation) return;
+      void e.data.arrayBuffer().then((buf) => {
+        if (gen === generation) socket.emit('av_chunk', buf, actualMime);
+      });
+    };
+    rec.start(CHUNK_MS);
+    recorder = rec;
+    current = f;
   };
-  recorder.start(CHUNK_MS);
+
+  startRecorder(format);
 
   return {
     stream,
     hasAudio,
+    setFormat(f: VideoFormat) {
+      if (stopped || f === current) return;
+      // 先に世代を進めてから止める。stop() の最後のチャンクは新しい配信に混ぜない
+      generation++;
+      if (recorder && recorder.state !== 'inactive') recorder.stop();
+      startRecorder(f);
+    },
     stop() {
-      if (recorder.state !== 'inactive') recorder.stop();
+      stopped = true;
+      generation++;
+      if (recorder && recorder.state !== 'inactive') recorder.stop();
       stream.getTracks().forEach((t) => t.stop());
     },
   };

@@ -4,6 +4,7 @@ import Register from './pages/teacher/Register';
 import Dashboard from './pages/teacher/Dashboard';
 import Teach from './pages/teacher/Teach';
 import Screen from './pages/teacher/Screen';
+import ScreenEntry from './pages/teacher/ScreenEntry';
 import Review from './pages/teacher/Review';
 import Join from './pages/student/Join';
 import Class from './pages/student/Class';
@@ -22,6 +23,8 @@ export default function App() {
       <Route path="/dashboard" element={<Dashboard />} />
       <Route path="/teach/:id" element={<Teach />} />
       <Route path="/screen/:id" element={<Screen />} />
+      {/* 教室モニターの短い入口。テレビのリモコンでも打てる長さにするため */}
+      <Route path="/m/:code" element={<ScreenEntry />} />
       <Route path="/review/:id" element={<Review />} />
       <Route path="/join" element={<Join />} />
       <Route path="/class" element={<Class />} />

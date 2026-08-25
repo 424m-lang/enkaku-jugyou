@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import type { Server, Socket } from 'socket.io';
 import { eq } from 'drizzle-orm';
 import type { ClientToServerEvents, PollType, ScreenLayout, ServerToClientEvents } from '@shared';
-import { MAX_CAPTION_CHARS, MAX_TASKS } from '@shared';
+import { MAX_CAPTION_CHARS, MAX_TASKS, clampPipPos } from '@shared';
 import { db, schema } from './db';
 import { verifyParticipantToken } from './auth';
 import { captionHistory } from './live/captions';
@@ -14,6 +14,7 @@ import {
   recordPointerSampled,
   handleAudioChunk,
   handleAvChunk,
+  preferredVideoFormat,
   effectiveAudio,
   setAudioDefault,
   setParticipantAudio,
@@ -202,12 +203,19 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       layout: s.screenLayout,
       videoToStudents: s.videoToStudents,
       avHasAudio: s.avHasAudio,
+      pipPos: s.pipPos,
     });
+
+    // 受け手の顔ぶれが変わるたびに、使うべき映像形式を先生へ伝え直す
+    const sendAvFormat = () => {
+      io.to(teacherRoom).emit('av_format', { format: preferredVideoFormat(s) });
+    };
 
     // 参加直後に現在のライブ状態のスナップショットを送る
     // （形式未申告の相手には従来のWebMを既定にしておく）
     socket.emit('lesson_state', toLiveState(s));
     socket.emit('av_state', avState());
+    if (role === 'teacher') sendAvFormat();
     // 音声配信中で、この接続が音声を受け取る対象なら、デコーダ初期化用のヘッダチャンクを送る
     if (s.audioInitSegment && s.status === 'live' && socket.rooms.has(audioRoom)) {
       socket.emit('audio_init', toArrayBuffer(s.audioInitSegment), s.audioSeq, audioMimeOf(s));
@@ -229,6 +237,15 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
     if (s.status === 'live' && s.transcribeTimer === null) {
       startLiveTranscription(s);
       void restoreLiveTranscript(s).catch((err) => app.log.error(err));
+    }
+
+    // 映像を受け取る側（教室モニター・遠隔の生徒）が、再生できる形式を申告する。
+    // 先生はこれを見て、届く範囲でいちばん遅れの少ない形式を選ぶ
+    if (role !== 'teacher') {
+      socket.on('av_can_play', (p) => {
+        s.avCanPlay.set(socket.id, { webm: !!p?.webm, mp4: !!p?.mp4 });
+        sendAvFormat();
+      });
     }
 
     // ================= 先生のイベント =================
@@ -306,6 +323,8 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
 
       socket.on('set_av_config', (p) => {
         if (p?.layout && isScreenLayout(p.layout)) s.screenLayout = p.layout;
+        const pip = clampPipPos(p?.pipPos);
+        if (pip) s.pipPos = pip;
         if (typeof p?.videoToStudents === 'boolean' && p.videoToStudents !== s.videoToStudents) {
           s.videoToStudents = p.videoToStudents;
           void syncStudentAv(io, s, room, avRoom, audioRoom).catch((err) => app.log.error(err));
@@ -719,6 +738,8 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
     });
 
     socket.on('disconnect', async () => {
+      // 抜けた端末の都合で形式を縛り続けないよう、必ず外してから配り直す
+      if (s.avCanPlay.delete(socket.id)) sendAvFormat();
       await broadcastParticipantCount(io, room);
       await broadcastScreenCount(io, room, teacherRoom);
       if (socket.data.participantId) {

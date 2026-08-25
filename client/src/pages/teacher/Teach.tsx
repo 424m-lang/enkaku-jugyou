@@ -23,7 +23,7 @@ import { savePdfTexts } from '../../lib/pdf';
 import { fmtClock } from '../../lib/format';
 import { makeReactionMeta } from '../../lib/reactionMeta';
 import SlideCanvas, { type DrawingTool } from '../../components/SlideCanvas';
-import JoinLinkModal from '../../components/JoinLinkModal';
+import JoinLinkPanel from '../../components/JoinLinkPanel';
 import FloatingWindow from '../../components/FloatingWindow';
 import MonitorPanel from '../../components/MonitorPanel';
 import AudioCaptionPanel from '../../components/AudioCaptionPanel';
@@ -101,9 +101,9 @@ export default function Teach() {
   // 字幕を作れない・続けられない場合の理由（対応時は null）
   const [captionError, setCaptionError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState('');
-  const [showJoin, setShowJoin] = useState(false);
   // 道具の窓。閉じている間も中身はDOMに残す（書きかけが消えないように）
   const [windows, setWindows] = useState({
+    join: false,
     monitor: false,
     audio: false,
     reaction: false,
@@ -154,6 +154,8 @@ export default function Teach() {
     audioDefault,
     cameraOn,
     screenLayout,
+    pipPos,
+    avFormat,
     videoToStudents,
     tasks,
     taskMode,
@@ -675,25 +677,28 @@ export default function Teach() {
           <span className="muted nowrap">
             参加コード: <strong className="inline-code">{joinCode}</strong>
           </span>
-          <button
-            className="btn header-action"
-            onClick={() => setShowJoin(true)}
-            disabled={!joinCode}
-          >
-            参加用リンク
-          </button>
-          <button
-            className={`btn header-action ${windows.monitor ? 'header-action-on' : ''}`}
-            onClick={() => toggleWindow('monitor')}
-          >
-            教室モニター設定
-          </button>
-          <button
-            className={`btn header-action ${windows.audio ? 'header-action-on' : ''}`}
-            onClick={() => toggleWindow('audio')}
-          >
-            音声・字幕設定
-          </button>
+          {/* 3つとも同じ「開くと窓が出る」ボタンなので、大きさを揃えて1組に見せる */}
+          <div className="header-tools">
+            <button
+              className={`btn header-action ${windows.join ? 'header-action-on' : ''}`}
+              onClick={() => toggleWindow('join')}
+              disabled={!joinCode}
+            >
+              参加用リンク
+            </button>
+            <button
+              className={`btn header-action ${windows.monitor ? 'header-action-on' : ''}`}
+              onClick={() => toggleWindow('monitor')}
+            >
+              教室モニター設定
+            </button>
+            <button
+              className={`btn header-action ${windows.audio ? 'header-action-on' : ''}`}
+              onClick={() => toggleWindow('audio')}
+            >
+              音声・字幕設定
+            </button>
+          </div>
           <span className="muted nowrap">生徒 {participantCount}人</span>
           {screenCount > 0 && (
             <span className="chip chip-live nowrap">教室モニター {screenCount}台</span>
@@ -756,8 +761,6 @@ export default function Teach() {
           </div>
         </div>
       )}
-
-      {showJoin && <JoinLinkModal joinCode={joinCode} onClose={() => setShowJoin(false)} />}
 
       <div className="teach-main">
         <div className="slide-area">
@@ -992,6 +995,16 @@ export default function Teach() {
         </aside>
       </div>
 
+      <FloatingWindow
+        title="参加用リンク"
+        open={windows.join}
+        onClose={() => toggleWindow('join')}
+        defaultPos={{ x: 40, y: 80 }}
+        width={440}
+      >
+        <JoinLinkPanel joinCode={joinCode} />
+      </FloatingWindow>
+
       {lessonId && (
         <FloatingWindow
           title="教室モニター設定"
@@ -1006,6 +1019,8 @@ export default function Teach() {
             screenCount={screenCount}
             cameraOn={cameraOn}
             screenLayout={screenLayout}
+            pipPos={pipPos}
+            avFormat={avFormat}
             videoToStudents={videoToStudents}
           />
         </FloatingWindow>

@@ -22,6 +22,21 @@ const CODE_CHARS = CODE_LETTERS + CODE_DIGITS;
 // 母音なしでも意味を連想させる略語は避ける
 const CODE_BLOCKLIST = ['FCK', 'FKN', 'FGT', 'NGR', 'KKK', 'SHT', 'WTF', 'CNT', 'DCK', 'PNS', 'SS'];
 
+/**
+ * 教室モニター用の短いコード（6文字）。
+ *
+ * トークン入りのURLは100文字ほどになり、テレビのブラウザにリモコンで打つのは現実的でない。
+ * 授業コードと同じ文字セット（紛らわしい字と母音を除いたもの）を使い、
+ * 桁だけ増やして総当たりを実用的でなくする（27^6 ≒ 3.9億通り）。
+ */
+function generateScreenCode(): string {
+  let code = '';
+  for (let i = 0; i < 6; i++) {
+    code += CODE_CHARS[crypto.randomInt(CODE_CHARS.length)];
+  }
+  return code;
+}
+
 function generateJoinCode(): string {
   for (;;) {
     let code = '';
@@ -227,11 +242,48 @@ export async function lessonRoutes(app: FastifyInstance): Promise<void> {
       .from(schema.lessons)
       .where(and(eq(schema.lessons.id, id), eq(schema.lessons.teacherId, teacherIdOf(req))));
     if (!lesson) return reply.code(404).send({ error: '授業が見つかりません' });
-    if (lesson.screenToken) return { screenToken: lesson.screenToken };
+    if (lesson.screenToken && lesson.screenCode) {
+      return { screenToken: lesson.screenToken, screenCode: lesson.screenCode };
+    }
 
-    const screenToken = crypto.randomBytes(16).toString('base64url');
-    await db.update(schema.lessons).set({ screenToken }).where(eq(schema.lessons.id, id));
-    return { screenToken };
+    // 途中で短いコードを足したので、トークンだけある古い授業にも後から補う
+    const screenToken = lesson.screenToken ?? crypto.randomBytes(16).toString('base64url');
+    let screenCode = lesson.screenCode;
+    for (let i = 0; !screenCode && i < 20; i++) {
+      const candidate = generateScreenCode();
+      const [taken] = await db
+        .select({ id: schema.lessons.id })
+        .from(schema.lessons)
+        .where(eq(schema.lessons.screenCode, candidate));
+      if (!taken) screenCode = candidate;
+    }
+    await db
+      .update(schema.lessons)
+      .set({ screenToken, screenCode })
+      .where(eq(schema.lessons.id, id));
+    return { screenToken, screenCode };
+  });
+
+  /**
+   * 短いコードから教室モニターの入口を引く（ログイン不要）。
+   *
+   * 返すのは表示専用のトークンなので、コードそのものが鍵になる。
+   * 終了した授業では引けなくして、コードが後から効き続けないようにする。
+   */
+  app.get('/api/screen-entry/:code', async (req, reply) => {
+    const { code } = req.params as { code: string };
+    const [lesson] = await db
+      .select({
+        id: schema.lessons.id,
+        screenToken: schema.lessons.screenToken,
+        status: schema.lessons.status,
+      })
+      .from(schema.lessons)
+      .where(eq(schema.lessons.screenCode, code.toUpperCase()));
+    if (!lesson || !lesson.screenToken || lesson.status === 'ended') {
+      return reply.code(404).send({ error: 'この番号の授業は見つかりません' });
+    }
+    return { lessonId: lesson.id, screenToken: lesson.screenToken };
   });
 
   // ---- 授業設定の更新（タイトル・ボタン。開始前のみ） ----

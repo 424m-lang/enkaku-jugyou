@@ -449,6 +449,37 @@ export type ScreenLayout =
   | 'video' // カメラ映像主体・スライドは小窓（実演を見せるとき）
   | 'slide-only'; // スライドのみ
 
+/**
+ * 教室モニターで小窓（スライド主体ならカメラ、映像主体ならスライド）を置く位置。
+ *
+ * 0〜1の割合で、0=左上いっぱい / 1=右下いっぱい。ピクセルではなく割合にしてあるのは、
+ * 先生が見ている縮図と教室モニターの解像度・縦横比が違うため。
+ * 教卓や板書と重なる場所は教室ごとに違うので、その場で動かせるようにしてある。
+ */
+export type PipPos = { x: number; y: number };
+
+/** 既定は右下。多くの教室で、板書やスライドの本文とぶつかりにくい */
+export const DEFAULT_PIP_POS: PipPos = { x: 1, y: 1 };
+
+export function clampPipPos(p: unknown): PipPos | null {
+  if (!p || typeof p !== 'object') return null;
+  const { x, y } = p as { x?: unknown; y?: unknown };
+  if (typeof x !== 'number' || typeof y !== 'number') return null;
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) };
+}
+
+/**
+ * ライブ映像の形式。受け手が再生できるものの中で、いちばん遅れの少ないものを選ぶ。
+ *
+ * webm(VP8/Opus) は要求どおり0.5秒ごとに断片が出るが、
+ * mp4(H.264/AAC) はChromeのMediaRecorderが**キーフレーム単位でしか断片を切らない**ため
+ * 4秒ごとにまとめて出てくる（実測）。同じ条件で総遅延は 1.4秒 対 5.3秒。
+ * それでもSafari・Apple TV・テレビ内蔵ブラウザはWebMを再生できないので、
+ * 受け手にひとつでもWebMを再生できない端末がいれば mp4 に落とす。
+ */
+export type VideoFormat = 'webm' | 'mp4';
+
 export const SCREEN_LAYOUT_LABELS: Record<ScreenLayout, string> = {
   slide: 'スライド主体',
   video: '映像主体',
@@ -501,7 +532,15 @@ export interface ServerToClientEvents {
     videoToStudents: boolean;
     /** カメラ映像に音声が入っているか（マイクが使えないと映像だけになる） */
     avHasAudio: boolean;
+    /** 小窓の置き場所（教室モニター用） */
+    pipPos: PipPos;
   }) => void;
+
+  /**
+   * いま繋がっている受け手全員が再生できる形式のうち、いちばん遅れの少ないもの。
+   * 先生の端末だけが受け取り、違っていたら録画器を作り直す
+   */
+  av_format: (p: { format: VideoFormat }) => void;
 
   /**
    * 自動字幕。final=false は認識途中の暫定で、後から同じ発話の確定版が届く。
@@ -586,7 +625,17 @@ export interface ClientToServerEvents {
    * 教室モニターのレイアウトと、遠隔の生徒へ映像を送るかの切り替え。
    * 映像は通信量が大きいため生徒への配信は既定でOFFにし、実演を見せるときだけONにする
    */
-  set_av_config: (p: { layout?: ScreenLayout; videoToStudents?: boolean }) => void;
+  set_av_config: (p: {
+    layout?: ScreenLayout;
+    videoToStudents?: boolean;
+    pipPos?: PipPos;
+  }) => void;
+
+  /**
+   * 受け手が「この形式なら再生できる」と申告する。
+   * 教室モニターと、映像を受け取る生徒の端末が接続時に送る
+   */
+  av_can_play: (p: { webm: boolean; mp4: boolean }) => void;
   /** 全生徒の音声の既定を切り替える（個別指定は解除される） */
   set_audio_default: (p: { mode: AudioMode }, cb: (res: { ok: boolean }) => void) => void;
   /** 生徒1人の音声を個別に切り替える（mode:null で既定へ戻す） */

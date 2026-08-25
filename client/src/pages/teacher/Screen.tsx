@@ -5,6 +5,7 @@ import type { CaptionLine, LessonSummary, PointerPayload } from '@shared';
 import { api } from '../../lib/api';
 import { LiveAudioPlayer } from '../../lib/audio';
 import { LiveVideoPlayer } from '../../lib/camera';
+import { canPlayMime } from '../../lib/liveMedia';
 import { useWakeLock } from '../../lib/useWakeLock';
 import CaptionBar from '../../components/CaptionBar';
 import { screenTokenFromUrl } from '../../lib/screenToken';
@@ -67,6 +68,7 @@ export default function Screen() {
     cameraOn,
     avHasAudio,
     screenLayout,
+    pipPos,
   } = useLessonLive(lessonId, {
     screenToken,
     setup: (socket) => {
@@ -92,6 +94,15 @@ export default function Screen() {
         setVideoLive(true);
       });
       socket.on('av_chunk', (chunk) => videoPlayerRef.current?.push(chunk));
+      // この端末で再生できる形式を申告する。先生はこれを見て、届く範囲で
+      // いちばん遅れの少ない形式を選ぶ（WebMが通るなら約4秒速い）。
+      // 再接続のたびにサーバ側の socket.id が変わるので、connect ごとに送り直す
+      socket.on('connect', () => {
+        socket.emit('av_can_play', {
+          webm: canPlayMime('video/webm;codecs="vp8,opus"'),
+          mp4: canPlayMime('video/mp4;codecs="avc1.42E01E,mp4a.40.2"'),
+        });
+      });
       socket.on('av_state', (p) => {
         if (!p.cameraOn) setVideoLive(false);
       });
@@ -217,6 +228,8 @@ export default function Screen() {
 
   // 授業前は参加用QRを出し、授業が始まってからスライドを映す
   const inLesson = status === 'live' && !!currentSlide;
+  // 小窓の置き場所は先生が教室に合わせて決める（教卓や掲示物と重なるのを避けるため）
+  const pipStyle = { '--pip-x': pipPos.x, '--pip-y': pipPos.y } as React.CSSProperties;
   const showVideo = inLesson && cameraOn && videoLive && screenLayout !== 'slide-only';
   const videoMain = showVideo && screenLayout === 'video';
   const slideEl = currentSlide ? (
@@ -237,10 +250,17 @@ export default function Screen() {
           video要素は常に置いておく。作り直すとMediaSourceが張り直しになり
           映像と音が途切れるため、隠すときもDOMからは外さない
         */}
-        <div className={showVideo ? (videoMain ? 'screen-main' : 'screen-sub') : 'screen-hidden'}>
+        <div
+          className={showVideo ? (videoMain ? 'screen-main' : 'screen-sub') : 'screen-hidden'}
+          style={pipStyle}
+        >
           <video ref={videoElRef} className="screen-video" playsInline autoPlay />
         </div>
-        {inLesson && videoMain && <div className="screen-sub">{slideEl}</div>}
+        {inLesson && videoMain && (
+          <div className="screen-sub" style={pipStyle}>
+            {slideEl}
+          </div>
+        )}
 
         {!inLesson && (
           <div className="screen-waiting">
