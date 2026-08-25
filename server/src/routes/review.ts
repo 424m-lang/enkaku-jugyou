@@ -99,6 +99,28 @@ async function listCommentClips(lessonId: string): Promise<CommentClip[]> {
 }
 
 export async function reviewRoutes(app: FastifyInstance): Promise<void> {
+  // ---- 開発・検証用: 自分が担当した授業の匿名通信集計 ----
+  app.get('/api/telemetry', { preHandler: requireTeacher }, async (req) => {
+    const rows = await db
+      .select({
+        lessonId: schema.lessons.id,
+        title: schema.lessons.title,
+        status: schema.lessons.status,
+        createdAt: schema.lessons.createdAt,
+        metrics: schema.lessonTelemetry.metrics,
+        updatedAt: schema.lessonTelemetry.updatedAt,
+      })
+      .from(schema.lessons)
+      .leftJoin(schema.lessonTelemetry, eq(schema.lessonTelemetry.lessonId, schema.lessons.id))
+      .where(eq(schema.lessons.teacherId, teacherIdOf(req)))
+      .orderBy(desc(schema.lessons.createdAt));
+    return rows.map((row) => ({
+      ...row,
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt?.toISOString() ?? null,
+    }));
+  });
+
   // ---- タイムライン全イベント（同期再生用） ----
   app.get('/api/lessons/:id/timeline', { preHandler: requireTeacher }, async (req, reply) => {
     const { id } = req.params as { id: string };

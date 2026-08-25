@@ -3292,3 +3292,84 @@ button.slide-thumb:hover {
   background: var(--ok);
   font-weight: 600;
 }
+
+/* 振り返りの匿名通信集計。狭い右ペインでは1列、広い画面では2列で比較できる */
+.telemetry-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.telemetry-card {
+  margin: 0;
+}
+
+.telemetry-card h3,
+.telemetry-privacy h3 {
+  margin-top: 0;
+}
+
+.telemetry-card p {
+  margin: 7px 0;
+}
+
+.telemetry-privacy {
+  border-left: 4px solid var(--primary);
+}
+
+.telemetry-note {
+  padding: 0 4px 12px;
+}
+
+.telemetry-page {
+  min-height: 100vh;
+  background: var(--bg);
+}
+
+.telemetry-main {
+  width: min(1100px, calc(100% - 32px));
+  margin: 20px auto;
+  display: grid;
+  gap: 14px;
+}
+
+.telemetry-main > .card,
+.telemetry-result > .card {
+  margin: 0;
+}
+
+.telemetry-lesson-select {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.telemetry-lesson-select span {
+  flex: 0 0 auto;
+  font-weight: 700;
+}
+
+.telemetry-lesson-select select {
+  min-width: 0;
+  flex: 1;
+}
+
+.telemetry-result h2 {
+  margin: 4px 0 12px;
+}
+
+@media (max-width: 700px) {
+  .telemetry-main {
+    width: min(100% - 16px, 1100px);
+    margin: 8px auto;
+  }
+
+  .telemetry-lesson-select {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .telemetry-grid {
+    grid-template-columns: 1fr;
+  }
+}

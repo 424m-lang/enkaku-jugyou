@@ -6,6 +6,7 @@ import type {
   AudioFormat,
   AudioMode,
   LessonTask,
+  LessonTelemetry,
   LiveLessonState,
   LessonStatus,
   ParticipantInfo,
@@ -28,6 +29,11 @@ import { DEFAULT_PIP_POS, MAX_TASKS, applyTaskChange } from '@shared';
 import { db, schema } from '../db';
 import { lessonDir } from '../storage';
 import { loadPolls, loadPollAnswers, toPublicPoll } from './polls';
+import {
+  flushLessonTelemetry,
+  loadLessonTelemetry,
+  scheduleTelemetrySave,
+} from './telemetry';
 
 /** WebMファイルの先頭マジックナンバー（EBMLヘッダ）。録音パートの先頭チャンク判定に使う */
 const EBML_MAGIC = Buffer.from([0x1a, 0x45, 0xdf, 0xa3]);
@@ -172,12 +178,31 @@ export type LiveSession = {
   transcriptSegments: TranscriptSegment[]; // 授業タイムライン基準・startMs昇順
   transcribedUntilMs: number; // ここまで文字起こし済み
   transcribeTimer: ReturnType<typeof setInterval> | null;
+
+  // ---- 匿名の通信集計 ----
+  /** DBへ保存するのはこの合計値だけ。個人を識別する値は含まない */
+  telemetry: LessonTelemetry;
+  /** 同じブラウザタブの再接続を二重計上しないための一時集合（DBには保存しない） */
+  telemetrySeenSessions: Set<string>;
+  telemetryAudioSeen: Set<string>;
+  telemetryVideoSeen: Set<string>;
+  /** カメラON区間の開始。保存時には合計時間だけへ変換する */
+  telemetryCameraStartedAt: number | null;
 };
 
 const sessions = new Map<string, LiveSession>();
 
 export function tMs(s: LiveSession): number {
   return s.startedAtEpochMs ? Date.now() - s.startedAtEpochMs : 0;
+}
+
+/** 合計値を更新し、メディア断片ごとのDB書き込みにならないよう遅延保存する */
+export function updateTelemetry(
+  s: LiveSession,
+  update: (metrics: LessonTelemetry) => void
+): void {
+  update(s.telemetry);
+  scheduleTelemetrySave(s.lessonId, s.telemetry);
 }
 
 export async function loadSlides(lessonId: string): Promise<SlideInfo[]> {
@@ -203,6 +228,7 @@ export async function getSession(lessonId: string): Promise<LiveSession | null> 
 
   const slides = await loadSlides(lessonId);
   const polls = await loadPolls(lessonId);
+  const telemetry = await loadLessonTelemetry(lessonId);
 
   const s: LiveSession = {
     lessonId,
@@ -247,6 +273,11 @@ export async function getSession(lessonId: string): Promise<LiveSession | null> 
     transcriptSegments: [],
     transcribedUntilMs: 0,
     transcribeTimer: null,
+    telemetry,
+    telemetrySeenSessions: new Set(),
+    telemetryAudioSeen: new Set(),
+    telemetryVideoSeen: new Set(),
+    telemetryCameraStartedAt: null,
   };
 
   // 音声の個別指定を復元（先生が授業前に設定していることもある）
@@ -784,6 +815,10 @@ export async function startLesson(s: LiveSession): Promise<void> {
 export async function endLesson(s: LiveSession): Promise<void> {
   s.status = 'ended';
   const durationMs = tMs(s);
+  if (s.telemetryCameraStartedAt !== null) {
+    s.telemetry.video.activeMs += Math.max(0, Date.now() - s.telemetryCameraStartedAt);
+    s.telemetryCameraStartedAt = null;
+  }
   if (s.transcribeTimer) {
     clearInterval(s.transcribeTimer);
     s.transcribeTimer = null;
@@ -797,6 +832,7 @@ export async function endLesson(s: LiveSession): Promise<void> {
     .update(schema.lessons)
     .set({ status: 'ended', endedAt: new Date(), audioDurationMs: durationMs })
     .where(eq(schema.lessons.id, s.lessonId));
+  await flushLessonTelemetry(s.lessonId, s.telemetry);
 }
 
 /** 白紙スライドを指定位置の後ろに挿入（元のPDFデータには影響しない） */

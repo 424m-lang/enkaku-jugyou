@@ -5,6 +5,9 @@ import { eq } from 'drizzle-orm';
 import type {
   AudioCanPlay,
   AudioFormat,
+  ClientBrowser,
+  ClientEnvironment,
+  ClientPlatform,
   ClientToServerEvents,
   PollType,
   ScreenLayout,
@@ -52,6 +55,7 @@ import {
   listTaskProgress,
   tMs,
   type LiveSession,
+  updateTelemetry,
 } from './live/liveSessions';
 import {
   savePoll,
@@ -85,7 +89,37 @@ type SocketData = {
   /** その端末が再生できる形式（接続時の申告。先生の端末では使わない） */
   videoCanPlay?: VideoCanPlay;
   audioCanPlay?: AudioCanPlay;
+  /** 匿名集計用。タブを再読込しても同じだが、ブラウザを閉じれば失われる乱数 */
+  telemetrySessionId?: string;
+  /** 生のUser-Agentではなく、クライアント側で丸めた大分類だけ */
+  environment?: ClientEnvironment;
+  telemetryAudioWaitingAt?: number;
+  telemetryAudioStarted?: boolean;
+  telemetryReconnectReported?: boolean;
+  telemetryAudioStalled?: boolean;
+  telemetryAudioUnsupported?: boolean;
+  telemetryVideoUnsupported?: boolean;
 };
+
+const CLIENT_PLATFORMS = new Set<ClientPlatform>([
+  'apple-mobile',
+  'android',
+  'desktop',
+  'other',
+]);
+const CLIENT_BROWSERS = new Set<ClientBrowser>(['safari', 'chromium', 'firefox', 'other']);
+
+function cleanEnvironment(value: unknown): ClientEnvironment | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const p = value as { platform?: unknown; browser?: unknown };
+  if (!CLIENT_PLATFORMS.has(p.platform as ClientPlatform)) return undefined;
+  if (!CLIENT_BROWSERS.has(p.browser as ClientBrowser)) return undefined;
+  return { platform: p.platform as ClientPlatform, browser: p.browser as ClientBrowser };
+}
+
+function cleanTelemetrySessionId(value: unknown): string | undefined {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{8,64}$/.test(value) ? value : undefined;
+}
 
 /** 映像の配信先は形式ごとに分ける。受け手は自分が再生できる方の部屋にだけ入る */
 function avRoomOf(room: string, format: VideoFormat): string {
@@ -117,6 +151,90 @@ function parseCookies(header?: string): Record<string, string> {
   return out;
 }
 
+/** 再接続を重複させない一時キー。値そのものはDBへ保存しない */
+function telemetrySessionKey(socket: TypedSocket): string {
+  return `${socket.data.role}:${socket.data.telemetrySessionId ?? socket.id}`;
+}
+
+function noteConnection(s: LiveSession, socket: TypedSocket): void {
+  if (s.status === 'ended') return;
+  const key = telemetrySessionKey(socket);
+  if (s.telemetrySeenSessions.has(key)) return;
+  s.telemetrySeenSessions.add(key);
+  updateTelemetry(s, (m) => {
+    m.connectionSessions[socket.data.role] += 1;
+    const env = socket.data.environment;
+    if (env) {
+      m.platforms[env.platform] += 1;
+      m.browsers[env.browser] += 1;
+    } else {
+      m.platforms.other += 1;
+      m.browsers.other += 1;
+    }
+  });
+}
+
+function noteAudioReceiver(s: LiveSession, socket: TypedSocket, format: AudioFormat): void {
+  if (s.status === 'ended') return;
+  const key = `${telemetrySessionKey(socket)}:${format}`;
+  if (!s.telemetryAudioSeen.has(key)) {
+    s.telemetryAudioSeen.add(key);
+    updateTelemetry(s, (m) => {
+      m.audio.receiverSessions[format] += 1;
+    });
+  }
+  if (s.status === 'live' && !socket.data.telemetryAudioStarted) {
+    socket.data.telemetryAudioWaitingAt = Date.now();
+  }
+}
+
+function noteVideoReceiver(s: LiveSession, socket: TypedSocket, format: VideoFormat): void {
+  if (s.status === 'ended') return;
+  const key = `${telemetrySessionKey(socket)}:${format}`;
+  if (s.telemetryVideoSeen.has(key)) return;
+  s.telemetryVideoSeen.add(key);
+  updateTelemetry(s, (m) => {
+    m.video.receiverSessions[format] += 1;
+  });
+}
+
+function noteAudioStarted(s: LiveSession, socket: TypedSocket): void {
+  if (socket.data.telemetryAudioStarted) return;
+  const waitingAt = socket.data.telemetryAudioWaitingAt;
+  socket.data.telemetryAudioStarted = true;
+  socket.data.telemetryAudioWaitingAt = undefined;
+  if (waitingAt === undefined) return;
+  const delayMs = Math.max(0, Math.min(120_000, Date.now() - waitingAt));
+  updateTelemetry(s, (m) => {
+    m.audio.startup.count += 1;
+    m.audio.startup.totalMs += delayMs;
+    m.audio.startup.maxMs = Math.max(m.audio.startup.maxMs, delayMs);
+  });
+}
+
+function noteAudioStartedInRoom(io: TypedServer, s: LiveSession, targetRoom: string): void {
+  const ids = io.sockets.adapter.rooms.get(targetRoom);
+  if (!ids) return;
+  for (const id of ids) {
+    const receiver = io.sockets.sockets.get(id);
+    if (receiver) noteAudioStarted(s, receiver);
+  }
+}
+
+async function noteConcurrency(io: TypedServer, s: LiveSession, room: string): Promise<void> {
+  if (s.status === 'ended') return;
+  const sockets = await io.in(room).fetchSockets();
+  const students = sockets.filter((x) => x.data.role === 'student').length;
+  const screens = sockets.filter((x) => x.data.role === 'screen').length;
+  if (students <= s.telemetry.maxConcurrentStudents && screens <= s.telemetry.maxConcurrentScreens) {
+    return;
+  }
+  updateTelemetry(s, (m) => {
+    m.maxConcurrentStudents = Math.max(m.maxConcurrentStudents, students);
+    m.maxConcurrentScreens = Math.max(m.maxConcurrentScreens, screens);
+  });
+}
+
 export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
   // ---- 接続時の認証 ----
   io.use(async (socket, next) => {
@@ -132,6 +250,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           webm?: boolean;
           mp4?: boolean;
         };
+        telemetry?: { sessionId?: unknown; environment?: unknown };
       };
       const lessonId = auth.lessonId;
       if (!lessonId) return next(new Error('lessonId が必要です'));
@@ -146,6 +265,8 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       const audioCanPlay: AudioCanPlay | undefined = rawAudio
         ? { webm: !!rawAudio.webm, mp4: !!rawAudio.mp4 }
         : undefined;
+      const telemetrySessionId = cleanTelemetrySessionId(auth.telemetry?.sessionId);
+      const environment = cleanEnvironment(auth.telemetry?.environment);
 
       // 教室スクリーン: 先生がログインしていない教室の端末から開くためのトークン。
       // 表示専用なので生徒トークンより先に判定し、参加者としては扱わない
@@ -155,7 +276,14 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           .from(schema.lessons)
           .where(eq(schema.lessons.id, lessonId));
         if (lesson?.screenToken && safeEqual(lesson.screenToken, auth.screenToken)) {
-          socket.data = { role: 'screen', lessonId, videoCanPlay, audioCanPlay };
+          socket.data = {
+            role: 'screen',
+            lessonId,
+            videoCanPlay,
+            audioCanPlay,
+            telemetrySessionId,
+            environment,
+          };
           return next();
         }
         return next(new Error('認証に失敗しました'));
@@ -172,6 +300,8 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           participantName: participant.displayName,
           videoCanPlay,
           audioCanPlay,
+          telemetrySessionId,
+          environment,
         };
         return next();
       }
@@ -187,7 +317,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
             .from(schema.lessons)
             .where(eq(schema.lessons.id, lessonId));
           if (lesson && lesson.teacherId === unsigned.value) {
-            socket.data = { role: 'teacher', lessonId };
+            socket.data = { role: 'teacher', lessonId, telemetrySessionId, environment };
             return next();
           }
         }
@@ -215,6 +345,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       socket.disconnect(true);
       return;
     }
+    noteConnection(s, socket);
     const room = `lesson:${lessonId}`;
     const teacherRoom = `${room}:teacher`;
     // カメラ映像の配信先。教室モニターは常に入り、生徒は先生が映像を送るときだけ入る。
@@ -232,6 +363,8 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
     if (role === 'screen') {
       await socket.join(myAvRoom);
       await socket.join(myAudioRoom);
+      noteVideoReceiver(s, socket, videoFormatFor(socket.data.videoCanPlay));
+      noteAudioReceiver(s, socket, myAudioFormat);
     }
     if (role === 'student' && socket.data.participantId) {
       const pid = socket.data.participantId;
@@ -243,8 +376,14 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         const mine = myPollAnswer(s, pid, s.openPollId);
         if (mine) socket.emit('my_poll_answer', { pollId: s.openPollId, answer: mine });
       }
-      if (shouldReceiveAudio(s, pid)) await socket.join(myAudioRoom);
-      if (shouldReceiveVideo(s, pid)) await socket.join(myAvRoom);
+      if (shouldReceiveAudio(s, pid)) {
+        await socket.join(myAudioRoom);
+        noteAudioReceiver(s, socket, myAudioFormat);
+      }
+      if (shouldReceiveVideo(s, pid)) {
+        await socket.join(myAvRoom);
+        noteVideoReceiver(s, socket, videoFormatFor(socket.data.videoCanPlay));
+      }
     }
     if (role === 'teacher') {
       socket.emit('task_progress_all', await listTaskProgress(s));
@@ -311,6 +450,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         myAudioStream.seq,
         myAudioStream.mime
       );
+      noteAudioStarted(s, socket);
     }
     // カメラ配信中で、この接続が映像を受け取る対象ならヘッダを送る
     const myStream = s.avStreams.get(videoFormatFor(socket.data.videoCanPlay));
@@ -320,6 +460,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
 
     await broadcastParticipantCount(io, room);
     await broadcastScreenCount(io, room, teacherRoom);
+    await noteConcurrency(io, s, room);
     await broadcastParticipants(io, s, room, teacherRoom);
     // 途中参加で分母（参加者数）が変わるため、先生の集計を配り直す。
     // これを忘れると「12人中3人」がいつまでも「2人中1人」のまま見え、判断を誤らせる
@@ -332,6 +473,51 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       void restoreLiveTranscript(s).catch((err) => app.log.error(err));
     }
 
+    // ================= 匿名の通信集計 =================
+    // 回数だけを受け取り、文字列・参加者ID・時刻列は保存しない。
+    // 同じ接続からの連打でも増え続けないよう、状態遷移として扱う。
+    socket.on('telemetry', (event) => {
+      if (s.status === 'ended') return;
+      if (!event || typeof event !== 'object' || typeof event.type !== 'string') return;
+      switch (event.type) {
+        case 'reconnect':
+          if (socket.data.telemetryReconnectReported) return;
+          socket.data.telemetryReconnectReported = true;
+          updateTelemetry(s, (m) => {
+            m.reconnects += 1;
+          });
+          break;
+        case 'audio_stall':
+          if (role === 'teacher' || socket.data.telemetryAudioStalled) return;
+          socket.data.telemetryAudioStalled = true;
+          updateTelemetry(s, (m) => {
+            m.audio.stalls += 1;
+          });
+          break;
+        case 'audio_recovered':
+          if (!socket.data.telemetryAudioStalled) return;
+          socket.data.telemetryAudioStalled = false;
+          updateTelemetry(s, (m) => {
+            m.audio.recoveries += 1;
+          });
+          break;
+        case 'audio_unsupported':
+          if (role === 'teacher' || socket.data.telemetryAudioUnsupported) return;
+          socket.data.telemetryAudioUnsupported = true;
+          updateTelemetry(s, (m) => {
+            m.audio.unsupported += 1;
+          });
+          break;
+        case 'video_unsupported':
+          if (role === 'teacher' || socket.data.telemetryVideoUnsupported) return;
+          socket.data.telemetryVideoUnsupported = true;
+          updateTelemetry(s, (m) => {
+            m.video.unsupported += 1;
+          });
+          break;
+      }
+    });
+
     // ================= 先生のイベント =================
     if (role === 'teacher') {
       socket.on('start_lesson', async (cb) => {
@@ -339,6 +525,17 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           if (s.status === 'ended') return cb({ ok: false, error: 'この授業は終了済みです' });
           if (s.status !== 'live') {
             await startLesson(s);
+          }
+          // 開始前から待っていた受信端末について、授業開始から最初の音声までを測る。
+          for (const format of AUDIO_FORMATS) {
+            const ids = io.sockets.adapter.rooms.get(audioRoomOf(room, format));
+            if (!ids) continue;
+            for (const id of ids) {
+              const receiver = io.sockets.sockets.get(id);
+              if (!receiver) continue;
+              receiver.data.telemetryAudioStarted = false;
+              receiver.data.telemetryAudioWaitingAt = Date.now();
+            }
           }
           startLiveTranscription(s); // 裏で文字起こしを貯め始める
           io.to(room).emit('lesson_started');
@@ -384,9 +581,15 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           }
           if (result.isInit) audioRestartRequested = false;
           const target = audioRoomOf(room, result.format);
+          const receivers = io.sockets.adapter.rooms.get(target)?.size ?? 0;
+          updateTelemetry(s, (m) => {
+            m.audio.sourceBytes[result.format] += buf.byteLength;
+            m.audio.deliveredBytes[result.format] += buf.byteLength * receivers;
+          });
           // 先頭チャンクだけは形式を添える（受け手はこれを見てデコーダを作る）
           if (result.isInit) {
             io.to(target).emit('audio_init', chunk, result.seq, result.mime);
+            noteAudioStartedInRoom(io, s, target);
           } else {
             io.to(target).emit('audio_chunk', chunk, result.seq);
           }
@@ -402,6 +605,12 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           const r = handleAvChunk(s, Buffer.from(chunk as ArrayBuffer), mime);
           if (!r) return; // ヘッダより前の欠片。受け手はデコードできない
           const target = avRoomOf(room, r.format);
+          const bytes = (chunk as ArrayBuffer).byteLength;
+          const receivers = io.sockets.adapter.rooms.get(target)?.size ?? 0;
+          updateTelemetry(s, (m) => {
+            m.video.sourceBytes[r.format] += bytes;
+            m.video.deliveredBytes[r.format] += bytes * receivers;
+          });
           if (r.isInit) io.to(target).emit('av_init', chunk, r.seq, r.mime);
           else io.to(target).emit('av_chunk', chunk, r.seq);
         } catch (err) {
@@ -410,7 +619,20 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       });
 
       socket.on('camera_state', (p) => {
+        const wasOn = s.cameraOn;
         s.cameraOn = !!p?.on;
+        if (!wasOn && s.cameraOn && s.status !== 'ended') {
+          s.telemetryCameraStartedAt = Date.now();
+          updateTelemetry(s, (m) => {
+            m.video.cameraStarts += 1;
+          });
+        } else if (wasOn && !s.cameraOn && s.telemetryCameraStartedAt !== null) {
+          const activeMs = Math.max(0, Date.now() - s.telemetryCameraStartedAt);
+          s.telemetryCameraStartedAt = null;
+          updateTelemetry(s, (m) => {
+            m.video.activeMs += activeMs;
+          });
+        }
         s.cameraSocketId = s.cameraOn ? socket.id : null;
         s.avHasAudio = s.cameraOn && p?.hasAudio !== false;
         if (!s.cameraOn) {
@@ -740,7 +962,14 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         const pid = socket.data.participantId;
         if (!pid) return cb({ ok: false });
         if (p?.on) s.videoClosedBy.delete(pid);
-        else s.videoClosedBy.add(pid);
+        else if (!s.videoClosedBy.has(pid)) {
+          s.videoClosedBy.add(pid);
+          if (s.status !== 'ended') {
+            updateTelemetry(s, (m) => {
+              m.video.closedByStudents += 1;
+            });
+          }
+        }
         void syncStudentAv(io, s, room).catch((err) => app.log.error(err));
         cb({ ok: true });
       });
@@ -866,6 +1095,11 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
     });
 
     socket.on('disconnect', async () => {
+      if (s.status !== 'ended') {
+        updateTelemetry(s, (m) => {
+          m.disconnects += 1;
+        });
+      }
       // ここに来る時点で部屋からは外れているので、そのまま数え直せばよい
       sendAvFormats();
       sendAudioFormats();
@@ -875,6 +1109,13 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       // 先生がページを読み込み直しただけでも送信は途切れるので、
       // 教室モニターに止まった絵を映し続けさせない
       if (s.cameraSocketId === socket.id) {
+        if (s.telemetryCameraStartedAt !== null) {
+          const activeMs = Math.max(0, Date.now() - s.telemetryCameraStartedAt);
+          s.telemetryCameraStartedAt = null;
+          updateTelemetry(s, (m) => {
+            m.video.activeMs += activeMs;
+          });
+        }
         s.cameraOn = false;
         s.cameraSocketId = null;
         s.avStreams.clear();
@@ -959,19 +1200,29 @@ async function syncStudentAv(
     const audioRoom = audioRoomOf(room, audioFormat);
     if (wantsAudio && !sock.rooms.has(audioRoom)) {
       sock.join(audioRoom);
+      const localSocket = io.sockets.sockets.get(sock.id);
+      if (localSocket) noteAudioReceiver(s, localSocket, audioFormat);
       // 途中から音声を受け取り始める端末にはデコーダ初期化用のヘッダが要る
       const stream = s.audioStreams.get(audioFormat);
       if (stream && s.status === 'live') {
         sock.emit('audio_init', toArrayBuffer(stream.init), stream.seq, stream.mime);
+        if (localSocket) noteAudioStarted(s, localSocket);
       }
     } else if (!wantsAudio && sock.rooms.has(audioRoom)) {
       sock.leave(audioRoom);
+      const localSocket = io.sockets.sockets.get(sock.id);
+      if (localSocket) {
+        localSocket.data.telemetryAudioStalled = false;
+        localSocket.data.telemetryAudioWaitingAt = undefined;
+      }
     }
 
     const wantsVideo = shouldReceiveVideo(s, pid);
     const avRoom = avRoomOf(room, videoFormatFor(sock.data.videoCanPlay));
     if (wantsVideo && !sock.rooms.has(avRoom)) {
       sock.join(avRoom);
+      const localSocket = io.sockets.sockets.get(sock.id);
+      if (localSocket) noteVideoReceiver(s, localSocket, videoFormatFor(sock.data.videoCanPlay));
       const stream = s.avStreams.get(videoFormatFor(sock.data.videoCanPlay));
       if (stream && s.cameraOn) {
         sock.emit('av_init', toArrayBuffer(stream.init), stream.seq, stream.mime);

@@ -10,6 +10,7 @@ import Join from './pages/student/Join';
 import Class from './pages/student/Class';
 import Watch from './pages/Watch';
 import Check from './pages/Check';
+import Telemetry from './pages/teacher/Telemetry';
 import { useCheckShortcut } from './lib/useCheckShortcut';
 
 export default function App() {
@@ -26,6 +27,8 @@ export default function App() {
       {/* 教室モニターの短い入口。テレビのリモコンでも打てる長さにするため */}
       <Route path="/m/:code" element={<ScreenEntry />} />
       <Route path="/review/:id" element={<Review />} />
+      {/* 開発・検証用の匿名通信集計。通常の先生向け導線には表示しない */}
+      <Route path="/telemetry" element={<Telemetry />} />
       <Route path="/join" element={<Join />} />
       <Route path="/class" element={<Class />} />
       {/* 生徒向けの復習ページ（ログイン不要・公開トークン） */}

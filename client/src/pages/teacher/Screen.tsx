@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import QRCode from 'qrcode';
-import type { CaptionLine, LessonSummary, PointerPayload } from '@shared';
+import type { AudioFormat, CaptionLine, LessonSummary, PointerPayload } from '@shared';
 import { api } from '../../lib/api';
 import { LiveAudioPlayer } from '../../lib/audio';
 import { LiveVideoPlayer } from '../../lib/camera';
@@ -26,6 +26,7 @@ import SlideCanvas from '../../components/SlideCanvas';
 
 /** 操作バーを自動で隠すまでの時間。投影中に不要なUIが映り込まないようにする */
 const CONTROLS_HIDE_MS = 3_000;
+const AUDIO_STALL_MS = 5_000;
 
 export default function Screen() {
   const { id: lessonId } = useParams<{ id: string }>();
@@ -37,6 +38,7 @@ export default function Screen() {
   const [soundOn, setSoundOn] = useState(false);
   // この端末のブラウザが先生の音声形式を再生できない場合の形式名（対応時は null）
   const [unsupportedAudio, setUnsupportedAudio] = useState<string | null>(null);
+  const [audioStalled, setAudioStalled] = useState(false);
   // 自動字幕。後ろの席で音が聞き取りにくい生徒には、各端末より教室モニターのほうが効く
   const [captionLines, setCaptionLines] = useState<{ tMs: number; text: string }[]>([]);
   const [captionInterim, setCaptionInterim] = useState('');
@@ -52,6 +54,9 @@ export default function Screen() {
   const audioPlayerRef = useRef<LiveAudioPlayer | null>(null);
   const videoPlayerRef = useRef<LiveVideoPlayer | null>(null);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastAudioAtRef = useRef<number | null>(null);
+  const audioFormatRef = useRef<AudioFormat | undefined>(undefined);
+  const audioStallReportedRef = useRef(false);
 
   const {
     socketRef,
@@ -77,16 +82,35 @@ export default function Screen() {
       if (audioElRef.current) {
         audioPlayerRef.current = new LiveAudioPlayer(audioElRef.current);
         // 教室のモニターが無音のまま放置されるのが最悪なので、必ず画面に出す
-        audioPlayerRef.current.onUnsupported = (mime) => setUnsupportedAudio(mime);
+        audioPlayerRef.current.onUnsupported = (mime) => {
+          setUnsupportedAudio(mime);
+          socket.emit('telemetry', {
+            type: 'audio_unsupported',
+            format: mime.includes('webm') ? 'webm' : 'mp4',
+          });
+        };
       }
-      socket.on('audio_init', (chunk, _seq, mime) => audioPlayerRef.current?.reset(chunk, mime));
-      socket.on('audio_chunk', (chunk) => audioPlayerRef.current?.push(chunk));
+      socket.on('audio_init', (chunk, _seq, mime) => {
+        lastAudioAtRef.current = Date.now();
+        audioFormatRef.current = mime.includes('webm') ? 'webm' : 'mp4';
+        audioPlayerRef.current?.reset(chunk, mime);
+      });
+      socket.on('audio_chunk', (chunk) => {
+        lastAudioAtRef.current = Date.now();
+        audioPlayerRef.current?.push(chunk);
+      });
 
       // 再生できる形式かは init が届くまで分からないので、プレイヤーは先に作っておく
       if (videoElRef.current) {
         videoPlayerRef.current = new LiveVideoPlayer(videoElRef.current);
         // 映像が駄目でも授業は続くので、映像だけ下ろしてスライドに切り替える
-        videoPlayerRef.current.onUnsupported = () => setVideoLive(false);
+        videoPlayerRef.current.onUnsupported = (mime) => {
+          setVideoLive(false);
+          socket.emit('telemetry', {
+            type: 'video_unsupported',
+            format: mime.includes('webm') ? 'webm' : 'mp4',
+          });
+        };
       }
       socket.on('av_init', (chunk, _seq, mime) => {
         videoPlayerRef.current?.reset(chunk, mime);
@@ -113,6 +137,40 @@ export default function Screen() {
       videoPlayerRef.current?.dispose();
     };
   }, []);
+
+  // 教室モニターは音を鳴らす操作の前から受信しているため、通信停止は再生ボタンと分けて測る。
+  useEffect(() => {
+    const watching = status === 'live' && connected && !unsupportedAudio;
+    if (!watching) {
+      setAudioStalled(false);
+      audioStallReportedRef.current = false;
+      return;
+    }
+    if (lastAudioAtRef.current === null) lastAudioAtRef.current = Date.now();
+    const timer = setInterval(() => {
+      const last = lastAudioAtRef.current;
+      setAudioStalled(!!last && Date.now() - last > AUDIO_STALL_MS);
+    }, 1_000);
+    return () => clearInterval(timer);
+  }, [status, connected, unsupportedAudio]);
+
+  useEffect(() => {
+    const watching = status === 'live' && connected && !unsupportedAudio;
+    if (!watching) return;
+    if (audioStalled && !audioStallReportedRef.current) {
+      audioStallReportedRef.current = true;
+      socketRef.current?.emit('telemetry', {
+        type: 'audio_stall',
+        format: audioFormatRef.current,
+      });
+    } else if (!audioStalled && audioStallReportedRef.current) {
+      audioStallReportedRef.current = false;
+      socketRef.current?.emit('telemetry', {
+        type: 'audio_recovered',
+        format: audioFormatRef.current,
+      });
+    }
+  }, [status, connected, unsupportedAudio, audioStalled, socketRef]);
 
   // 参加コード（開始前の教室モニターにQRを出して、生徒がその場で参加できるように）
   useEffect(() => {

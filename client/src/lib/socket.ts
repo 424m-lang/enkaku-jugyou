@@ -1,5 +1,5 @@
 import { io, type Socket } from 'socket.io-client';
-import type { ClientToServerEvents, ServerToClientEvents } from '@shared';
+import type { ClientEnvironment, ClientToServerEvents, ServerToClientEvents } from '@shared';
 import { canPlayMime } from './liveMedia';
 import { readStored } from './storage';
 
@@ -33,12 +33,52 @@ function audioCanPlay() {
   };
 }
 
+const TELEMETRY_SESSION_KEY = 'lessonTelemetrySession';
+
+/**
+ * 同じタブの再接続だけを見分ける一時乱数。sessionStorageなのでタブを閉じれば消え、
+ * 氏名・参加者ID・端末IDの代わりにはならない。
+ */
+function telemetrySessionId(): string {
+  try {
+    const stored = window.sessionStorage.getItem(TELEMETRY_SESSION_KEY);
+    if (stored) return stored;
+    const created = crypto.randomUUID();
+    window.sessionStorage.setItem(TELEMETRY_SESSION_KEY, created);
+    return created;
+  } catch {
+    return crypto.randomUUID();
+  }
+}
+
+/** 生のUser-Agentを送らず、この場で授業改善に必要な大分類へ丸める */
+function clientEnvironment(): ClientEnvironment {
+  const ua = navigator.userAgent;
+  const ipadOs = navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
+  const platform: ClientEnvironment['platform'] =
+    /iPhone|iPad|iPod/i.test(ua) || ipadOs
+      ? 'apple-mobile'
+      : /Android/i.test(ua)
+        ? 'android'
+        : /Windows|Macintosh|Linux|CrOS/i.test(ua)
+          ? 'desktop'
+          : 'other';
+  const browser: ClientEnvironment['browser'] = /Firefox|FxiOS/i.test(ua)
+    ? 'firefox'
+    : /Edg|OPR|Chrome|Chromium|CriOS/i.test(ua)
+      ? 'chromium'
+      : /Safari/i.test(ua)
+        ? 'safari'
+        : 'other';
+  return { platform, browser };
+}
+
 export function connectLessonSocket(lessonId: string, screenToken?: string): AppSocket {
   // 教室モニターはURLのトークンだけで表示専用の接続をする（先生のログイン不要）
   const participantToken = screenToken
     ? undefined
     : (readStored('session', 'participantToken') ?? undefined);
-  return io({
+  const socket: AppSocket = io({
     // 再生できる映像形式は接続時に申告する。イベントで後から送ると、
     // サーバが「まだ分からない相手」を抱えた一瞬ができてしまう。
     // 認証情報と一緒なら再接続時にも自動で送り直される
@@ -47,6 +87,7 @@ export function connectLessonSocket(lessonId: string, screenToken?: string): App
       participantToken,
       screenToken,
       canPlay: { video: videoCanPlay(), audio: audioCanPlay() },
+      telemetry: { sessionId: telemetrySessionId(), environment: clientEnvironment() },
     },
     withCredentials: true,
     reconnection: true,
@@ -54,4 +95,10 @@ export function connectLessonSocket(lessonId: string, screenToken?: string): App
     reconnectionDelay: 500,
     reconnectionDelayMax: 5000,
   });
+  let connectedOnce = false;
+  socket.on('connect', () => {
+    if (connectedOnce) socket.emit('telemetry', { type: 'reconnect' });
+    connectedOnce = true;
+  });
+  return socket;
 }

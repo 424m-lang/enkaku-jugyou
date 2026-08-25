@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type {
+  AudioFormat,
   AudioMode,
   CaptionLine,
   PointerPayload,
@@ -67,6 +68,8 @@ export default function Class() {
   // 音声を有効にしたのに届いていない状態
   const [audioStalled, setAudioStalled] = useState(false);
   const lastAudioAtRef = useRef<number | null>(null);
+  const audioFormatRef = useRef<AudioFormat | undefined>(undefined);
+  const audioStallReportedRef = useRef(false);
   // 自動字幕。出すかどうかは生徒が自分で決める。
   // 選んだ結果はこの端末に覚えさせる（読み込み直すたびに選び直させない）
   const [captionLines, setCaptionLines] = useState<{ tMs: number; text: string }[]>([]);
@@ -159,7 +162,13 @@ export default function Class() {
       setQueuedCount(queueRef.current.pendingCount);
       if (audioElRef.current) {
         playerRef.current = new LiveAudioPlayer(audioElRef.current);
-        playerRef.current.onUnsupported = () => setMediaUnsupported(true);
+        playerRef.current.onUnsupported = (mime) => {
+          setMediaUnsupported(true);
+          socket.emit('telemetry', {
+            type: 'audio_unsupported',
+            format: mime.includes('webm') ? 'webm' : 'mp4',
+          });
+        };
       }
       socket.on('connect_error', (err) => {
         // トークン失効などで認証できない場合は参加画面へ
@@ -169,6 +178,7 @@ export default function Class() {
       socket.on('slide_change', () => setPointer(null));
       socket.on('audio_init', (chunk, _seq, mime) => {
         lastAudioAtRef.current = Date.now();
+        audioFormatRef.current = mime.includes('webm') ? 'webm' : 'mp4';
         playerRef.current?.reset(chunk, mime);
       });
       socket.on('audio_chunk', (chunk) => {
@@ -194,7 +204,13 @@ export default function Class() {
       // 再生できる形式かは init が届くまで分からないので、プレイヤーは先に作っておく
       if (videoElRef.current) {
         videoPlayerRef.current = new LiveVideoPlayer(videoElRef.current);
-        videoPlayerRef.current.onUnsupported = () => setVideoLive(false);
+        videoPlayerRef.current.onUnsupported = (mime) => {
+          setVideoLive(false);
+          socket.emit('telemetry', {
+            type: 'video_unsupported',
+            format: mime.includes('webm') ? 'webm' : 'mp4',
+          });
+        };
       }
       socket.on('av_init', (chunk, _seq, mime) => {
         videoPlayerRef.current?.reset(chunk, mime);
@@ -315,6 +331,29 @@ export default function Class() {
     }, 1000);
     return () => clearInterval(timer);
   }, [status, audioAllowed, audioEnabled, mediaUnsupported, connected]);
+
+  // 警告の表示状態が変わった瞬間だけ、授業全体の回数へ加える。
+  // 1秒ごとの監視結果をそのまま送らないので、長い停止でも1回として数える。
+  useEffect(() => {
+    const watching = status === 'live' && audioAllowed === 'on' && audioEnabled && !mediaUnsupported;
+    if (!watching) {
+      audioStallReportedRef.current = false;
+      return;
+    }
+    if (audioStalled && !audioStallReportedRef.current) {
+      audioStallReportedRef.current = true;
+      socketRef.current?.emit('telemetry', {
+        type: 'audio_stall',
+        format: audioFormatRef.current,
+      });
+    } else if (!audioStalled && audioStallReportedRef.current) {
+      audioStallReportedRef.current = false;
+      socketRef.current?.emit('telemetry', {
+        type: 'audio_recovered',
+        format: audioFormatRef.current,
+      });
+    }
+  }, [status, audioAllowed, audioEnabled, mediaUnsupported, audioStalled, socketRef]);
 
   // 音声の出し分け。映像が届いているときは映像側の音を鳴らし、音声のみの
   // ストリームはミュートする（同じ声が二重に鳴らないように）。
