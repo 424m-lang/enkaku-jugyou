@@ -495,6 +495,78 @@ export function videoFormatFor(canPlay: VideoCanPlay | undefined): VideoFormat {
   return canPlay?.webm ? 'webm' : 'mp4';
 }
 
+/** ライブ音声のコンテナ形式。webm=Opus、mp4=AACとして扱う */
+export type AudioFormat = 'webm' | 'mp4';
+
+/** 通信量の少ないOpusを優先し、再生できない端末だけAACへ回す */
+export const AUDIO_FORMATS: AudioFormat[] = ['webm', 'mp4'];
+
+/** その端末がMSE/MMSでライブ音声を再生できる形式 */
+export type AudioCanPlay = { webm: boolean; mp4: boolean };
+
+/** 受け手に届ける音声形式。申告のない古い画面には互換性優先でAACを送る */
+export function audioFormatFor(canPlay: AudioCanPlay | undefined): AudioFormat {
+  return canPlay?.webm ? 'webm' : 'mp4';
+}
+
+// ---- 匿名の通信集計 ----
+
+/** 生のUser-Agentは保存せず、授業改善に必要な大分類だけを申告する */
+export type ClientPlatform = 'apple-mobile' | 'android' | 'desktop' | 'other';
+export type ClientBrowser = 'safari' | 'chromium' | 'firefox' | 'other';
+
+export type ClientEnvironment = {
+  platform: ClientPlatform;
+  browser: ClientBrowser;
+};
+
+export type TelemetrySample = {
+  count: number;
+  totalMs: number;
+  maxMs: number;
+};
+
+/**
+ * 授業単位の匿名集計。氏名・参加者ID・IP・生のUser-Agentは含めない。
+ * receiverSessions は同じタブの再接続を重複させず、形式が変わった場合だけ両方を数える。
+ */
+export type LessonTelemetry = {
+  version: 1;
+  connectionSessions: Record<'teacher' | 'student' | 'screen', number>;
+  reconnects: number;
+  disconnects: number;
+  maxConcurrentStudents: number;
+  maxConcurrentScreens: number;
+  platforms: Record<ClientPlatform, number>;
+  browsers: Record<ClientBrowser, number>;
+  audio: {
+    receiverSessions: Record<AudioFormat, number>;
+    startup: TelemetrySample;
+    stalls: number;
+    recoveries: number;
+    unsupported: number;
+    sourceBytes: Record<AudioFormat, number>;
+    deliveredBytes: Record<AudioFormat, number>;
+  };
+  video: {
+    receiverSessions: Record<VideoFormat, number>;
+    cameraStarts: number;
+    activeMs: number;
+    closedByStudents: number;
+    unsupported: number;
+    sourceBytes: Record<VideoFormat, number>;
+    deliveredBytes: Record<VideoFormat, number>;
+  };
+};
+
+/** クライアントから送るのは、個人を特定しない回数情報だけ */
+export type TelemetryEvent =
+  | { type: 'reconnect' }
+  | { type: 'audio_stall'; format?: AudioFormat }
+  | { type: 'audio_recovered'; format?: AudioFormat }
+  | { type: 'audio_unsupported'; format?: AudioFormat }
+  | { type: 'video_unsupported'; format?: VideoFormat };
+
 export const SCREEN_LAYOUT_LABELS: Record<ScreenLayout, string> = {
   slide: 'スライド主体',
   video: '映像主体',
@@ -556,6 +628,12 @@ export interface ServerToClientEvents {
    * 受け手が全員Chrome系なら ['webm'] の1本で済み、Apple系が混じったときだけ2本になる
    */
   av_formats: (p: { formats: VideoFormat[] }) => void;
+
+  /** いま受け手が必要としている音声形式（先生向け）。録音用Opusは別に常時維持する */
+  audio_formats: (p: { formats: AudioFormat[] }) => void;
+
+  /** サーバ再起動で中継用ヘッダを失ったとき、先生の録音器からinitを出し直す */
+  audio_restart: () => void;
 
   /**
    * 自動字幕。final=false は認識途中の暫定で、後から同じ発話の確定版が届く。
@@ -620,10 +698,12 @@ export interface ClientToServerEvents {
   // 先生
   start_lesson: (cb: (res: { ok: boolean; error?: string }) => void) => void;
   end_lesson: (cb: (res: { ok: boolean; error?: string }) => void) => void;
-  /** mime は MediaRecorder が実際に使った形式。受け手のデコーダ生成に必要 */
-  audio_chunk: (chunk: ArrayBuffer, mime?: string) => void;
+  /** mime は実物の形式。archive=true の1本だけを授業後の録音として保存する */
+  audio_chunk: (chunk: ArrayBuffer, mime?: string, archive?: boolean) => void;
   /** カメラ映像（音声込み）。文字起こしには使わず、保存もしない */
   av_chunk: (chunk: ArrayBuffer, mime?: string) => void;
+  /** 授業単位の匿名通信集計。個人を識別する値や自由記述は受け取らない */
+  telemetry: (event: TelemetryEvent) => void;
   camera_state: (p: { on: boolean; hasAudio?: boolean }) => void;
   /** 先生の端末のブラウザ音声認識の結果 */
   caption: (p: { text: string; final: boolean }) => void;

@@ -11,6 +11,7 @@ import {
 import { uniqueIndex } from 'drizzle-orm/pg-core';
 import type {
   InsightComment,
+  LessonTelemetry,
   LessonTask,
   PollOption,
   ReactionButtonDef,
@@ -79,6 +80,18 @@ export const lessons = pgTable('lessons', {
   startedAt: timestamp('started_at', { withTimezone: true }),
   endedAt: timestamp('ended_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * 通信品質の授業単位集計。
+ * 1授業につき1行のJSONだけを持ち、参加者ID・氏名・IP・User-Agentは保存しない。
+ */
+export const lessonTelemetry = pgTable('lesson_telemetry', {
+  lessonId: text('lesson_id')
+    .primaryKey()
+    .references(() => lessons.id),
+  metrics: jsonb('metrics').$type<LessonTelemetry>().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
 // 授業内のスライド並び。白紙挿入は kind='blank' の行を追加するだけで、元PDFは不変

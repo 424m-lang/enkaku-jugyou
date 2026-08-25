@@ -12,7 +12,7 @@ import { supportedVideoMime } from '../lib/camera';
  *
  * 見ているのは3つ:
  * 1. 通信が通るか（学校のフィルタリングでWebSocketが塞がれていないか）
- * 2. 先生が送る形式をこの端末が再生できるか（SafariはWebMを再生できない）
+ * 2. 先生が送るOpus/AACのどちらかをこの端末がライブ再生できるか
  * 3. 実際にスピーカーから音が出るか（アプリ・OS・モニター本体の3段の音量）
  */
 
@@ -27,12 +27,12 @@ const LESSON_MIN = 50;
 const THROTTLED_KBPS = 128;
 
 type AudioRate = {
-  liveMime: string;
-  /** 本番で使う形式の実測値 */
-  liveKbps: number | null;
-  /** 比較用のOpus（本番がOpusならnull） */
+  /** 標準のOpusと、互換用AACを同じマイクで同時に測る */
   opusKbps: number | null;
+  aacKbps: number | null;
   channels: number | null;
+  /** マイクのサンプリング周波数。48000以外だとAACが何も吐かないことがある */
+  sampleRate: number | null;
 };
 
 type State = 'pending' | 'ok' | 'warn' | 'ng' | 'skip';
@@ -90,8 +90,8 @@ const ROLES: Record<Role, RoleSpec> = {
 
 /** 先生が送ってくる可能性のある形式（audio.ts / camera.ts の候補と対応させること） */
 const AUDIO_FORMATS = [
-  { mime: 'audio/mp4;codecs=mp4a.40.2', label: 'AAC（先生がChrome・Edge・Safariのとき）' },
-  { mime: 'audio/webm;codecs=opus', label: 'Opus（先生がFirefoxのとき）' },
+  { mime: 'audio/webm;codecs=opus', label: 'Opus（通信量の少ない標準形式）' },
+  { mime: 'audio/mp4;codecs=mp4a.40.2', label: 'AAC（Opus非対応端末向け）' },
 ];
 const VIDEO_FORMATS = [
   { mime: 'video/mp4;codecs="avc1.42E01E,mp4a.40.2"', label: 'H.264' },
@@ -137,12 +137,11 @@ export default function Check() {
   const hasMse = getMediaSourceCtor() !== null;
   const audioSupport = AUDIO_FORMATS.map((f) => ({ ...f, ok: canPlayMime(f.mime) }));
   const videoSupport = VIDEO_FORMATS.map((f) => ({ ...f, ok: canPlayMime(f.mime) }));
-  // 先生の環境はChrome・Edge・Safariが大半なので、AACを再生できるかが実質的な合否
-  const canPlayLikely = audioSupport[0].ok;
-  // 先生の端末がこの環境で配信に使う形式
-  const broadcastAudio = supportedAudioMime();
+  // どちらか一方を再生できれば、サーバがその端末を対応する形式の部屋へ入れる
+  const canPlayLikely = audioSupport.some((f) => f.ok);
+  const broadcastOpus = supportedAudioMime('webm');
+  const broadcastAac = supportedAudioMime('mp4');
   const broadcastVideo = supportedVideoMime();
-  const broadcastIsOpus = !!broadcastAudio && !broadcastAudio.includes('mp4');
 
   // ---- 通信の確認（役割によらず必須なので、開いた時点で走らせる） ----
   useEffect(() => {
@@ -304,13 +303,11 @@ export default function Check() {
       return;
     }
 
-    const live = supportedAudioMime();
-    const opus = 'audio/webm;codecs=opus';
-    const targets: { key: 'live' | 'opus'; mime: string }[] = [];
-    if (live) targets.push({ key: 'live', mime: live });
-    if (!live?.includes('opus') && typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(opus)) {
-      targets.push({ key: 'opus', mime: opus });
-    }
+    const opus = supportedAudioMime('webm');
+    const aac = supportedAudioMime('mp4');
+    const targets: { key: 'opus' | 'aac'; mime: string }[] = [];
+    if (opus) targets.push({ key: 'opus', mime: opus });
+    if (aac) targets.push({ key: 'aac', mime: aac });
     if (targets.length === 0) {
       stream.getTracks().forEach((t) => t.stop());
       setRateError('この端末では録音できません');
@@ -336,15 +333,17 @@ export default function Check() {
     recs.forEach((r) => r.state !== 'inactive' && r.stop());
     // stop() のあとに最後のチャンクが届くので少し待ってから集計する
     await new Promise((r) => setTimeout(r, 400));
-    const channels = stream.getAudioTracks()[0]?.getSettings().channelCount ?? null;
+    const st = stream.getAudioTracks()[0]?.getSettings();
+    const channels = st?.channelCount ?? null;
+    const sampleRate = st?.sampleRate ?? null;
     stream.getTracks().forEach((t) => t.stop());
 
     const kbps = (n: number) => Math.round((n * 8) / MEASURE_SEC / 1000);
     setRateResult({
-      liveMime: live ?? '',
-      liveKbps: bytes.live !== undefined ? kbps(bytes.live) : null,
       opusKbps: bytes.opus !== undefined ? kbps(bytes.opus) : null,
+      aacKbps: bytes.aac !== undefined ? kbps(bytes.aac) : null,
       channels,
+      sampleRate,
     });
   }, []);
 
@@ -473,22 +472,21 @@ export default function Check() {
             label="ライブ音声の仕組みに対応している"
             detail={!hasMse && spec.needsPlayback ? 'これが × だと音を出せません' : undefined}
           />
-          {audioSupport.map((f, i) => (
+          {audioSupport.map((f) => (
             <Row
               key={f.mime}
-              // MSEが無い端末では全て×。ある場合、Opusだけの不足は△（先生がFirefoxのときだけ困る）
+              // 片方だけでも再生できれば、授業中はその形式へ自動的に振り分けられる
               state={
-                !spec.needsPlayback ? 'skip' : f.ok ? 'ok' : !hasMse || i === 0 ? 'ng' : 'warn'
+                !spec.needsPlayback ? 'skip' : f.ok ? 'ok' : !hasMse || !canPlayLikely ? 'ng' : 'warn'
               }
               label={f.label}
               detail={f.mime}
             />
           ))}
         </ul>
-        {spec.needsPlayback && !audioSupport[1].ok && audioSupport[0].ok && (
+        {spec.needsPlayback && !audioSupport[0].ok && audioSupport[1].ok && (
           <p className="check-note">
-            Opusは再生できませんが、先生の環境がChrome・Edge・Safariなら問題ありません。
-            先生がFirefoxを使う場合だけ音が出ません。
+            Opusは再生できませんが、この端末には自動的にAAC音声が送られるため問題ありません。
           </p>
         )}
       </section>
@@ -549,9 +547,14 @@ export default function Check() {
           <ul className="check-list">
             <Row state={micState} label="マイクを使える" detail={micDetail} />
             <Row
-              state={broadcastAudio ? (broadcastIsOpus ? 'warn' : 'ok') : 'ng'}
-              label="音声の配信形式"
-              detail={broadcastAudio ?? 'この端末からは配信できません'}
+              state={broadcastOpus ? 'ok' : 'warn'}
+              label="Opus音声を配信できる"
+              detail={broadcastOpus ?? '作れない場合はAACで録音・配信します'}
+            />
+            <Row
+              state={broadcastAac ? 'ok' : 'warn'}
+              label="AAC音声を配信できる"
+              detail={broadcastAac ?? 'AAC専用端末には音を届けられません'}
             />
             <Row
               state={broadcastVideo ? 'ok' : 'warn'}
@@ -573,60 +576,64 @@ export default function Check() {
             <ul className="check-list">
               <Row
                 state={
-                  rateResult.liveKbps === null
+                  rateResult.opusKbps === null || rateResult.opusKbps === 0
                     ? 'ng'
-                    : rateResult.liveKbps <= THROTTLED_KBPS * 0.6
+                    : rateResult.opusKbps <= THROTTLED_KBPS * 0.6
                       ? 'ok'
                       : 'warn'
                 }
-                label="実際に出る通信量（本番の形式）"
+                label="Opus（標準・対応端末向け）"
                 detail={
-                  rateResult.liveKbps === null
+                  rateResult.opusKbps === null
                     ? '測れませんでした'
-                    : `${rateResult.liveKbps} kbps ・ ${LESSON_MIN}分で約${Math.round(
-                        (rateResult.liveKbps * LESSON_MIN * 60) / 8 / 1000
+                    : `${rateResult.opusKbps} kbps ・ ${LESSON_MIN}分で約${Math.round(
+                        (rateResult.opusKbps * LESSON_MIN * 60) / 8 / 1000
                       )}MB（生徒1人あたり）`
                 }
               />
-              {rateResult.opusKbps !== null && (
+              {rateResult.aacKbps !== null && (
                 <Row
-                  state="skip"
-                  label="参考: Opus形式なら"
-                  detail={`${rateResult.opusKbps} kbps ・ ${LESSON_MIN}分で約${Math.round(
-                    (rateResult.opusKbps * LESSON_MIN * 60) / 8 / 1000
+                  state={rateResult.aacKbps === 0 ? 'ng' : 'warn'}
+                  label="AAC（Opus非対応端末向け）"
+                  detail={`${rateResult.aacKbps} kbps ・ ${LESSON_MIN}分で約${Math.round(
+                    (rateResult.aacKbps * LESSON_MIN * 60) / 8 / 1000
                   )}MB`}
                 />
               )}
               <Row
                 state="skip"
-                label="チャンネル数"
-                detail={rateResult.channels === 1 ? 'モノラル' : `${rateResult.channels ?? '不明'}`}
+                label="マイクの形式"
+                detail={`${rateResult.channels === 1 ? 'モノラル' : `${rateResult.channels ?? '不明'}ch`} / ${
+                  rateResult.sampleRate ? `${rateResult.sampleRate / 1000}kHz` : '周波数不明'
+                }`}
               />
             </ul>
           )}
-          {rateResult?.liveKbps != null && rateResult.liveKbps > THROTTLED_KBPS * 0.6 && (
+          {(rateResult?.opusKbps === 0 || rateResult?.aacKbps === 0) && (
+            <p className="check-note check-ng-text">
+              {rateResult.opusKbps === 0 ? 'Opus' : 'AAC'}形式では音声が1バイトも出ていません。
+              マイクの周波数が48kHz以外だとAAC形式で起きることがあります
+              。授業中はその形式を自動停止し、先生画面に届かない端末の警告を出します。
+            </p>
+          )}
+          {rateResult?.opusKbps != null &&
+            rateResult.opusKbps > 0 &&
+            rateResult.opusKbps > THROTTLED_KBPS * 0.6 && (
             <p className="check-note">
               速度制限のかかった回線（{THROTTLED_KBPS}kbps程度）で受ける生徒がいる場合、
               この値だと苦しくなります。通常の光・モバイル回線であれば問題ありません。
             </p>
           )}
           {rateResult?.opusKbps != null &&
-            rateResult.liveKbps != null &&
-            rateResult.liveKbps > rateResult.opusKbps * 1.4 && (
+            rateResult.aacKbps != null &&
+            rateResult.opusKbps > 0 &&
+            rateResult.aacKbps > rateResult.opusKbps * 1.4 && (
               <p className="check-note">
                 この端末では、Opus形式のほうが通信量を
-                {Math.round((1 - rateResult.opusKbps / rateResult.liveKbps) * 100)}%
-                減らせます。回線の細い家庭がいる授業では、受け手に合わせて形式を選び分ける価値があります
-                （いまはApple系の端末でも聞けるようAAC形式を優先しています）。
+                {Math.round((1 - rateResult.opusKbps / rateResult.aacKbps) * 100)}%
+                減らせます。授業中はOpus対応端末にこちらを自動的に送ります。
               </p>
             )}
-          {broadcastIsOpus && (
-            <p className="check-note check-ng-text">
-              この端末はOpus形式で配信します。
-              受け手がiPad・iPhone・Mac・Apple TV・テレビ内蔵ブラウザだと音が出ません。
-              Chrome・Edge で開き直すとAAC形式になり、すべての端末に届きます。
-            </p>
-          )}
         </section>
       )}
 

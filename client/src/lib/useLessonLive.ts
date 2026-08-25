@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
+  AudioFormat,
   AudioMode,
   LessonStatus,
   LessonTask,
@@ -57,6 +58,8 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
   const [pipPos, setPipPos] = useState<PipPos>(DEFAULT_PIP_POS);
   // いま流す必要のある映像形式（サーバが受け手の顔ぶれから判断して伝えてくる）
   const [avFormats, setAvFormats] = useState<VideoFormat[]>(['webm']);
+  // 音声も受け手別。Opusを標準とし、AAC専用端末がいる間だけ2本目を求められる
+  const [audioFormats, setAudioFormats] = useState<AudioFormat[]>([]);
   // タスク。誰がどこまで進んだかはここには入らない（進捗は画面ごとに別イベントで受ける）
   const [tasks, setTasks] = useState<LessonTask[]>([]);
   const [taskMode, setTaskMode] = useState<TaskMode>('sequential');
@@ -116,6 +119,7 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
     });
 
     socket.on('av_formats', (p) => setAvFormats(p.formats));
+    socket.on('audio_formats', (p) => setAudioFormats(p.formats));
     socket.on('caption_users', (n) => setCaptionUsers(n));
 
     socket.on('slides_updated', (sl) => setSlides(sl));
@@ -193,6 +197,7 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
     videoToStudents,
     pipPos,
     avFormats,
+    audioFormats,
     tasks,
     taskMode,
     tasksActive,

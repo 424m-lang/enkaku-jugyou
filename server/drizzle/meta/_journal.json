@@ -120,6 +120,13 @@
       "when": 1790000600000,
       "tag": "0016_screen_code",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1790000700000,
+      "tag": "0017_lesson_telemetry",
+      "breakpoints": true
     }
   ]
 }
