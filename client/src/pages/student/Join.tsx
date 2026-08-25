@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../../lib/api';
+import { writeStored } from '../../lib/storage';
 
 export default function Join() {
   const navigate = useNavigate();
@@ -19,8 +20,9 @@ export default function Join() {
         method: 'POST',
         body: JSON.stringify({ code, displayName }),
       });
-      sessionStorage.setItem('participantToken', res.participantToken);
-      sessionStorage.setItem('lessonId', res.lesson.id);
+      // 保存できない端末でもメモリに残るので、そのタブでは授業に入れる
+      writeStored('session', 'participantToken', res.participantToken);
+      writeStored('session', 'lessonId', res.lesson.id);
       navigate('/class');
     } catch (err) {
       setError(err instanceof Error ? err.message : '参加に失敗しました');

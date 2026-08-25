@@ -18,6 +18,7 @@ import SlideCanvas from '../../components/SlideCanvas';
 import TaskBar from '../../components/TaskBar';
 import PollBar, { PollResultView } from '../../components/PollBar';
 import CaptionBar from '../../components/CaptionBar';
+import { readStored, writeStored } from '../../lib/storage';
 
 /**
  * 音声チャンクがこの時間届かなければ「届いていない」と判断する。
@@ -42,25 +43,15 @@ const CAPTION_KEEP_LINES = 20;
  */
 const CAPTIONS_ON_KEY = 'captionsOn';
 
-/**
- * 保存しておいた字幕の設定を読む。
- *
- * localStorage は**読むだけで例外を投げる環境がある**（プライベートブラウズや、
- * サイトのストレージを禁止している設定）。描画の途中で投げると画面が丸ごと
- * 出なくなるので、必ず包む。字幕の設定が失われるだけなら授業は続けられる
- */
+/** 保存しておいた字幕の設定を読む（保存領域が使えない端末でも落ちない） */
 function readCaptionsOn(): boolean {
-  try {
-    return localStorage.getItem(CAPTIONS_ON_KEY) === '1';
-  } catch {
-    return false;
-  }
+  return readStored('local', CAPTIONS_ON_KEY) === '1';
 }
 
 export default function Class() {
   const navigate = useNavigate();
-  const lessonId = sessionStorage.getItem('lessonId');
-  const hasToken = !!sessionStorage.getItem('participantToken');
+  const lessonId = readStored('session', 'lessonId');
+  const hasToken = !!readStored('session', 'participantToken');
 
   const [pointer, setPointer] = useState<PointerPayload | null>(null);
   // 自動再生の制限があるため、一度は本人の操作で再生を始める必要がある
@@ -197,11 +188,7 @@ export default function Class() {
   const setCaptionsOnPersisted = useCallback(
     (on: boolean) => {
       setCaptionsOn(on);
-      try {
-        localStorage.setItem(CAPTIONS_ON_KEY, on ? '1' : '0');
-      } catch {
-        /* プライベートモードなどで保存できなくても、いまの表示は切り替わる */
-      }
+      writeStored('local', CAPTIONS_ON_KEY, on ? '1' : '0');
       socketRef.current?.emit('set_my_captions', { on }, () => {});
     },
     [socketRef]
