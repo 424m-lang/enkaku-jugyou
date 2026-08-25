@@ -1228,6 +1228,10 @@ button.slide-thumb:hover {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
   cursor: grab;
   touch-action: none;
+  /* スライドの書き込み用キャンバス（.slide-overlay が z-index:2、
+     .slide-pointer が 3）より上に置く。指定が無いと、スライドに重なった瞬間に
+     そちらが操作を受け取ってしまい、掴めず × も押せなくなる */
+  z-index: 5;
 }
 
 .class-video:active {
