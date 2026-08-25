@@ -505,9 +505,7 @@ export default function Review() {
       <header className="app-header">
         <div className="header-left">
           <h1>{lesson.title} — 振り返り</h1>
-        </div>
-        <div className="header-right">
-          <button className="btn" onClick={() => navigate('/dashboard')}>
+          <button className="btn header-action" onClick={() => navigate('/dashboard')}>
             授業一覧へ
           </button>
         </div>
@@ -604,7 +602,7 @@ export default function Review() {
                       ))}
                   </div>
                   <button
-                    className="btn"
+                    className="btn primary"
                     onClick={() => void analyzeComments()}
                     disabled={
                       analyzing || commentClips.length === 0 || commentClips.every((c) => c.analyzed)

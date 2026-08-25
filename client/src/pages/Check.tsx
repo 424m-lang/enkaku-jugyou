@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { LiveMediaPlayer, canPlayMime, getMediaSourceCtor } from '../lib/liveMedia';
 import { supportedAudioMime } from '../lib/audio';
 import { supportedVideoMime } from '../lib/camera';
@@ -91,6 +92,10 @@ function Row({ state, label, detail }: { state: State; label: string; detail?: s
 }
 
 export default function Check() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  // ショートカット（Ctrl+Alt+C）で来た場合だけ、元の画面に戻れるようにする
+  const from = (location.state as { from?: string } | null)?.from ?? null;
   const [role, setRole] = useState<Role>('monitor');
   const [health, setHealth] = useState<State>('pending');
   const [polling, setPolling] = useState<State>('pending');
@@ -129,7 +134,7 @@ export default function Check() {
       .catch(() => alive && setPolling('ng'));
 
     // WebSocketが学校のフィルタリングを通るか。開けた時点で通過が確定する
-    const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+    const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
     let ws: WebSocket | null = null;
     const fallback = () => {
       setWebsocket('warn');
@@ -143,7 +148,9 @@ export default function Check() {
       }
     }, 6000);
     try {
-      ws = new WebSocket(scheme + '://' + location.host + '/socket.io/?EIO=4&transport=websocket');
+      ws = new WebSocket(
+        scheme + '://' + window.location.host + '/socket.io/?EIO=4&transport=websocket'
+      );
       ws.onopen = () => {
         if (!alive) return;
         clearTimeout(timer);
@@ -284,9 +291,17 @@ export default function Check() {
 
   return (
     <div className="check-page">
+      {from && (
+        <div className="check-back">
+          <button className="btn" onClick={() => navigate(from)}>
+            ← 元の画面に戻る
+          </button>
+        </div>
+      )}
       <h1>端末チェック</h1>
       <p className="muted">
         確認したい端末で、この画面を開いてください。ログインは要りません。
+        どの画面からでも <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>C</kbd> で開けます。
       </p>
 
       <div className="check-roles">

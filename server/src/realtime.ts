@@ -22,7 +22,8 @@ import {
   endLesson,
   insertBlankSlide,
   touchParticipants,
-  setCaptionsEnabled,
+  setCaptionTargets,
+  setReactionButtons,
   setReactionsEnabled,
   setTasks,
   setTaskConfig,
@@ -44,7 +45,7 @@ import {
   toPublicPoll,
 } from './live/polls';
 import { recordReaction } from './live/reactions';
-import { handleCommentForInsight } from './live/commentInsights';
+import { handleCommentForInsight, setInsightResolved } from './live/commentInsights';
 import {
   ensureTranscribedUntil,
   restoreLiveTranscript,
@@ -56,7 +57,7 @@ import {
 const COMPOSING_STALE_MS = 20_000;
 
 type SocketData = {
-  /** screen = 教室の大画面（表示専用。授業へ何も送れず、生徒数にも数えない） */
+  /** screen = 教室モニター（表示専用。授業へ何も送れず、生徒数にも数えない） */
   role: 'teacher' | 'student' | 'screen';
   lessonId: string;
   participantId?: string;
@@ -147,16 +148,25 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
 
   io.on('connection', async (socket) => {
     const { role, lessonId } = socket.data;
-    const s = await getSession(lessonId);
+    // ここでの例外はプロセスごと落ちる（socket.ioは接続ハンドラのrejectを拾わない）。
+    // 1人の接続の失敗で授業中の全員が切れるのは重すぎるので、その接続だけ切る
+    let s: Awaited<ReturnType<typeof getSession>>;
+    try {
+      s = await getSession(lessonId);
+    } catch (err) {
+      app.log.error(err);
+      socket.disconnect(true);
+      return;
+    }
     if (!s) {
       socket.disconnect(true);
       return;
     }
     const room = `lesson:${lessonId}`;
     const teacherRoom = `${room}:teacher`;
-    // カメラ映像の配信先。大画面は常に入り、生徒は先生が映像を送るときだけ入る
+    // カメラ映像の配信先。教室モニターは常に入り、生徒は先生が映像を送るときだけ入る
     const avRoom = `${room}:av`;
-    // 音声のみの配信先。大画面は常に入り、生徒は音声を鳴らす設定の生徒だけ入る
+    // 音声のみの配信先。教室モニターは常に入り、生徒は音声を鳴らす設定の生徒だけ入る
     // （教室で受ける生徒はミュートなので、そもそも音声を送る必要が無い）
     const audioRoom = `${room}:audio`;
 
@@ -257,7 +267,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       });
 
       // 音声（文字起こし用の録音と共通）。教室で受けている生徒には音が要らないので、
-      // 大画面と、音声を鳴らす設定の生徒だけに中継する
+      // 教室モニターと、音声を鳴らす設定の生徒だけに中継する
       socket.on('audio_chunk', async (chunk, mime) => {
         if (s.status !== 'live') return;
         try {
@@ -271,7 +281,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         }
       });
 
-      // カメラ映像（音声込み）。保存はせず、大画面と対象の生徒にだけ中継する
+      // カメラ映像（音声込み）。保存はせず、教室モニターと対象の生徒にだけ中継する
       socket.on('av_chunk', (chunk, mime) => {
         if (!s.cameraOn) return;
         try {
@@ -288,7 +298,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         s.avHasAudio = s.cameraOn && p?.hasAudio !== false;
         if (!s.cameraOn) {
           s.avInitSegment = null;
-          // カメラを切ったら大画面は自動でスライド全画面に戻す（余白が出ないように）
+          // カメラを切ったら教室モニターは自動でスライド全画面に戻す（余白が出ないように）
           if (s.screenLayout === 'video') s.screenLayout = 'slide';
         }
         io.to(room).emit('av_state', avState());
@@ -344,8 +354,11 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         socket.to(room).emit('slide_change', { ...p, tMs: ev.tMs });
       });
 
+      // 開始前の書き込みも記録する（tMsは0＝「授業が始まった時点で既に書いてあった」）。
+      // 板書を準備してから授業を始める使い方があり、開いたまま放置して
+      // 読み込み直したときに消えてしまうのを防ぐ
       socket.on('stroke', async (p) => {
-        if (s.status !== 'live') return;
+        if (s.status === 'ended') return;
         const ev = await recordEvent(s, 'stroke', p);
         socket.to(room).emit('stroke', { ...p, tMs: ev.tMs });
       });
@@ -363,7 +376,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       });
 
       socket.on('clear_slide', async (p) => {
-        if (s.status !== 'live') return;
+        if (s.status === 'ended') return;
         const ev = await recordEvent(s, 'clear_slide', p);
         socket.to(room).emit('clear_slide', { ...p, tMs: ev.tMs });
       });
@@ -427,6 +440,33 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         }
       });
 
+      socket.on('set_insight_resolved', async (p, cb) => {
+        try {
+          if (typeof p?.insightId !== 'string' || typeof p?.resolved !== 'boolean') {
+            return cb({ ok: false });
+          }
+          const updated = await setInsightResolved(s.lessonId, p.insightId, p.resolved);
+          if (updated) io.to(teacherRoom).emit('comment_insight', updated);
+          cb({ ok: !!updated });
+        } catch (err) {
+          app.log.error(err);
+          cb({ ok: false });
+        }
+      });
+
+      socket.on('set_reaction_buttons', async (p, cb) => {
+        try {
+          if (!Array.isArray(p?.buttons)) return cb({ ok: false });
+          const { error } = await setReactionButtons(s, p.buttons);
+          if (error) return cb({ ok: false, error });
+          io.to(room).emit('lesson_state', toLiveState(s));
+          cb({ ok: true });
+        } catch (err) {
+          app.log.error(err);
+          cb({ ok: false });
+        }
+      });
+
       // ---- 自動字幕 ----
       // 先生の端末のブラウザ音声認識の結果を、そのまま参加者へ配る。
       // 音声の中継とは別経路で、遅延1秒未満で届く（音声はサーバ側の文字起こしを
@@ -449,8 +489,10 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
 
       socket.on('set_captions', async (p, cb) => {
         try {
-          if (typeof p?.enabled !== 'boolean') return cb({ ok: false });
-          await setCaptionsEnabled(s, p.enabled);
+          const onScreen = typeof p?.onScreen === 'boolean' ? p.onScreen : undefined;
+          const forStudents = typeof p?.forStudents === 'boolean' ? p.forStudents : undefined;
+          if (onScreen === undefined && forStudents === undefined) return cb({ ok: false });
+          await setCaptionTargets(s, { onScreen, forStudents });
           io.to(room).emit('lesson_state', toLiveState(s));
           cb({ ok: true });
         } catch (err) {
@@ -505,6 +547,34 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           io.to(room).emit('poll_open', toPublicPoll(poll));
           io.to(teacherRoom).emit('polls_updated', s.polls);
           io.to(teacherRoom).emit('poll_results', await pollResults(s, poll.id));
+          cb({ ok: true });
+        } catch (err) {
+          app.log.error(err);
+          cb({ ok: false });
+        }
+      });
+
+      // 締め切ったあとに結果を見せる／引っ込める。
+      // 締め切りと結果表示を分けてあるので、先生は集計を見てから見せるか決められる
+      socket.on('reveal_poll', async (p, cb) => {
+        try {
+          if (typeof p?.pollId !== 'string') return cb({ ok: false });
+          const poll = s.polls.find((x) => x.id === p.pollId);
+          if (!poll) return cb({ ok: false, error: '設問が見つかりません' });
+          if (!p.reveal) {
+            io.to(room).emit('poll_reveal', { pollId: p.pollId, poll: null, results: null });
+            return cb({ ok: true });
+          }
+          // 自由記述は誰が書いたかが分かってしまうため、生徒には見せない
+          if (poll.type === 'text') {
+            return cb({ ok: false, error: '自由記述の回答は生徒に見せられません' });
+          }
+          const results = await pollResults(s, p.pollId);
+          io.to(room).emit('poll_reveal', {
+            pollId: p.pollId,
+            poll: toPublicPoll(poll),
+            results: publicResults(results),
+          });
           cb({ ok: true });
         } catch (err) {
           app.log.error(err);
@@ -765,7 +835,7 @@ async function broadcastParticipantCount(io: TypedServer, room: string): Promise
   io.to(room).emit('participant_count', count);
 }
 
-/** 教室の大画面が何台つながっているか（0なら投影されていないと先生が気づける） */
+/** 教室モニターが何台つながっているか（0なら投影されていないと先生が気づける） */
 async function broadcastScreenCount(
   io: TypedServer,
   room: string,

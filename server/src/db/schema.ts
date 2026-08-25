@@ -46,7 +46,7 @@ export const lessons = pgTable('lessons', {
   pdfPageCount: integer('pdf_page_count'),
   // PDF各ページのテキスト（クライアントで抽出して保存）。ブロック分けのAIに渡す
   pdfPageTexts: jsonb('pdf_page_texts').$type<string[]>(),
-  // 生徒端末で先生の音声を鳴らすかの既定。教室の大画面から音を出す授業は 'off'
+  // 生徒端末で先生の音声を鳴らすかの既定。教室モニターから音を出す授業は 'off'
   audioDefault: text('audio_default', { enum: ['on', 'off'] })
     .notNull()
     .default('on'),
@@ -58,9 +58,15 @@ export const lessons = pgTable('lessons', {
     .default('sequential'),
   // 生徒画面にタスクバーを出しているか（先生が授業中に開始・終了する）
   tasksActive: boolean('tasks_active').notNull().default(false),
-  /** 自動字幕を生徒に出すか。先生が授業ごとに決める */
+  /**
+   * 字幕の出し先。作るかどうかはこの2つから決まる（どちらかがONなら作る）。
+   * 「作る」を別のスイッチにすると、作っているのに誰にも出ていない状態を作れてしまう
+   */
+  captionsOnScreen: boolean('captions_on_screen').notNull().default(false),
+  captionsForStudents: boolean('captions_for_students').notNull().default(false),
+  /** @deprecated 0014以降は captions_on_screen / captions_for_students から導出する */
   captionsEnabled: boolean('captions_enabled').notNull().default(false),
-  // 教室スクリーン（大画面）を先生のログイン無しで開くためのトークン
+  // 教室モニターを先生のログイン無しで開くためのトークン
   screenToken: text('screen_token').unique(),
   // 復習動画（章立て再生ページ）の公開用トークン。未公開ならnull
   reviewShareToken: text('review_share_token').unique(),
@@ -217,6 +223,8 @@ export const commentInsights = pgTable(
     status: text('status', { enum: ['pending', 'ready', 'failed'] })
       .notNull()
       .default('pending'),
+    /** 先生が拾い終えた印。授業中に「どれをまだ見ていないか」を見失わないために持つ */
+    resolved: boolean('resolved').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('comment_insights_lesson_idx').on(t.lessonId, t.windowStartMs)]

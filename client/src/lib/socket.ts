@@ -9,7 +9,7 @@ export type AppSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
  * 再送されるため、クライアントは常に最新状態へ復帰できる。
  */
 export function connectLessonSocket(lessonId: string, screenToken?: string): AppSocket {
-  // 教室の大画面はURLのトークンだけで表示専用の接続をする（先生のログイン不要）
+  // 教室モニターはURLのトークンだけで表示専用の接続をする（先生のログイン不要）
   const participantToken = screenToken
     ? undefined
     : (sessionStorage.getItem('participantToken') ?? undefined);

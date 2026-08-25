@@ -23,8 +23,11 @@ import { savePdfTexts } from '../../lib/pdf';
 import { fmtClock } from '../../lib/format';
 import { makeReactionMeta } from '../../lib/reactionMeta';
 import SlideCanvas, { type DrawingTool } from '../../components/SlideCanvas';
-import JoinQrModal from '../../components/JoinQrModal';
-import ClassroomPanel from '../../components/ClassroomPanel';
+import JoinLinkModal from '../../components/JoinLinkModal';
+import FloatingWindow from '../../components/FloatingWindow';
+import MonitorPanel from '../../components/MonitorPanel';
+import AudioCaptionPanel from '../../components/AudioCaptionPanel';
+import ReactionPanel from '../../components/ReactionPanel';
 import TaskPanel from '../../components/TaskPanel';
 import PollPanel from '../../components/PollPanel';
 
@@ -60,6 +63,16 @@ function insightSortKey(p: CommentInsight): number {
   return p.comments[p.comments.length - 1]?.tMs ?? p.windowStartMs;
 }
 
+/**
+ * まだ拾っていないカードを上に、その中では新しい順に並べる。
+ * 授業中に見るのは「これから答えるもの」なので、済んだものが上に残っていると
+ * カードが増えるほど探す手間が増える（対応済みも消さずに下へ残す）
+ */
+function compareInsights(a: CommentInsight, b: CommentInsight): number {
+  if (a.resolved !== b.resolved) return a.resolved ? 1 : -1;
+  return insightSortKey(b) - insightSortKey(a);
+}
+
 export default function Teach() {
   const { id: lessonId } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -70,6 +83,8 @@ export default function Teach() {
   const [taskProgress, setTaskProgress] = useState<TaskProgressEntry[]>([]);
   const [polls, setPolls] = useState<Poll[]>([]);
   const [pollResults, setPollResults] = useState<Record<string, PollResults>>({});
+  // いま生徒に見せている集計（締め切ったあとの操作なので、授業を跨いでは持たない）
+  const [revealedPollId, setRevealedPollId] = useState<string | null>(null);
   const [participantCount, setParticipantCount] = useState(0);
   const [participants, setParticipants] = useState<ParticipantInfo[]>([]);
   const [screenCount, setScreenCount] = useState(0);
@@ -86,7 +101,18 @@ export default function Teach() {
   // 字幕を作れない・続けられない場合の理由（対応時は null）
   const [captionError, setCaptionError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState('');
-  const [showQr, setShowQr] = useState(false);
+  const [showJoin, setShowJoin] = useState(false);
+  // 道具の窓。閉じている間も中身はDOMに残す（書きかけが消えないように）
+  const [windows, setWindows] = useState({
+    monitor: false,
+    audio: false,
+    reaction: false,
+    task: false,
+    poll: false,
+  });
+  const toggleWindow = useCallback((key: keyof typeof windows) => {
+    setWindows((prev) => ({ ...prev, [key]: !prev[key] }));
+  }, []);
 
   const [tool, setTool] = useState<DrawingTool>('pointer');
   const [color, setColor] = useState(COLORS[0].value);
@@ -97,6 +123,7 @@ export default function Teach() {
   const [redoStacks, setRedoStacks] = useState<Record<string, DrawCommand[]>>({});
 
   const audioStopRef = useRef<{ stop: () => void } | null>(null);
+  const audioStartingRef = useRef(false);
   // 「直近のリアクション」の判定に使う授業タイムライン時計（サーバ時刻基準）
   const lessonClockRef = useRef<{ startedAtEpochMs: number | null; offsetMs: number }>({
     startedAtEpochMs: null,
@@ -132,6 +159,8 @@ export default function Teach() {
     taskMode,
     tasksActive,
     captionsEnabled,
+    captionsOnScreen,
+    captionsForStudents,
     openPoll,
   } = useLessonLive(lessonId, {
     onLessonState: (st) => {
@@ -153,11 +182,7 @@ export default function Teach() {
       });
       // コメント・振り返り（コメント到着時とAI分析完成時に同じidで届く → 上書き）
       socket.on('comment_insight', (p) => {
-        setInsights((prev) =>
-          [p, ...prev.filter((x) => x.id !== p.id)].sort(
-            (a, b) => insightSortKey(b) - insightSortKey(a)
-          )
-        );
+        setInsights((prev) => [p, ...prev.filter((x) => x.id !== p.id)].sort(compareInsights));
       });
       // 既存カードへ統合されて不要になったカードを取り除く
       socket.on('comment_insight_removed', (id) => {
@@ -206,7 +231,7 @@ export default function Teach() {
           api<{ items: ReactionFeedItem[] }>(`/api/lessons/${lessonId}/reactions`),
         ]);
         if (disposed) return;
-        setInsights([...ins].sort((a, b) => insightSortKey(b) - insightSortKey(a)));
+        setInsights([...ins].sort(compareInsights));
         setReactions([...rec.items].reverse()); // 新しい順に保持
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) navigate('/login');
@@ -262,7 +287,9 @@ export default function Teach() {
 
   // ---- 操作 ----
   const startAudio = useCallback(async () => {
-    if (audioStopRef.current) return;
+    // await の間に2回目が入ると、マイクが2本開いて声が二重に流れる
+    if (audioStopRef.current || audioStartingRef.current) return;
+    audioStartingRef.current = true;
     try {
       const socket = socketRef.current;
       if (!socket) return;
@@ -270,8 +297,18 @@ export default function Teach() {
       setAudioState('on');
     } catch {
       setAudioState('error');
+    } finally {
+      audioStartingRef.current = false;
     }
   }, [socketRef]);
+
+  // 授業中にこの画面を開き直した（再読み込み・端末チェックから戻った）ときは、
+  // マイクが止まったままにならないよう入れ直す。止まっていることに先生が
+  // 気づけないまま授業が進むのが一番まずいため、既定で復帰させる
+  useEffect(() => {
+    if (status !== 'live' || audioStopRef.current) return;
+    void startAudio();
+  }, [status, startAudio]);
 
   const startLesson = useCallback(() => {
     socketRef.current?.emit('start_lesson', (res) => {
@@ -459,6 +496,16 @@ export default function Teach() {
 
   const reactionMeta = makeReactionMeta(buttons);
 
+  // コメントが「どのスライドを見ながら書かれたか」。授業中に戻って説明し直す判断に使う
+  const slideNoOf = useCallback(
+    (slideId: string | null): number | null => {
+      if (!slideId) return null;
+      const i = sortedSlides.findIndex((sl) => sl.id === slideId);
+      return i >= 0 ? i + 1 : null;
+    },
+    [sortedSlides]
+  );
+
   // 直近5分間のボタン反応数（授業タイムライン時刻で判定。サーバとの時計ズレはoffsetで補正）
   const recentCounts = useMemo(() => {
     const clock = lessonClockRef.current;
@@ -474,6 +521,15 @@ export default function Teach() {
     return counts;
   }, [reactions, nowTick]);
 
+  // まだ拾っていないコメントの数。カードが増えても取りこぼしに気づけるようにする
+  const openInsightCount = insights.filter((p) => !p.resolved).length;
+
+  // ボタンを開かなくても反応があったことに気づけるよう、合計だけ外に出す
+  const recentTotal = useMemo(
+    () => Object.values(recentCounts).reduce((a, b) => a + b, 0),
+    [recentCounts]
+  );
+
   // 授業タイムライン上の現在時刻（タスクの滞留時間の計算に使う）
   const lessonNowMs = useMemo(() => {
     const clock = lessonClockRef.current;
@@ -484,6 +540,23 @@ export default function Teach() {
   const setReactionsEnabledRemote = useCallback(
     (enabled: boolean) => {
       socketRef.current?.emit('set_reactions_enabled', { enabled }, () => {});
+    },
+    [socketRef]
+  );
+
+  // 「対応済み」の印。消さずに印だけ付けて、下へ送る
+  const setInsightResolved = useCallback(
+    (insightId: string, resolved: boolean) => {
+      socketRef.current?.emit('set_insight_resolved', { insightId, resolved }, () => {});
+    },
+    [socketRef]
+  );
+
+  const setReactionButtonsRemote = useCallback(
+    (list: ReactionButtonDef[]) => {
+      socketRef.current?.emit('set_reaction_buttons', { buttons: list }, (res) => {
+        if (!res.ok && res.error) window.alert(res.error);
+      });
     },
     [socketRef]
   );
@@ -555,8 +628,24 @@ export default function Teach() {
   );
 
   const closePollRemote = useCallback(
-    (pollId: string, reveal: boolean) =>
-      socketRef.current?.emit('close_poll', { pollId, reveal }, () => {}),
+    (pollId: string) => {
+      socketRef.current?.emit('close_poll', { pollId }, () => {});
+      setRevealedPollId(null);
+    },
+    [socketRef]
+  );
+
+  // 締め切ったあとに結果を出す・引っ込める（集計を見てから決められるように分けてある）
+  const revealPollRemote = useCallback(
+    (pollId: string, reveal: boolean) => {
+      socketRef.current?.emit('reveal_poll', { pollId, reveal }, (res) => {
+        if (!res.ok) {
+          if (res.error) window.alert(res.error);
+          return;
+        }
+        setRevealedPollId(reveal ? pollId : null);
+      });
+    },
     [socketRef]
   );
 
@@ -586,11 +675,29 @@ export default function Teach() {
           <span className="muted nowrap">
             参加コード: <strong className="inline-code">{joinCode}</strong>
           </span>
-          <button className="btn header-action" onClick={() => setShowQr(true)} disabled={!joinCode}>
-            参加用QR
+          <button
+            className="btn header-action"
+            onClick={() => setShowJoin(true)}
+            disabled={!joinCode}
+          >
+            参加用リンク
+          </button>
+          <button
+            className={`btn header-action ${windows.monitor ? 'header-action-on' : ''}`}
+            onClick={() => toggleWindow('monitor')}
+          >
+            教室モニター設定
+          </button>
+          <button
+            className={`btn header-action ${windows.audio ? 'header-action-on' : ''}`}
+            onClick={() => toggleWindow('audio')}
+          >
+            音声・字幕設定
           </button>
           <span className="muted nowrap">生徒 {participantCount}人</span>
-          {screenCount > 0 && <span className="chip chip-live nowrap">大画面 {screenCount}台</span>}
+          {screenCount > 0 && (
+            <span className="chip chip-live nowrap">教室モニター {screenCount}台</span>
+          )}
           {status === 'live' && (
             <span className={`nowrap ${audioState === 'on' ? 'rec-on' : 'rec-off'}`}>
               {audioState === 'on' ? '● 録音・配信中' : audioState === 'error' ? 'マイクエラー' : '音声停止中'}
@@ -627,7 +734,7 @@ export default function Teach() {
             <strong>この端末はOpus形式で配信します</strong>
             <span>
               iPad・iPhone・Mac・Apple TV・テレビ内蔵ブラウザでは音が出ません。
-              教室の大画面や生徒がこれらの端末なら、Chrome・Edge で開き直してください。
+              教室モニターや生徒がこれらの端末なら、Chrome・Edge で開き直してください。
               各端末での可否は <a href="/check" target="_blank" rel="noreferrer">/check</a> で確認できます。
             </span>
           </div>
@@ -650,7 +757,7 @@ export default function Teach() {
         </div>
       )}
 
-      {showQr && <JoinQrModal joinCode={joinCode} onClose={() => setShowQr(false)} />}
+      {showJoin && <JoinLinkModal joinCode={joinCode} onClose={() => setShowJoin(false)} />}
 
       <div className="teach-main">
         <div className="slide-area">
@@ -761,75 +868,46 @@ export default function Teach() {
             <button className="btn" onClick={insertBlank} title="このスライドの直後に白紙ページを挿入">
               ＋ 白紙を挿入
             </button>
-            {/* 直近のリアクション: 直近5分間のボタン反応数。
-                タスク・アンケートで状況が分かるなら、ボタンごとやめることもできる */}
-            <div className="recent-reactions">
-              {reactionsEnabled ? (
-                <>
-                  <span className="recent-label">直近のリアクション</span>
-                  {buttons.map((b) => (
-                    <span key={b.key} className="kind-pill" style={{ background: b.color }}>
-                      {b.label} ×{recentCounts[b.key] ?? 0}
-                    </span>
-                  ))}
-                  <button
-                    className="btn-link"
-                    onClick={() => setReactionsEnabledRemote(false)}
-                    title="生徒画面からリアクションボタンを消します。設定は残るので、いつでも戻せます"
-                  >
-                    ボタンをやめる
-                  </button>
-                </>
-              ) : (
-                <>
-                  <span className="recent-label muted">リアクションボタンなし</span>
-                  <button className="btn-link" onClick={() => setReactionsEnabledRemote(true)}>
-                    ボタンを使う
-                  </button>
-                </>
-              )}
+            {/* 授業中に出し入れする道具。窓は開いたままスライドを送れる */}
+            <div className="tool-windows">
+              <button
+                className={`btn tool-window-btn ${windows.reaction ? 'tool-active' : ''}`}
+                onClick={() => toggleWindow('reaction')}
+              >
+                リアクションボタン
+                {reactionsEnabled && recentTotal > 0 && (
+                  <span className="tool-window-badge">{recentTotal}</span>
+                )}
+              </button>
+              <button
+                className={`btn tool-window-btn ${windows.task ? 'tool-active' : ''}`}
+                onClick={() => toggleWindow('task')}
+              >
+                タスク
+                {tasksActive && <span className="tool-window-badge">表示中</span>}
+              </button>
+              <button
+                className={`btn tool-window-btn ${windows.poll ? 'tool-active' : ''}`}
+                onClick={() => toggleWindow('poll')}
+              >
+                アンケート
+                {openPoll && <span className="tool-window-badge">回答中</span>}
+              </button>
             </div>
           </div>
         </div>
 
+        {/* サイドバーはコメント・振り返り専用。授業中に一番読みたいものが
+            他のパネルに押し下げられて見えなくなっていたため、他は窓へ出した */}
         <aside className="sidebar">
-          {lessonId && (
-            <ClassroomPanel
-              lessonId={lessonId}
-              socketRef={socketRef}
-              status={status}
-              screenCount={screenCount}
-              participants={participants}
-              audioDefault={audioDefault}
-              captionsEnabled={captionsEnabled}
-              cameraOn={cameraOn}
-              screenLayout={screenLayout}
-              videoToStudents={videoToStudents}
-            />
-          )}
-          <TaskPanel
-            tasks={tasks}
-            mode={taskMode}
-            active={tasksActive}
-            progress={taskProgress}
-            status={status}
-            nowMs={lessonNowMs}
-            onSetTasks={setTasksRemote}
-            onSetConfig={setTaskConfigRemote}
-          />
-          <PollPanel
-            polls={polls}
-            results={pollResults}
-            openPollId={openPoll?.id ?? null}
-            status={status}
-            onSave={savePoll}
-            onDelete={deletePoll}
-            onOpen={openPollRemote}
-            onRepeat={repeatPoll}
-            onClose={closePollRemote}
-          />
           <div className="card feed-card">
-            <h3>コメント・振り返り</h3>
+            <h3>
+              コメント・振り返り
+              {openInsightCount > 0 && <span className="feed-count">{openInsightCount}</span>}
+              {insights.length > 0 && openInsightCount === 0 && (
+                <span className="feed-count feed-count-done">すべて対応済み</span>
+              )}
+            </h3>
             <div className="insight-list">
               {insights.length === 0 && (
                 <p className="muted">
@@ -837,7 +915,21 @@ export default function Teach() {
                 </p>
               )}
               {insights.map((p) => (
-                <div key={p.id} className="insight-card">
+                <div key={p.id} className={p.resolved ? 'insight-card resolved' : 'insight-card'}>
+                  {slideNoOf(p.slideId) && (
+                    <span className="insight-slide">
+                      スライド {slideNoOf(p.slideId)}
+                      {slideNoOf(p.slideId) !== currentIndex + 1 && (
+                        <button
+                          className="btn-link"
+                          onClick={() => p.slideId && changeSlideTo(p.slideId)}
+                          title="そのスライドへ戻ります（生徒の画面も動きます）"
+                        >
+                          そこへ戻る
+                        </button>
+                      )}
+                    </span>
+                  )}
                   {p.comments.map((c) => (
                     <div key={c.reactionId} className="insight-comment">
                       <span className="feed-time">{fmtClock(c.tMs)}</span>
@@ -861,9 +953,10 @@ export default function Teach() {
                           <span className="muted small">録音がないため要約はありません</span>
                         )}
                       </div>
-                      <div className="insight-sec">
-                        <span className="point-label">周辺の反応</span>
-                        {Object.keys(p.kinds).length > 0 ? (
+                      {/* 周辺の反応は、あったときだけ出す（「なし」は読む手間だけ増やす） */}
+                      {Object.keys(p.kinds).length > 0 && (
+                        <div className="insight-sec">
+                          <span className="point-label">周辺の反応</span>
                           <span className="clip-kinds">
                             {Object.entries(p.kinds).map(([k, n]) => (
                               <span
@@ -875,18 +968,120 @@ export default function Teach() {
                               </span>
                             ))}
                           </span>
-                        ) : (
-                          <span className="muted small">なし</span>
-                        )}
-                      </div>
+                        </div>
+                      )}
                     </>
                   )}
+                  <div className="insight-actions">
+                    <button
+                      className={p.resolved ? 'btn-link' : 'btn small'}
+                      onClick={() => setInsightResolved(p.id, !p.resolved)}
+                      title={
+                        p.resolved
+                          ? 'まだ拾えていない扱いに戻します'
+                          : 'このコメントは拾ったという印を付けます（記録は残ります）'
+                      }
+                    >
+                      {p.resolved ? '✓ 対応済み（戻す）' : '対応済みにする'}
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
           </div>
         </aside>
       </div>
+
+      {lessonId && (
+        <FloatingWindow
+          title="教室モニター設定"
+          open={windows.monitor}
+          onClose={() => toggleWindow('monitor')}
+          defaultPos={{ x: 60, y: 96 }}
+          width={520}
+        >
+          <MonitorPanel
+            lessonId={lessonId}
+            socketRef={socketRef}
+            screenCount={screenCount}
+            cameraOn={cameraOn}
+            screenLayout={screenLayout}
+            videoToStudents={videoToStudents}
+          />
+        </FloatingWindow>
+      )}
+
+      <FloatingWindow
+        title="音声・字幕設定"
+        open={windows.audio}
+        onClose={() => toggleWindow('audio')}
+        defaultPos={{ x: 110, y: 130 }}
+      >
+        <AudioCaptionPanel
+          socketRef={socketRef}
+          status={status}
+          screenCount={screenCount}
+          participants={participants}
+          audioDefault={audioDefault}
+          captionsOnScreen={captionsOnScreen}
+          captionsForStudents={captionsForStudents}
+        />
+      </FloatingWindow>
+
+      <FloatingWindow
+        title="リアクションボタン"
+        open={windows.reaction}
+        onClose={() => toggleWindow('reaction')}
+        defaultPos={{ x: 160, y: 164 }}
+      >
+        <ReactionPanel
+          buttons={buttons}
+          enabled={reactionsEnabled}
+          recentCounts={recentCounts}
+          onSetEnabled={setReactionsEnabledRemote}
+          onSetButtons={setReactionButtonsRemote}
+        />
+      </FloatingWindow>
+
+      <FloatingWindow
+        title="タスク"
+        open={windows.task}
+        onClose={() => toggleWindow('task')}
+        defaultPos={{ x: 210, y: 198 }}
+      >
+        <TaskPanel
+          tasks={tasks}
+          mode={taskMode}
+          active={tasksActive}
+          progress={taskProgress}
+          status={status}
+          nowMs={lessonNowMs}
+          onSetTasks={setTasksRemote}
+          onSetConfig={setTaskConfigRemote}
+        />
+      </FloatingWindow>
+
+      <FloatingWindow
+        title="アンケート"
+        open={windows.poll}
+        onClose={() => toggleWindow('poll')}
+        defaultPos={{ x: 260, y: 232 }}
+        width={420}
+      >
+        <PollPanel
+          polls={polls}
+          results={pollResults}
+          openPollId={openPoll?.id ?? null}
+          revealedPollId={revealedPollId}
+          status={status}
+          onSave={savePoll}
+          onDelete={deletePoll}
+          onOpen={openPollRemote}
+          onRepeat={repeatPoll}
+          onClose={closePollRemote}
+          onReveal={revealPollRemote}
+        />
+      </FloatingWindow>
     </div>
   );
 }

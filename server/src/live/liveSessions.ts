@@ -82,7 +82,11 @@ export type LiveSession = {
   taskMode: TaskMode;
   /** 生徒画面にタスクバーを出しているか */
   tasksActive: boolean;
-  /** 自動字幕を生徒に出すか */
+  /** 教室モニターに字幕の帯を出すか */
+  captionsOnScreen: boolean;
+  /** 生徒の端末に字幕を出してよいか（出すかどうかは生徒が各自で決める） */
+  captionsForStudents: boolean;
+  /** 字幕を作っているか。出し先のどちらかがONなら作る（導出値） */
   captionsEnabled: boolean;
   /** participantId → 完了したタスクidの集合。task_progress イベントの畳み込み結果 */
   taskProgress: Map<string, Set<string>>;
@@ -110,14 +114,14 @@ export type LiveSession = {
   /** 現在パートの先頭チャンク（WebMヘッダ）。新規参加者のデコーダ初期化用 */
   audioInitSegment: Buffer | null;
 
-  // 生徒端末の音声（教室の大画面から音を出す授業は既定 'off'）
+  // 生徒端末の音声（教室モニターから音を出す授業は既定 'off'）
   audioDefault: AudioMode;
   /** 音声の個別指定（participantId → 設定）。既定に従う生徒は入っていない */
   audioOverrides: Map<string, AudioMode>;
 
   /**
    * カメラ映像（音声込みの1本のストリーム）。
-   * 大画面には常に届け、生徒端末へは videoToStudents がONのときだけ届ける。
+   * 教室モニターには常に届け、生徒端末へは videoToStudents がONのときだけ届ける。
    * 復習動画には残さないため保存もしない（ライブ配信のみ）。
    */
   cameraOn: boolean;
@@ -186,7 +190,9 @@ export async function getSession(lessonId: string): Promise<LiveSession | null> 
     tasks: lesson.tasks ?? [],
     taskMode: lesson.taskMode,
     tasksActive: lesson.tasksActive,
-    captionsEnabled: lesson.captionsEnabled,
+    captionsOnScreen: lesson.captionsOnScreen,
+    captionsForStudents: lesson.captionsForStudents,
+    captionsEnabled: lesson.captionsOnScreen || lesson.captionsForStudents,
     taskProgress: new Map(),
     taskUpdatedAt: new Map(),
     polls,
@@ -222,8 +228,10 @@ export async function getSession(lessonId: string): Promise<LiveSession | null> 
     if (p.audioOverride) s.audioOverrides.set(p.id, p.audioOverride);
   }
 
-  // サーバ再起動後の復元: live中ならタイムラインから描画状態・現在スライドを再構成
-  if (lesson.status === 'live') {
+  // サーバ再起動後の復元: タイムラインから描画状態・現在スライドを再構成する。
+  // 開始前（draft）も対象にするのは、授業前に板書を仕込んでおく使い方があるため。
+  // 終了した授業はライブ状態を持たない（振り返りはDBから直接読む）
+  if (lesson.status !== 'ended') {
     const events = await db
       .select()
       .from(schema.timelineEvents)
@@ -369,6 +377,8 @@ export function toLiveState(s: LiveSession): LiveLessonState {
     taskMode: s.taskMode,
     tasksActive: s.tasksActive,
     captionsEnabled: s.captionsEnabled,
+    captionsOnScreen: s.captionsOnScreen,
+    captionsForStudents: s.captionsForStudents,
     openPoll: (() => {
       const p = s.polls.find((x) => x.id === s.openPollId);
       return p ? toPublicPoll(p) : null;
@@ -382,16 +392,65 @@ export function toLiveState(s: LiveSession): LiveLessonState {
  * ボタンの定義は消さないので、戻せば元の設定がそのまま復活する
  */
 /**
- * 自動字幕のON/OFF。
- * 誤変換が問題になったときに先生がすぐ止められる必要があるため、
- * 授業中でも切り替えられる。記録済みの字幕は消さない（読み返しに使うため）。
+ * 字幕の出し先の切り替え。
+ *
+ * 「字幕を作る」というスイッチは置かない。作ることは目的ではなく、
+ * どこかに出すための副作用なので、出し先がひとつでもONなら作り、
+ * すべてOFFになったら止める。先生が大元のスイッチを入れ忘れて
+ * 「モニターの字幕をONにしたのに出ない」という失敗が起きないようにする。
+ *
+ * 誤変換が問題になったときにすぐ止められるよう、授業中でも切り替えられる。
+ * 記録済みの字幕は消さない（読み返しに使うため）。
  */
-export async function setCaptionsEnabled(s: LiveSession, enabled: boolean): Promise<void> {
-  s.captionsEnabled = enabled;
+export async function setCaptionTargets(
+  s: LiveSession,
+  p: { onScreen?: boolean; forStudents?: boolean }
+): Promise<void> {
+  if (typeof p.onScreen !== 'boolean' && typeof p.forStudents !== 'boolean') return;
+  if (typeof p.onScreen === 'boolean') s.captionsOnScreen = p.onScreen;
+  if (typeof p.forStudents === 'boolean') s.captionsForStudents = p.forStudents;
+  s.captionsEnabled = s.captionsOnScreen || s.captionsForStudents;
   await db
     .update(schema.lessons)
-    .set({ captionsEnabled: enabled })
+    .set({
+      captionsOnScreen: s.captionsOnScreen,
+      captionsForStudents: s.captionsForStudents,
+      captionsEnabled: s.captionsEnabled,
+    })
     .where(eq(schema.lessons.id, s.lessonId));
+}
+
+/** リアクションボタンの上限（先生画面の1行に収まる数） */
+const MAX_REACTION_BUTTONS = 6;
+
+/**
+ * リアクションボタンの定義を差し替える（授業中でも変えられる）。
+ *
+ * key は先生が編集しても保つ。過去の反応は key で記録されているので、
+ * 付け替えると授業後の集計でラベルと色を引けなくなるため。
+ */
+export async function setReactionButtons(
+  s: LiveSession,
+  input: ReactionButtonDef[]
+): Promise<{ error?: string }> {
+  const seen = new Set<string>();
+  const buttons: ReactionButtonDef[] = [];
+  for (const b of input.slice(0, MAX_REACTION_BUTTONS)) {
+    const label = String(b?.label ?? '').trim().slice(0, 20);
+    if (!label) continue;
+    let key = String(b?.key ?? '').trim().slice(0, 40) || `btn_${buttons.length}`;
+    while (seen.has(key)) key = `${key}_`;
+    seen.add(key);
+    const color = /^#[0-9a-fA-F]{6}$/.test(String(b?.color)) ? String(b.color) : '#2563eb';
+    buttons.push({ key, label, color, hidden: b?.hidden === true });
+  }
+  if (buttons.length === 0) return { error: 'ボタンを1つ以上残してください' };
+  s.reactionButtons = buttons;
+  await db
+    .update(schema.lessons)
+    .set({ reactionButtons: buttons })
+    .where(eq(schema.lessons.id, s.lessonId));
+  return {};
 }
 
 export async function setReactionsEnabled(s: LiveSession, enabled: boolean): Promise<void> {

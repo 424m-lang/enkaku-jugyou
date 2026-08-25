@@ -2,7 +2,7 @@ import type { AppSocket } from './socket';
 import { LiveMediaPlayer } from './liveMedia';
 
 /**
- * 先生のカメラ映像（顔・手元の実演）を教室の大画面へ届けるための配信。
+ * 先生のカメラ映像（顔・手元の実演）を教室モニターへ届けるための配信。
  *
  * 音声を別ストリームにすると口の動きと声が0.5〜1秒ずれてしまうため、
  * 映像と音声を1本のストリームにまとめて送る。文字起こし用の音声のみの配信は
@@ -87,7 +87,7 @@ export async function startCameraBroadcast(
 
   let stream: MediaStream;
   try {
-    // 大画面はこの1本から音を鳴らすので、映像と同じストリームに音声も入れる
+    // 教室モニターはこの1本から音を鳴らすので、映像と同じストリームに音声も入れる
     // （別ストリームにすると口の動きと声がずれる）
     stream = await navigator.mediaDevices.getUserMedia({
       video,
@@ -128,7 +128,7 @@ export async function startCameraBroadcast(
   };
 }
 
-/** 大画面・遠隔の生徒側: カメラ映像（音声込み）を再生する */
+/** 教室モニター・遠隔の生徒側: カメラ映像（音声込み）を再生する */
 export class LiveVideoPlayer extends LiveMediaPlayer {
   constructor(el: HTMLVideoElement) {
     super(el);
