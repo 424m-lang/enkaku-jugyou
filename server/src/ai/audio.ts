@@ -36,31 +36,63 @@ export async function extractRangeToWav(
   const parts = await getAudioParts(lessonId);
   if (parts.length === 0) return null;
 
-  // 範囲の開始を含むパートを選ぶ（パート跨ぎの場合はパート末尾まで）
-  let part: AudioPartInfo = parts[0];
-  for (const p of parts) {
-    if (p.startMs <= startMs) part = p;
-  }
-  const srcPath = path.join(lessonDir(lessonId), part.file);
-  if (!fs.existsSync(srcPath)) return null;
-
-  const offsetSec = Math.max(0, (startMs - part.startMs) / 1000);
   const durationSec = Math.max(0.5, (endMs - startMs) / 1000);
   const outPath = path.join(os.tmpdir(), `clip_${lessonId}_${crypto.randomUUID()}.wav`);
+
+  // 録音器の再起動・形式変更をまたぐ範囲では、関係する全パートをタイムライン上の
+  // 正しい位置へ重ねる。以前は開始時刻を含む1ファイルだけを読み、残りが欠けていた。
+  const overlaps = parts.flatMap((part, i) => {
+    const partEndMs = parts[i + 1]?.startMs ?? endMs;
+    const fromMs = Math.max(startMs, part.startMs);
+    const toMs = Math.min(endMs, partEndMs);
+    const srcPath = path.join(lessonDir(lessonId), part.file);
+    if (toMs <= fromMs || !fs.existsSync(srcPath)) return [];
+    return [{
+      srcPath,
+      offsetSec: Math.max(0, (fromMs - part.startMs) / 1000),
+      durationSec: (toMs - fromMs) / 1000,
+      delayMs: fromMs - startMs,
+    }];
+  });
+  if (overlaps.length === 0) return null;
+
+  const args = [
+    '-y',
+    // 無音の土台を置くことで、録音再開までの隙間も時刻どおりに保つ
+    '-f', 'lavfi', '-t', durationSec.toFixed(3),
+    '-i', 'anullsrc=r=16000:cl=mono',
+  ];
+  for (const part of overlaps) {
+    args.push(
+      '-ss', part.offsetSec.toFixed(3),
+      '-t', Math.max(0.001, part.durationSec).toFixed(3),
+      '-i', part.srcPath
+    );
+  }
+  const filters = [
+    `[0:a]aformat=sample_fmts=fltp:channel_layouts=mono,atrim=duration=${durationSec.toFixed(3)},asetpts=PTS-STARTPTS[base]`,
+    ...overlaps.map(
+      (part, i) =>
+        `[${i + 1}:a]aresample=16000,aformat=sample_fmts=fltp:channel_layouts=mono,` +
+        `asetpts=PTS-STARTPTS,adelay=${Math.max(0, Math.round(part.delayMs))}:all=1[a${i}]`
+    ),
+    `[base]${overlaps.map((_, i) => `[a${i}]`).join('')}amix=inputs=${overlaps.length + 1}:` +
+      `duration=first:dropout_transition=0:normalize=0,atrim=duration=${durationSec.toFixed(3)},` +
+      'asetpts=PTS-STARTPTS[out]',
+  ];
+  args.push(
+    '-filter_complex', filters.join(';'),
+    '-map', '[out]',
+    '-ar', '16000',
+    '-ac', '1',
+    '-f', 'wav',
+    outPath
+  );
 
   await new Promise<void>((resolve, reject) => {
     execFile(
       ffmpegPath as string,
-      [
-        '-y',
-        '-ss', offsetSec.toFixed(3),
-        '-t', durationSec.toFixed(3),
-        '-i', srcPath,
-        '-ar', '16000',
-        '-ac', '1',
-        '-f', 'wav',
-        outPath,
-      ],
+      args,
       { timeout: 120_000 },
       (err, _stdout, stderr) => {
         if (err) reject(new Error(`ffmpeg失敗: ${stderr?.slice(-500)}`));

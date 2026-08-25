@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 
-type WakeLockLike = { release: () => Promise<void> };
+type WakeLockLike = { release: () => Promise<void>; released?: boolean };
 
 /**
  * 授業中に画面が暗くならないようにする。
@@ -25,20 +25,29 @@ export function useWakeLock(active = true): void {
     if (!wakeLock) return;
 
     let lock: WakeLockLike | null = null;
+    let acquiring: Promise<void> | null = null;
     let disposed = false;
-    const acquire = async () => {
-      try {
-        const next = await wakeLock.request('screen');
-        if (disposed) void next.release().catch(() => {});
-        else lock = next;
-      } catch {
-        /* 権限やブラウザの制限で取れないことがある。取れなくても授業は続く */
-      }
+    const acquire = () => {
+      if (disposed || acquiring || (lock && !lock.released)) return;
+      acquiring = (async () => {
+        try {
+          const next = await wakeLock.request('screen');
+          if (disposed) void next.release().catch(() => {});
+          else {
+            if (lock && lock !== next && !lock.released) void lock.release().catch(() => {});
+            lock = next;
+          }
+        } catch {
+          /* 権限やブラウザの制限で取れないことがある。取れなくても授業は続く */
+        } finally {
+          acquiring = null;
+        }
+      })();
     };
-    void acquire();
+    acquire();
     // タブが裏に回るとロックは自動的に解除されるので、戻ったら取り直す
     const onVisible = () => {
-      if (document.visibilityState === 'visible') void acquire();
+      if (document.visibilityState === 'visible') acquire();
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => {

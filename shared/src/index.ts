@@ -867,7 +867,6 @@ export type LiveLessonState = {
   serverNowEpochMs: number;
   // 現時点までの描画状態を再構成するためのイベント（stroke/clearのみ）
   drawingEvents: TimelineEvent[];
-  counts: ReactionCounts;
   /** 生徒端末の音声の既定（教室モニターから音を出す授業では 'off'） */
   audioDefault: AudioMode;
   cameraOn: boolean;

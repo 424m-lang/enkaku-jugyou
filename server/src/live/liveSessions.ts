@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, eq, inArray } from 'drizzle-orm';
 import type {
   AudioFormat,
   AudioMode,
@@ -191,6 +191,12 @@ export type LiveSession = {
 };
 
 const sessions = new Map<string, LiveSession>();
+/**
+ * 最初の接続が同時に複数来ても、同じ授業をDBから二重に組み立てない。
+ * Socket.IOの各接続が別々のLiveSessionを握ると、その後の状態更新が分岐してしまうため、
+ * 読み込み中のPromiseも授業ごとに共有する。
+ */
+const sessionLoads = new Map<string, Promise<LiveSession | null>>();
 
 export function tMs(s: LiveSession): number {
   return s.startedAtEpochMs ? Date.now() - s.startedAtEpochMs : 0;
@@ -223,6 +229,19 @@ export async function getSession(lessonId: string): Promise<LiveSession | null> 
   const existing = sessions.get(lessonId);
   if (existing) return existing;
 
+  const inFlight = sessionLoads.get(lessonId);
+  if (inFlight) return inFlight;
+
+  const loading = loadSession(lessonId);
+  sessionLoads.set(lessonId, loading);
+  try {
+    return await loading;
+  } finally {
+    if (sessionLoads.get(lessonId) === loading) sessionLoads.delete(lessonId);
+  }
+}
+
+async function loadSession(lessonId: string): Promise<LiveSession | null> {
   const [lesson] = await db.select().from(schema.lessons).where(eq(schema.lessons.id, lessonId));
   if (!lesson) return null;
 
@@ -431,7 +450,6 @@ export function toLiveState(s: LiveSession): LiveLessonState {
     startedAtEpochMs: s.startedAtEpochMs,
     serverNowEpochMs: Date.now(),
     drawingEvents: s.drawingEvents,
-    counts: s.counts,
     audioDefault: s.audioDefault,
     cameraOn: s.cameraOn,
     screenLayout: s.screenLayout,
@@ -678,7 +696,12 @@ export async function setParticipantAudio(
   await db
     .update(schema.participants)
     .set({ audioOverride: mode })
-    .where(eq(schema.participants.id, participantId));
+    .where(
+      and(
+        eq(schema.participants.id, participantId),
+        eq(schema.participants.lessonId, s.lessonId)
+      )
+    );
 }
 
 /** 先生画面の参加者一覧（onlineIds は現在接続中のparticipantId） */
@@ -795,7 +818,8 @@ export async function startLesson(s: LiveSession): Promise<void> {
   const startedAt = new Date();
   s.status = 'live';
   s.startedAtEpochMs = startedAt.getTime();
-  s.drawingEvents = [];
+  // 開始前に用意した板書はそのまま授業へ引き継ぐ。
+  // これらは tMs=0 で保存済みなので、途中参加者も同じ状態を再構成できる。
   s.counts = {};
   s.recentReactions = [];
   s.composing.clear();

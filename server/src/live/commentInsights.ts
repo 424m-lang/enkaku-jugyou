@@ -62,7 +62,12 @@ export async function setInsightResolved(
   const [row] = await db
     .select()
     .from(schema.commentInsights)
-    .where(eq(schema.commentInsights.id, insightId));
+    .where(
+      and(
+        eq(schema.commentInsights.id, insightId),
+        eq(schema.commentInsights.lessonId, lessonId)
+      )
+    );
   return row ? rowToInsight(row) : null;
 }
 

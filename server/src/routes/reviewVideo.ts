@@ -3,7 +3,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { and, asc, eq } from 'drizzle-orm';
-import type { ReviewChapter, TimelineEvent, TranscriptSegment, WatchPage } from '@shared';
+import type {
+  ReviewChapter,
+  TimelineEvent,
+  TimelineEventType,
+  TranscriptSegment,
+  WatchPage,
+} from '@shared';
 import { db, schema } from '../db';
 import { requireTeacher, teacherIdOf } from '../auth';
 import { loadSlides } from '../live/liveSessions';
@@ -444,7 +450,17 @@ export async function reviewVideoRoutes(app: FastifyInstance): Promise<void> {
       .where(eq(schema.timelineEvents.lessonId, lesson.id))
       .orderBy(asc(schema.timelineEvents.tMs));
 
-    const events = rows as unknown as TimelineEvent[];
+    // 公開ページに必要なのは表示の再現だけ。タスク進捗・字幕・内部イベントは、
+    // UIが使わなくてもJSONを直接見れば読めるため、公開APIへ含めない。
+    const publicEventTypes = new Set<TimelineEventType>([
+      'slide_change',
+      'stroke',
+      'clear_slide',
+      'pointer',
+    ]);
+    const events = rows.filter((e) =>
+      publicEventTypes.has(e.type as TimelineEventType)
+    ) as unknown as TimelineEvent[];
     const page: WatchPage = {
       title: lesson.title,
       chapters,

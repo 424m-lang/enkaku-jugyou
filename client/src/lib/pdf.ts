@@ -49,7 +49,15 @@ export class PdfCache {
   render(pageIndex: number): Promise<ImageBitmap> {
     let p = this.bitmaps.get(pageIndex);
     if (!p) {
-      p = this.renderInner(pageIndex);
+      p = this.renderInner(pageIndex).catch((err) => {
+        // iOSの一時的なCanvasメモリ不足などで失敗しても、拒否済みPromiseを残さない。
+        // 次にそのページが必要になったとき、改めて描画できるようにする。
+        if (this.bitmaps.get(pageIndex) === p) {
+          this.bitmaps.delete(pageIndex);
+          this.order = this.order.filter((i) => i !== pageIndex);
+        }
+        throw err;
+      });
       this.bitmaps.set(pageIndex, p);
     }
     this.touch(pageIndex);
@@ -146,13 +154,25 @@ export class PdfCache {
 }
 
 async function loadPdfFrom(url: string, init?: RequestInit): Promise<PdfCache | null> {
-  const res = await fetch(url, init);
-  if (!res.ok) return null;
-  const data = await res.arrayBuffer();
-  const doc = await pdfjs.getDocument({ data }).promise;
-  const cache = new PdfCache(doc);
-  void cache.preloadFirst();
-  return cache;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await fetch(url, init);
+      // 権限・不存在は待っても直らない。サーバ障害や通信失敗だけ一度やり直す。
+      if (!res.ok) {
+        if (res.status < 500 || attempt > 0) return null;
+        continue;
+      }
+      const data = await res.arrayBuffer();
+      const doc = await pdfjs.getDocument({ data }).promise;
+      const cache = new PdfCache(doc);
+      void cache.preloadFirst();
+      return cache;
+    } catch {
+      if (attempt > 0) return null;
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+  }
+  return null;
 }
 
 export async function loadLessonPdf(lessonId: string): Promise<PdfCache | null> {

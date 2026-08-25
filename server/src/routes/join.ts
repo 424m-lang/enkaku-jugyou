@@ -11,7 +11,7 @@ const joinSchema = z.object({
     .min(4)
     .max(12)
     .transform((s) => s.trim().toUpperCase()),
-  displayName: z.string().min(1, '表示名を入力してください').max(30),
+  displayName: z.string().trim().min(1, '表示名を入力してください').max(30),
 });
 
 export async function joinRoutes(app: FastifyInstance): Promise<void> {

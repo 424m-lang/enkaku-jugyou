@@ -151,7 +151,11 @@ export async function startCameraBroadcast(
     rec.ondataavailable = (e) => {
       if (e.data.size === 0 || recorders.get(f)?.gen !== gen) return;
       void e.data.arrayBuffer().then((buf) => {
-        if (recorders.get(f)?.gen === gen) socket.emit('av_chunk', buf, actualMime);
+        if (recorders.get(f)?.gen !== gen) return;
+        // ライブ映像は古い欠片を再送しても遅延が増えるだけなので通常の断片は破棄可能にする。
+        // デコーダ初期化用の先頭だけは落とせないため、確実に送る。
+        if (isInitSegment(buf)) socket.emit('av_chunk', buf, actualMime);
+        else socket.volatile.emit('av_chunk', buf, actualMime);
       });
     };
     rec.start(CHUNK_MS);
@@ -173,9 +177,11 @@ export async function startCameraBroadcast(
     void startLowLatencyMp4({
       stream,
       bitrate: VIDEO_BITS_PER_SECOND,
-      onSegment: (bytes, mime) => {
+      onSegment: (bytes, mime, isInit) => {
         if (recorders.get('mp4')?.gen !== gen) return;
-        socket.emit('av_chunk', toArrayBuffer(bytes), mime);
+        const buf = toArrayBuffer(bytes);
+        if (isInit) socket.emit('av_chunk', buf, mime);
+        else socket.volatile.emit('av_chunk', buf, mime);
       },
       onFailure: () => {
         // 途中で符号化に失敗しても授業は続くので、黙って従来の経路に戻す
@@ -251,6 +257,15 @@ export async function startCameraBroadcast(
       stream.getTracks().forEach((t) => t.stop());
     },
   };
+}
+
+/** MediaRecorderの先頭断片（WebMのEBML / MP4のftyp）だけは確実に送るための判定 */
+function isInitSegment(buf: ArrayBuffer): boolean {
+  const b = new Uint8Array(buf);
+  return (
+    (b.length >= 4 && b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3) ||
+    (b.length >= 8 && b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70)
+  );
 }
 
 /** 教室モニター・遠隔の生徒側: カメラ映像（音声込み）を再生する */

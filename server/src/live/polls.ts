@@ -143,7 +143,16 @@ export async function savePoll(
 }
 
 export async function deletePoll(s: LiveSession, pollId: string): Promise<void> {
-  await db.delete(schema.pollAnswers).where(eq(schema.pollAnswers.pollId, pollId));
+  const poll = s.polls.find((p) => p.id === pollId);
+  if (!poll) return;
+  await db
+    .delete(schema.pollAnswers)
+    .where(
+      and(
+        eq(schema.pollAnswers.pollId, pollId),
+        eq(schema.pollAnswers.lessonId, s.lessonId)
+      )
+    );
   await db
     .delete(schema.polls)
     .where(and(eq(schema.polls.id, pollId), eq(schema.polls.lessonId, s.lessonId)));
@@ -169,10 +178,11 @@ export async function openPoll(s: LiveSession, pollId: string): Promise<Poll | n
 }
 
 export async function closePoll(s: LiveSession, pollId: string): Promise<void> {
+  if (!s.polls.some((p) => p.id === pollId)) return;
   await db
     .update(schema.polls)
     .set({ status: 'closed', closedAtMs: tMs(s) })
-    .where(eq(schema.polls.id, pollId));
+    .where(and(eq(schema.polls.id, pollId), eq(schema.polls.lessonId, s.lessonId)));
   s.polls = await loadPolls(s.lessonId);
   if (s.openPollId === pollId) s.openPollId = null;
 }

@@ -19,17 +19,41 @@ export class ReactionQueue {
   private key: string;
   private socket: AppSocket;
   private flushing = false;
+  private onChange: (count: number) => void;
+  private readonly onConnect = () => void this.flush();
+  private readonly onOnline = () => void this.flush();
 
-  constructor(lessonId: string, socket: AppSocket) {
-    this.key = `reactionQueue:${lessonId}`;
+  constructor(
+    lessonId: string,
+    participantId: string,
+    socket: AppSocket,
+    onChange: (count: number) => void = () => {}
+  ) {
+    // 同じ端末を別の生徒が使っても、前の生徒の未送信反応を引き継がない。
+    this.key = `reactionQueue:${lessonId}:${participantId}`;
     this.socket = socket;
-    socket.on('connect', () => void this.flush());
-    window.addEventListener('online', () => void this.flush());
+    this.onChange = onChange;
+    socket.on('connect', this.onConnect);
+    window.addEventListener('online', this.onOnline);
   }
 
   private load(): QueuedReaction[] {
     try {
-      return JSON.parse(readStored('local', this.key) ?? '[]') as QueuedReaction[];
+      const parsed: unknown = JSON.parse(readStored('local', this.key) ?? '[]');
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter((item): item is QueuedReaction => {
+        if (!item || typeof item !== 'object') return false;
+        const q = item as Partial<QueuedReaction>;
+        return (
+          typeof q.kind === 'string' &&
+          q.kind.length > 0 &&
+          q.kind.length <= 40 &&
+          typeof q.pressedAtEpochMs === 'number' &&
+          Number.isFinite(q.pressedAtEpochMs) &&
+          (q.comment === undefined || typeof q.comment === 'string') &&
+          (q.slideId === undefined || typeof q.slideId === 'string')
+        );
+      });
     } catch {
       return [];
     }
@@ -37,6 +61,7 @@ export class ReactionQueue {
 
   private save(items: QueuedReaction[]): void {
     writeStored('local', this.key, JSON.stringify(items));
+    this.onChange(items.length);
   }
 
   get pendingCount(): number {
@@ -83,5 +108,10 @@ export class ReactionQueue {
     } finally {
       this.flushing = false;
     }
+  }
+
+  dispose(): void {
+    this.socket.off('connect', this.onConnect);
+    window.removeEventListener('online', this.onOnline);
   }
 }

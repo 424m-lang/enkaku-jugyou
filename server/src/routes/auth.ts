@@ -21,13 +21,13 @@ const loginIdSchema = z
 
 const registerSchema = z.object({
   loginId: loginIdSchema,
-  password: z.string().min(8, 'パスワードは8文字以上にしてください'),
-  name: z.string().min(1, '表示名を入力してください').max(50),
+  password: z.string().min(8, 'パスワードは8文字以上にしてください').max(128),
+  name: z.string().trim().min(1, '表示名を入力してください').max(50),
 });
 
 const loginSchema = z.object({
   loginId: z.string().transform((s) => s.trim().toLowerCase()),
-  password: z.string(),
+  password: z.string().max(128),
 });
 
 export async function authRoutes(app: FastifyInstance): Promise<void> {
