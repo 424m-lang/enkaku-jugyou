@@ -9,6 +9,7 @@ import { clusterReactions } from '../live/reactions';
 import { loadSlides } from '../live/liveSessions';
 import { loadSlideIntervals, slideAt } from '../slideTimeline';
 import { transcribeRange } from '../ai/transcribe';
+import { ensureFullTranscript } from '../ai/fullTranscript';
 import { locateCommentTarget, summarizeLesson } from '../ai/summarize';
 
 /** 自分の授業であることを確認して返す（振り返り系は先生専用） */
@@ -214,18 +215,26 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
       .where(eq(schema.commentClips.lessonId, id));
     const doneIds = new Set(done.map((d) => d.reactionId));
 
+    // 授業全体の文字起こしを一度だけ用意する。
+    // 授業中に貯めたぶん（scope='clip'）を組み合わせ、足りない範囲だけを追加で起こす。
+    //
+    // 以前はコメント1件ごとに「手前4分」を起こし直していた。
+    // その範囲は授業中にすでに起こしてあるので、**同じ音声をもう一度Whisperへ送っていた**。
+    // コメントが10件あれば最大40分ぶん、費用も待ち時間も余分にかかっていた
+    const durationMs = lesson.audioDurationMs ?? 0;
+    const allSegments = durationMs > 0 ? await ensureFullTranscript(id, durationMs) : [];
+
     for (const c of comments) {
       if (doneIds.has(c.id) || !c.comment) continue;
       const composeStart = c.composeStartMs ?? c.tMs;
-      // コメントの手前（入力開始の数分前〜送信時刻）を文字起こしして、対象の発言を探す
+      // コメントの手前（入力開始の数分前〜送信時刻）から、対象の発言を探す
       const from = Math.max(0, composeStart - config.commentLookbackMs);
-      const t = await transcribeRange(id, from, c.tMs);
-      const segments = t?.segments ?? null;
+      const segments = allSegments.filter((seg) => seg.endMs > from && seg.startMs < c.tMs);
       let clipStartMs = defaultCommentClipStart(composeStart);
       let clipEndMs = Math.max(c.tMs, clipStartMs + 45_000);
       let targetText: string | null = null;
 
-      if (segments && segments.length > 0) {
+      if (segments.length > 0) {
         const idx = await locateCommentTarget(segments, c.comment);
         if (idx !== null) {
           const seg = segments[idx];
@@ -396,8 +405,19 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
     const durationMs = lesson.audioDurationMs ?? 0;
     if (durationMs <= 0) return reply.code(409).send({ error: '録音がありません' });
 
-    const t = await transcribeRange(id, 0, durationMs);
-    if (!t) return reply.code(409).send({ error: '録音ファイルが見つかりません' });
+    // 授業中に貯めた文字起こしを組み合わせ、足りない範囲だけを追加で起こす。
+    // ここで毎回 0〜終わり を起こし直していたころは、「AI要約」を押すたびに
+    // **授業1コマぶんの文字起こし料金がもう一度**かかっていた
+    const segments = await ensureFullTranscript(id, durationMs);
+    if (segments.length === 0) {
+      return reply.code(409).send({ error: '録音ファイルが見つかりません' });
+    }
+    const text = segments.map((s) => s.text).join('');
+    const [fullRow] = await db
+      .select({ provider: schema.transcripts.provider })
+      .from(schema.transcripts)
+      .where(and(eq(schema.transcripts.lessonId, id), eq(schema.transcripts.scope, 'full')));
+    const provider = fullRow?.provider ?? config.transcribeProvider;
 
     const rows = await reactionsWithNames(id);
     const clusters = clusterReactions(rows).slice(0, 8);
@@ -413,7 +433,7 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
       return `${fmtMs(c.centerMs)}頃: ${c.participantCount}人が反応（${kinds}）${comments ? ` コメント: ${comments}` : ''}`;
     });
 
-    const summary = await summarizeLesson(t.text, clusterNotes);
+    const summary = await summarizeLesson(text, clusterNotes);
 
     // 既存の全体要約は置き換える
     await db
@@ -425,18 +445,18 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
       scope: 'full',
       rangeStartMs: 0,
       rangeEndMs: durationMs,
-      text: t.text,
+      text,
       summary: summary.text,
-      segments: t.segments,
-      provider: t.provider,
+      segments,
+      provider,
       model: summary.provider,
     });
 
     return {
-      text: t.text,
+      text,
       summary: summary.text,
-      segments: t.segments,
-      provider: t.provider,
+      segments,
+      provider,
       model: summary.provider,
       createdAt: new Date().toISOString(),
     };
