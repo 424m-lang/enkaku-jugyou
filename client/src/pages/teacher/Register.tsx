@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../../lib/api';
 
@@ -9,6 +9,18 @@ export default function Register() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  // サーバが REGISTER_CODE を設定しているときだけ合言葉の欄を出す。
+  // 設定していない環境（ローカル・校内運用）で、無い欄を見せて迷わせない
+  const [code, setCode] = useState('');
+  const [codeRequired, setCodeRequired] = useState(false);
+
+  useEffect(() => {
+    void api<{ codeRequired: boolean }>('/api/auth/register-info')
+      .then((r) => setCodeRequired(r.codeRequired))
+      .catch(() => {
+        // 取れなくても登録そのものは試せる（サーバ側でも判定している）
+      });
+  }, []);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -17,7 +29,7 @@ export default function Register() {
     try {
       await api('/api/auth/register', {
         method: 'POST',
-        body: JSON.stringify({ name, loginId, password }),
+        body: JSON.stringify({ name, loginId, password, registerCode: code }),
       });
       navigate('/dashboard');
     } catch (err) {
@@ -69,6 +81,23 @@ export default function Register() {
               autoComplete="new-password"
             />
           </label>
+          {codeRequired && (
+            <>
+              <label>
+                登録の合言葉
+                <input
+                  value={code}
+                  onChange={(e) => setCode(e.target.value)}
+                  required
+                  maxLength={200}
+                  autoComplete="off"
+                />
+              </label>
+              <p className="muted">
+                ※ このサーバでは、登録に合言葉が要ります。管理する方にお尋ねください。
+              </p>
+            </>
+          )}
           <p className="muted">
             ※ パスワードを忘れた場合の再設定はできません。忘れないよう控えてください。
           </p>

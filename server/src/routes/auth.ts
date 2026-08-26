@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { eq } from 'drizzle-orm';
+import { config } from '../config';
 import { db, schema } from '../db';
 import {
   hashPassword,
@@ -23,7 +24,25 @@ const registerSchema = z.object({
   loginId: loginIdSchema,
   password: z.string().min(8, 'パスワードは8文字以上にしてください').max(128),
   name: z.string().trim().min(1, '表示名を入力してください').max(50),
+  // REGISTER_CODE を設定しているときだけ必要。未設定なら無視される
+  registerCode: z.string().max(200).optional(),
 });
+
+/**
+ * 登録の合言葉が合っているか。
+ *
+ * REGISTER_CODE が未設定なら合言葉そのものが無いので、常に通す。
+ * 比較で時間差が出ないようにしてあるのは、1文字ずつ試して当てられるのを防ぐため
+ * （長さ違いだけは先に弾く。timingSafeEqual が長さ違いで例外を投げるため）。
+ */
+function registerCodeMatches(input: string | undefined): boolean {
+  const expected = config.registerCode;
+  if (!expected) return true;
+  const given = Buffer.from(String(input ?? ''), 'utf8');
+  const want = Buffer.from(expected, 'utf8');
+  if (given.length !== want.length) return false;
+  return crypto.timingSafeEqual(given, want);
+}
 
 const loginSchema = z.object({
   loginId: z.string().transform((s) => s.trim().toLowerCase()),
@@ -31,12 +50,22 @@ const loginSchema = z.object({
 });
 
 export async function authRoutes(app: FastifyInstance): Promise<void> {
+  // 登録画面が「合言葉の入力欄を出すかどうか」を決めるために使う。
+  // 合言葉そのものは返さない
+  app.get('/api/auth/register-info', async () => ({
+    codeRequired: config.registerCode.length > 0,
+  }));
+
   app.post('/api/auth/register', async (req, reply) => {
     const parsed = registerSchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: parsed.error.issues[0].message });
     }
     const { loginId, password, name } = parsed.data;
+
+    if (!registerCodeMatches(parsed.data.registerCode)) {
+      return reply.code(403).send({ error: '登録の合言葉が違います' });
+    }
 
     const [existing] = await db
       .select({ id: schema.teachers.id })
