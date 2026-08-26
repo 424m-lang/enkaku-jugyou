@@ -57,6 +57,9 @@ export default function Class() {
   const navigate = useNavigate();
   const lessonId = readStored('session', 'lessonId');
   const participantToken = readStored('session', 'participantToken');
+  // 先生の画面にどう表示されているか。入り直したときに
+  // 「続きから」で出る名前と見比べられるよう、生徒にも見せておく
+  const myName = readStored('session', 'displayName');
   const participantId = participantToken?.split('.', 1)[0] ?? '';
   const hasToken = !!participantToken;
 
@@ -489,6 +492,14 @@ export default function Class() {
       <header className="app-header">
         <div className="header-left">
           <h1>{title || '授業'}</h1>
+          {myName && (
+            <span
+              className="chip chip-name"
+              title="先生の画面には、この名前で反応やコメントが届きます"
+            >
+              {myName}
+            </span>
+          )}
           {!connected && <span className="chip chip-offline">再接続中...</span>}
           {queuedCount > 0 && <span className="chip chip-queued">送信待ち {queuedCount}件</span>}
         </div>

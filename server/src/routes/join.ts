@@ -3,7 +3,8 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import { db, schema } from '../db';
-import { generateParticipantToken } from '../auth';
+import { generateParticipantToken, verifyParticipantToken } from '../auth';
+import { generateAnonymousName } from '../anonymousName';
 
 const joinSchema = z.object({
   code: z
@@ -11,17 +12,60 @@ const joinSchema = z.object({
     .min(4)
     .max(12)
     .transform((s) => s.trim().toUpperCase()),
-  displayName: z.string().trim().min(1, '表示名を入力してください').max(30),
+  // 名前は任意。空で来たら、この授業の中だけで通じる仮名をサーバが付ける。
+  // 個人情報を集めない方針を「許す」から「既定」にするための扱い
+  displayName: z.string().trim().max(30, '名前は30文字以内にしてください').optional(),
+  /**
+   * 「続きから参加」で送られてくる、前回この端末が受け取ったトークン。
+   * タブを閉じると sessionStorage が消えて別の生徒になってしまうため、
+   * 生徒が選んだときだけ同じ参加者へ戻せるようにする
+   */
+  resumeToken: z.string().max(200).optional(),
+});
+
+const resumeCheckSchema = z.object({
+  code: z
+    .string()
+    .min(4)
+    .max(12)
+    .transform((s) => s.trim().toUpperCase()),
+  resumeToken: z.string().max(200),
 });
 
 export async function joinRoutes(app: FastifyInstance): Promise<void> {
-  // 生徒の参加: 授業コード + 表示名のみ（アカウント不要）
+  /**
+   * 「続きから参加できるか」を、参加する前に確かめる。
+   *
+   * 端末に残した控えは授業コードで引いているが、コードは4文字しかなく、
+   * 生成時の重複チェックも5回で諦めるので、**将来べつの授業に同じコードが
+   * 割り当たる余地がある**。そのとき前の授業の名前を出してしまわないよう、
+   * 「そのトークンがこの授業のものか」はサーバに確かめさせる。
+   *
+   * トークンをURLに載せないため GET ではなく POST にしている。
+   */
+  app.post('/api/join/resume-check', async (req) => {
+    const parsed = resumeCheckSchema.safeParse(req.body);
+    if (!parsed.success) return { canResume: false };
+
+    const [lesson] = await db
+      .select()
+      .from(schema.lessons)
+      .where(eq(schema.lessons.joinCode, parsed.data.code));
+    if (!lesson || lesson.status === 'ended') return { canResume: false };
+
+    const prev = await verifyParticipantToken(parsed.data.resumeToken);
+    if (!prev || prev.lessonId !== lesson.id) return { canResume: false };
+
+    return { canResume: true, displayName: prev.displayName };
+  });
+
+  // 生徒の参加: 授業コードのみで入れる（アカウント不要・名前も任意）
   app.post('/api/join', async (req, reply) => {
     const parsed = joinSchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: parsed.error.issues[0].message });
     }
-    const { code, displayName } = parsed.data;
+    const { code } = parsed.data;
 
     const [lesson] = await db
       .select()
@@ -32,6 +76,34 @@ export async function joinRoutes(app: FastifyInstance): Promise<void> {
     }
     if (lesson.status === 'ended') {
       return reply.code(410).send({ error: 'この授業は終了しています' });
+    }
+
+    // 入力があればそれを使い、無ければ「あおいネコ」のような仮名を配る
+    const displayName =
+      parsed.data.displayName || (await generateAnonymousName(lesson.id));
+
+    const lessonPayload = {
+      id: lesson.id,
+      title: lesson.title,
+      status: lesson.status,
+      reactionButtons: lesson.reactionButtons,
+    };
+
+    // 「続きから」: 前回のトークンがこの授業のものなら、同じ参加者として戻す。
+    // 期限切れや別授業のものだった場合は、そのまま下の新規参加へ落とす
+    if (parsed.data.resumeToken) {
+      const prev = await verifyParticipantToken(parsed.data.resumeToken);
+      if (prev && prev.lessonId === lesson.id) {
+        await db
+          .update(schema.participants)
+          .set({ lastSeenAt: new Date() })
+          .where(eq(schema.participants.id, prev.id));
+        return {
+          participantToken: parsed.data.resumeToken,
+          displayName: prev.displayName,
+          lesson: lessonPayload,
+        };
+      }
     }
 
     const participantId = crypto.randomUUID();
@@ -45,12 +117,9 @@ export async function joinRoutes(app: FastifyInstance): Promise<void> {
 
     return {
       participantToken: token,
-      lesson: {
-        id: lesson.id,
-        title: lesson.title,
-        status: lesson.status,
-        reactionButtons: lesson.reactionButtons,
-      },
+      // 仮名を配った場合、生徒は自分がどう呼ばれているかを知る手段がないので返す
+      displayName,
+      lesson: lessonPayload,
     };
   });
 }
