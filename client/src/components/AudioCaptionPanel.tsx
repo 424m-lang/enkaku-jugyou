@@ -86,7 +86,10 @@ export default function AudioCaptionPanel({
         <p className="muted small">
           教室 {roomCount}人 / 遠隔 {remoteCount}人
           {status === 'live' && screenCount === 0 && audioDefault === 'off' && (
-            <span className="warn"> ・教室モニターが未接続です</span>
+            <span className="warn">
+              {' '}
+              ・教室モニターが未接続です（同じ教室で先生が話している場合は不要）
+            </span>
           )}
         </p>
         <button className="btn link-btn" onClick={() => setShowParticipants((v) => !v)}>

@@ -41,6 +41,42 @@ async function callOpenAI(system: string, user: string, maxTokens: number): Prom
   return (data.choices[0]?.message.content ?? '').trim();
 }
 
+/** 日本語（ひらがな・カタカナ・漢字）が1文字でもあるか */
+const JAPANESE_CHAR = /[\u3040-\u30FF\u3400-\u9FFF\uFF66-\uFF9F]/;
+
+/**
+ * 要約の文末にくっついた、意味のない断片を落とす。
+ *
+ * 実際に「…3か所で遅延が生じます。 tekreplawsalt」という出力が先生の画面に出た。
+ * LLMはまれに無関係なトークンを吐くことがあり、そのまま見せると
+ * 「AIが壊れている」と受け取られてしまう。
+ *
+ * 判定は**控えめ**にしてある。行ごとに見て、最後の「。」より後ろに
+ * 日本語が1文字も無い断片が残っている場合だけ落とす。
+ *
+ * - 「…です。」            → そのまま（余りが無い）
+ * - 「…です。 tekrepl」    → 「…です。」に切り詰める
+ * - 「…はHTTPです。」      → そのまま（「。」で終わっている）
+ * - 「12」「はい」          → そのまま（「。」が無い。発言の特定や同一判定の答えを壊さない）
+ * - 「表題\n説明です。」    → 行ごとなので、表題の行は触らない
+ *
+ * 文の途中に紛れ込んだ場合は拾えないが、**消しすぎて意味を変えるより残すほうがまし**
+ * という判断でこの範囲にしている。落としたときはログに出すので、頻発するようなら気づける。
+ */
+export function stripTrailingNoise(text: string): string {
+  return text
+    .split('\n')
+    .map((line) => {
+      const end = line.lastIndexOf('。');
+      if (end < 0) return line;
+      const tail = line.slice(end + 1);
+      if (tail.trim() === '' || JAPANESE_CHAR.test(tail)) return line;
+      console.warn('[summarize] 要約の末尾から意味のない断片を落としました:', JSON.stringify(tail));
+      return line.slice(0, end + 1);
+    })
+    .join('\n');
+}
+
 /** 設定されたプロバイダで要約LLMを呼ぶ。戻り値の第2要素は表示用のプロバイダ名 */
 async function callSummaryLLM(
   system: string,
@@ -48,10 +84,16 @@ async function callSummaryLLM(
   maxTokens: number
 ): Promise<{ text: string; provider: string } | null> {
   if (config.summaryProvider === 'anthropic' && config.anthropicApiKey) {
-    return { text: await callClaude(system, user, maxTokens), provider: 'anthropic' };
+    return {
+      text: stripTrailingNoise(await callClaude(system, user, maxTokens)),
+      provider: 'anthropic',
+    };
   }
   if (config.summaryProvider === 'openai' && config.openaiApiKey) {
-    return { text: await callOpenAI(system, user, maxTokens), provider: 'openai' };
+    return {
+      text: stripTrailingNoise(await callOpenAI(system, user, maxTokens)),
+      provider: 'openai',
+    };
   }
   return null; // mock にフォールバック
 }
