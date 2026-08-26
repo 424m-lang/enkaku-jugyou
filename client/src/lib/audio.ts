@@ -16,6 +16,15 @@ const AUDIO_MIME_CANDIDATES: Record<AudioFormat, string[]> = {
 const CHUNK_MS = 500;
 /** 1バイトも出なければ、対応判定が誤っていたものとしてその形式を停止する */
 const NO_DATA_MS = 3_000;
+/**
+ * 一度失敗した形式を、もう一度だけ試すまでの待ち時間。
+ *
+ * マイクが立ち上がる最初の数秒だけデータが出ないことがあり、そこで諦めると
+ * **本当は使える形式が授業中ずっと使われないまま**になる（Opusが落ちると
+ * AACへ切り替わり、生徒側の通信量が増える）。落ち着いた頃に1回だけ試し直す。
+ * 2回目も駄目なら、その端末では本当に作れないものとして諦める。
+ */
+const RETRY_AFTER_MS = 15_000;
 
 /** 指定形式をこの先生端末で録音できるか。形式を省略した場合はOpusを優先する */
 export function supportedAudioMime(format?: AudioFormat): string | null {
@@ -40,6 +49,8 @@ export type AudioBroadcast = {
 type AudioBroadcastOptions = {
   /** 実際には1バイトも作れなかった形式。AAC無音を先生画面へ出すために使う */
   onUnavailable?: (format: AudioFormat) => void;
+  /** 一度失敗した形式が、試し直しで使えるようになったとき。警告を消すために使う */
+  onAvailable?: (format: AudioFormat) => void;
 };
 
 /**
@@ -80,6 +91,11 @@ export async function startAudioBroadcast(
   };
   const recorders = new Map<AudioFormat, RecorderEntry>();
   const failed = new Set<AudioFormat>();
+  /** 先生画面に「作れません」と出した形式。使えるようになったら取り消す */
+  const warned = new Set<AudioFormat>();
+  /** 試し直しは形式ごとに1回だけ。何度も繰り返して負荷をかけない */
+  const retried = new Set<AudioFormat>();
+  const retryTimers = new Map<AudioFormat, ReturnType<typeof setTimeout>>();
   let archiveFormat = initialArchiveFormat;
   let wanted = [...formats];
   let generation = 0;
@@ -97,8 +113,10 @@ export async function startAudioBroadcast(
     const desired = new Set<AudioFormat>([archiveFormat]);
     for (const format of wanted) {
       if (!supportedAudioMime(format)) {
+        // ブラウザが元から非対応。時間を置いても変わらないので試し直さない
         if (!failed.has(format)) {
           failed.add(format);
+          warned.add(format);
           options.onUnavailable?.(format);
         }
         continue;
@@ -127,7 +145,11 @@ export async function startAudioBroadcast(
       ) {
         return;
       }
-      gotData = true;
+      if (!gotData) {
+        gotData = true;
+        // 試し直しで復活した場合、先生画面に出した警告をここで取り消す
+        if (warned.delete(format)) options.onAvailable?.(format);
+      }
       const entry = recorders.get(format);
       if (entry) clearTimeout(entry.watchdog);
       void event.data.arrayBuffer().then((buffer) => {
@@ -141,10 +163,31 @@ export async function startAudioBroadcast(
       if (gotData || stopped || recorders.get(format)?.generation !== myGeneration) return;
       failed.add(format);
       stopRecorder(format);
-      options.onUnavailable?.(format);
+      if (!warned.has(format)) {
+        warned.add(format);
+        options.onUnavailable?.(format);
+      }
+
+      // マイクの立ち上がりでつまずいただけかもしれないので、1回だけ試し直す
+      if (!retried.has(format)) {
+        retried.add(format);
+        retryTimers.set(
+          format,
+          setTimeout(() => {
+            retryTimers.delete(format);
+            if (stopped) return;
+            failed.delete(format);
+            // いま必要とされている形式なら apply() が録音器を立て直す。
+            // 誰も要らない形式なら何も起きず、必要になった時点で試される
+            apply();
+          }, RETRY_AFTER_MS)
+        );
+      }
 
       // 記録用の形式が失敗した場合も授業まるごと無音にはしない。
       // 別形式が録れるなら、以後の保存と対応端末への配信をそちらで続ける。
+      // なお、試し直しで元の形式が復活しても記録用は戻さない。戻すと録音が
+      // もう1つのパートに分かれるだけで、得るものがないため
       if (archiveFormat === format) {
         const alternate: AudioFormat = format === 'webm' ? 'mp4' : 'webm';
         if (supportedAudioMime(alternate) && !failed.has(alternate)) {
@@ -183,6 +226,8 @@ export async function startAudioBroadcast(
     },
     stop() {
       stopped = true;
+      for (const timer of retryTimers.values()) clearTimeout(timer);
+      retryTimers.clear();
       for (const format of [...recorders.keys()]) stopRecorder(format);
       stream.getTracks().forEach((t) => t.stop());
     },

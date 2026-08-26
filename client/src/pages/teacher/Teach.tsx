@@ -312,6 +312,7 @@ export default function Teach() {
       audioStopRef.current = await startAudioBroadcast(socket, audioFormats, {
         onUnavailable: (format) =>
           setAudioUnavailable((prev) => (prev.includes(format) ? prev : [...prev, format])),
+        onAvailable: (format) => setAudioUnavailable((prev) => prev.filter((f) => f !== format)),
       });
       setAudioState('on');
     } catch {
