@@ -50,6 +50,29 @@ function generateJoinCode(): string {
   }
 }
 
+/**
+ * まだ使われていない授業コードを1つ選ぶ。空きが尽きていれば null を返す。
+ *
+ * 4文字・27種の文字から作るので、数字を1つ以上含む条件を満たす組み合わせは約40万通りある。
+ * 一方 `lessons.join_code` は UNIQUE 制約付きで、授業が終わってもコードは解放されない
+ * （授業を消す機能が無いため）。つまり作った授業の数だけ空きが減っていく方式になっている。
+ *
+ * 学校で使う規模なら、この40万通りが埋まることは実際には起きない。
+ * それでも空きを数え切れる形にしてあるのは、埋まりかけたときに
+ * **重複したコードのまま INSERT して UNIQUE 制約で落ちる**のを避けるため。
+ * 使用中のコードを一度に引いて突き合わせ、空きが無いことは呼び出し側へ伝える。
+ */
+async function pickJoinCode(): Promise<string | null> {
+  const rows = await db.select({ joinCode: schema.lessons.joinCode }).from(schema.lessons);
+  const used = new Set(rows.map((r) => r.joinCode));
+  // 空きが十分にある限り1回目で決まる。上限は、埋まりかけたときに固まらないための保険
+  for (let i = 0; i < 500; i++) {
+    const code = generateJoinCode();
+    if (!used.has(code)) return code;
+  }
+  return null;
+}
+
 const buttonsSchema = z
   .array(
     z.object({
@@ -175,19 +198,17 @@ export async function lessonRoutes(app: FastifyInstance): Promise<void> {
     }
     if (pageCount === 0) return reply.code(400).send({ error: 'PDFにページがありません' });
 
+    // コードの確保はPDFを書き出す前に済ませる。
+    // あとで失敗すると、授業として登録されないPDFが DATA_DIR に残る
+    const joinCode = await pickJoinCode();
+    if (!joinCode) {
+      return reply
+        .code(503)
+        .send({ error: '授業コードの空きがありません。管理者にご連絡ください' });
+    }
+
     const lessonId = crypto.randomUUID();
     await fs.promises.writeFile(pdfPath(lessonId), pdfBuffer);
-
-    // 授業コードの衝突を避けて生成
-    let joinCode = generateJoinCode();
-    for (let i = 0; i < 5; i++) {
-      const [dup] = await db
-        .select({ id: schema.lessons.id })
-        .from(schema.lessons)
-        .where(eq(schema.lessons.joinCode, joinCode));
-      if (!dup) break;
-      joinCode = generateJoinCode();
-    }
 
     await db.insert(schema.lessons).values({
       id: lessonId,
