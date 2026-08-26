@@ -39,11 +39,21 @@ async function main() {
   if (fs.existsSync(clientDist)) {
     await app.register(fastifyStatic, { root: clientDist });
     app.setNotFoundHandler((req, reply) => {
-      if (req.raw.url?.startsWith('/api')) {
+      const url = (req.raw.url ?? '').split('?')[0];
+      if (url.startsWith('/api')) {
         reply.code(404).send({ error: 'Not Found' });
-      } else {
-        reply.sendFile('index.html');
+        return;
       }
+      // 拡張子の付いたURL（= ファイルを取りに来た要求）は、素直に404を返す。
+      // ここで index.html を200で返すと、入れ替えで消えたJSの要求にHTMLが返り、
+      // ブラウザ側は「JSのはずがHTMLだった」という分かりにくい失敗になる。
+      // 画面のURLには拡張子が付かない（授業IDはUUID、公開トークンはbase64url）ので、
+      // この判定でSPAのルートを取りこぼすことはない
+      if (/\.[a-zA-Z0-9]+$/.test(url)) {
+        reply.code(404).send({ error: 'Not Found' });
+        return;
+      }
+      reply.sendFile('index.html');
     });
   }
 
