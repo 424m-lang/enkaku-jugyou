@@ -227,6 +227,30 @@ textarea:focus {
   color: #374151;
 }
 
+/* 生徒が自分の呼ばれ方を確認するための表示。目立たせすぎない */
+.chip-name {
+  background: #eef2ff;
+  border-color: #c7d2fe;
+  color: #3730a3;
+}
+
+/* 参加画面: 前回この端末で参加していたことの案内 */
+.join-resume {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #f9fafb;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.join-resume p {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
 .chip-offline {
   background: #fee2e2;
   border-color: #fca5a5;
@@ -674,11 +698,22 @@ textarea:focus {
   gap: 6px;
 }
 
+/*
+ * 時刻と名前を1行目に置き、コメント本文は次の行の左端から始める。
+ * 横一列に並べると、折り返した2行目が名前の右端から始まってしまい、
+ * 左端が揃わないぶん先生が斜め読みしづらい
+ */
 .insight-comment {
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
   font-size: 0.85rem;
+}
+
+.insight-comment .feed-time {
+  margin-right: 6px;
+}
+
+.insight-comment .feed-body {
+  display: block;
+  margin-top: 2px;
 }
 
 .insight-status {
