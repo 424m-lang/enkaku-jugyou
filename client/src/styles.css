@@ -227,11 +227,16 @@ textarea:focus {
   color: #374151;
 }
 
-/* 生徒が自分の呼ばれ方を確認するための表示。目立たせすぎない */
+/*
+ * 生徒が自分の呼ばれ方を確認するための表示。
+ * 再入場したときに「見覚えのある名前」だと分かればよく、
+ * 授業の中身より目立つ必要はないので、色は持たせず枠と文字だけにしてある。
+ */
 .chip-name {
-  background: #eef2ff;
-  border-color: #c7d2fe;
-  color: #3730a3;
+  background: transparent;
+  border-color: var(--border);
+  color: var(--muted);
+  font-size: 0.72rem;
 }
 
 /* 参加画面: 前回この端末で参加していたことの案内 */

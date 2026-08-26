@@ -163,7 +163,7 @@ export default function Join() {
             />
           </label>
           <p className="muted small">
-            空のままにすると「あおいネコ」のような名前が自動で付きます。
+            空のままにすると「青いネコ」のような名前が自動で付きます。
             先生には反応やコメントがその名前で届きます。
           </p>
           {error && <p className="error">{error}</p>}
