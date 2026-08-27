@@ -193,7 +193,7 @@ Opusが落ちるとAACへ切り替わるので、生徒側の通信量が増え�
 
 ```mermaid
 flowchart TD
-  A["授業中<br/>5分ごと"] --> B["liveTranscript<br/>新しいぶんだけ文字起こし"]
+  A["授業中<br/>5分ごと"] --> B["liveTranscript<br/>新しい範囲だけ文字起こし"]
   B --> C[("transcripts")]
   D["コメント到着"] --> E["まだの直近だけ追加で文字起こし"]
   E --> C
