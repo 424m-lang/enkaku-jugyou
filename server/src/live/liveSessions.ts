@@ -888,6 +888,35 @@ export async function touchParticipants(participantIds: string[]): Promise<void>
 }
 
 /**
+ * サーバを終了するとき、書きかけのものを閉じる。
+ *
+ * **授業は終了させない。** 先生が止めたのではなくサーバ側の都合なので、
+ * 立ち上げ直せば同じ授業の続きから再開できる状態のままにしておく。
+ * ここで閉じるのは、閉じないと失われるものだけ:
+ * - 録音の書き込みストリーム（end しないと最後の数秒がファイルに残らない）
+ * - 5秒ごとにまとめて保存している匿名集計（待機中のぶんが消える）
+ * - 文字起こしのタイマー（残っているとプロセスが終わらない）
+ */
+export async function flushAllSessions(): Promise<void> {
+  for (const s of sessions.values()) {
+    if (s.transcribeTimer) {
+      clearInterval(s.transcribeTimer);
+      s.transcribeTimer = null;
+    }
+    if (s.currentAudioPart) {
+      const stream = s.currentAudioPart.stream;
+      s.currentAudioPart = null;
+      await new Promise<void>((resolve) => stream.end(() => resolve()));
+    }
+    try {
+      await flushLessonTelemetry(s.lessonId, s.telemetry);
+    } catch (err) {
+      console.error('[live] 匿名集計の保存に失敗しました', err);
+    }
+  }
+}
+
+/**
  * 授業をメモリから外す（削除したときだけ使う）。
  *
  * DBの行を消しても、その授業のLiveSessionが残っていると、
