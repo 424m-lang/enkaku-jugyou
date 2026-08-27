@@ -268,7 +268,7 @@ function isInitSegment(buf: ArrayBuffer): boolean {
   );
 }
 
-/** 教室モニター・遠隔の生徒側: カメラ映像（音声込み）を再生する */
+/** 教室モニター・遠方の生徒側: カメラ映像（音声込み）を再生する */
 export class LiveVideoPlayer extends LiveMediaPlayer {
   constructor(el: HTMLVideoElement) {
     super(el);

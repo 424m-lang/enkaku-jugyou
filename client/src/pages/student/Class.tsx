@@ -207,7 +207,7 @@ export default function Class() {
         }
       });
 
-      // カメラ映像は、先生が「遠隔の生徒にも送る」を選んだときだけ届く
+      // カメラ映像は、先生が「遠方の生徒にも送る」を選んだときだけ届く
       // 再生できる形式かは init が届くまで分からないので、プレイヤーは先に作っておく
       if (videoElRef.current) {
         videoPlayerRef.current = new LiveVideoPlayer(videoElRef.current);

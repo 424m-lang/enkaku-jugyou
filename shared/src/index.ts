@@ -608,11 +608,11 @@ export interface ServerToClientEvents {
    */
   audio_init: (header: ArrayBuffer, seq: number, mime: string) => void;
 
-  // カメラ映像（音声込みの1本のストリーム。教室モニターと遠隔の生徒にだけ届く）
+  // カメラ映像（音声込みの1本のストリーム。教室モニターと遠方の生徒にだけ届く）
   av_chunk: (chunk: ArrayBuffer, seq: number) => void;
   /** 映像の先頭。mime の扱いは audio_init と同じ */
   av_init: (header: ArrayBuffer, seq: number, mime: string) => void;
-  /** カメラのON/OFF、教室モニターのレイアウト、遠隔の生徒へ映像を送るか */
+  /** カメラのON/OFF、教室モニターのレイアウト、遠方の生徒へ映像を送るか */
   av_state: (p: {
     cameraOn: boolean;
     layout: ScreenLayout;
@@ -754,7 +754,7 @@ export interface ClientToServerEvents {
   /** 字幕の履歴を取り出す（生徒・教室モニターが開いたときだけ呼ぶ） */
   get_captions: (cb: (res: { lines: CaptionLine[] }) => void) => void;
   /**
-   * 教室モニターのレイアウトと、遠隔の生徒へ映像を送るかの切り替え。
+   * 教室モニターのレイアウトと、遠方の生徒へ映像を送るかの切り替え。
    * 映像は通信量が大きいため生徒への配信は既定でOFFにし、実演を見せるときだけONにする
    */
   set_av_config: (p: {

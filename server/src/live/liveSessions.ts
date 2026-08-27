@@ -167,7 +167,7 @@ export type LiveSession = {
   screenLayout: ScreenLayout;
   /** 小窓（スライド主体ならカメラ、映像主体ならスライド）の置き場所 */
   pipPos: PipPos;
-  /** 遠隔の生徒にも映像を届けるか（通信量が増えるため既定はOFF） */
+  /** 遠方の生徒にも映像を届けるか（通信量が増えるため既定はOFF） */
   videoToStudents: boolean;
 
   // リアクション

@@ -326,7 +326,7 @@ export default function MonitorPanel({
                   socketRef.current?.emit('set_av_config', { videoToStudents: e.target.checked })
                 }
               />
-              遠隔の生徒にも映像を送る
+              遠方の生徒にも映像を送る
             </label>
             {/* 届く相手は「音声・字幕設定」で決まる。ここだけ入れても届かないことがあり、
                 原因が分からないまま「映像が来ない」となりやすいので明示する */}
