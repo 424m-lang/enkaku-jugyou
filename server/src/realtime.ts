@@ -288,6 +288,32 @@ function withAck<A extends unknown[]>(
 }
 
 export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
+  /**
+   * タイムラインへの記録。**失敗しても授業は止めない。**
+   *
+   * socket.io は非同期ハンドラの reject を拾わないので、ここで拾わないと
+   * unhandledRejection になり、**サーバごと終了する**（接続ハンドラの注記と同じ理由）。
+   * DBが一瞬詰まっただけで授業中の全員が切れるのは、記録が1件欠けるより重い。
+   *
+   * 状態はDBへ書く前に applyEventToState でメモリへ入っているので、
+   * 記録に失敗しても配信はそのまま続けてよい。返すのは配信に使う時刻。
+   */
+  async function recordTMs(
+    s: LiveSession,
+    type: Parameters<typeof recordEvent>[1],
+    payload: unknown,
+    eventTMs?: number
+  ): Promise<number> {
+    const fallback = eventTMs ?? tMs(s);
+    try {
+      const ev = await recordEvent(s, type, payload, eventTMs);
+      return ev.tMs;
+    } catch (err) {
+      app.log.error(err, '[realtime] タイムラインへの記録に失敗しました（配信は続けます）');
+      return fallback;
+    }
+  }
+
   // ---- 接続時の認証 ----
   io.use(async (socket, next) => {
     try {
@@ -381,18 +407,21 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
     }
   });
 
-  io.on('connection', async (socket) => {
-    const { role, lessonId } = socket.data;
-    // ここでの例外はプロセスごと落ちる（socket.ioは接続ハンドラのrejectを拾わない）。
-    // 1人の接続の失敗で授業中の全員が切れるのは重すぎるので、その接続だけ切る
-    let s: Awaited<ReturnType<typeof getSession>>;
-    try {
-      s = await getSession(lessonId);
-    } catch (err) {
-      app.log.error(err);
+  // 接続してきた1人分の準備。**必ず下の包み経由で呼ぶこと。**
+  //
+  // socket.io は接続ハンドラの reject を拾わない。素の async ハンドラにすると、
+  // 準備の途中でDBが一瞬読めなかっただけで unhandledRejection になり、
+  // **1人の入室で授業中の全員の接続が切れる**（プロセスごと終了するため）。
+  io.on('connection', (socket) => {
+    void onConnection(socket).catch((err) => {
+      app.log.error(err, '[realtime] 接続時の処理に失敗しました');
       socket.disconnect(true);
-      return;
-    }
+    });
+  });
+
+  async function onConnection(socket: TypedSocket): Promise<void> {
+    const { role, lessonId } = socket.data;
+    const s = await getSession(lessonId);
     if (!s) {
       socket.disconnect(true);
       return;
@@ -464,7 +493,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
     };
 
     // 受け手の顔ぶれが変わるたびに、いま必要な形式を先生へ伝え直す。
-    // 誰も受け取っていない形式は止めさせ、そのぶんの符号化と通信量を使わせない。
+    // 誰も受け取っていない形式は止めさせ、その分の符号化と通信量を使わせない。
     //
     // **ここでヘッダ（avStreams）を捨ててはいけない**。受け手が一瞬いなくなった
     // だけでもヘッダが消え、戻ってきた相手に何も渡せなくなる。ヘッダが作り直されるのは
@@ -518,7 +547,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
     broadcastScreenCount(io, room, teacherRoom);
     noteConcurrency(io, s, room);
     // 先生がつないだときだけ全件をそろえる（再接続の復元もここ）。
-    // 生徒の入室は1人ぶんだけ送る（全件だと一斉入室で人数の二乗になる）
+    // 生徒の入室は1人分だけ送る（全件だと一斉入室で人数の二乗になる）
     if (role === 'teacher') {
       await broadcastParticipants(io, s, room, teacherRoom);
     } else if (role === 'student' && socket.data.participantId) {
@@ -760,22 +789,28 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       }));
 
       socket.on('slide_change', async (p) => {
-        if (s.status !== 'live') {
-          s.currentSlideId = p.slideId; // 開始前のプレビュー移動は記録しない
-          socket.to(room).emit('slide_change', { ...p, tMs: 0 });
-          return;
+        try {
+          if (s.status !== 'live') {
+            s.currentSlideId = p.slideId; // 開始前のプレビュー移動は記録しない
+            socket.to(room).emit('slide_change', { ...p, tMs: 0 });
+            return;
+          }
+          socket.to(room).emit('slide_change', { ...p, tMs: await recordTMs(s, 'slide_change', p) });
+        } catch (err) {
+          app.log.error(err);
         }
-        const ev = await recordEvent(s, 'slide_change', p);
-        socket.to(room).emit('slide_change', { ...p, tMs: ev.tMs });
       });
 
       // 開始前の書き込みも記録する（tMsは0＝「授業が始まった時点で既に書いてあった」）。
       // 板書を準備してから授業を始める使い方があり、開いたまま放置して
       // 読み込み直したときに消えてしまうのを防ぐ
       socket.on('stroke', async (p) => {
-        if (s.status === 'ended') return;
-        const ev = await recordEvent(s, 'stroke', p);
-        socket.to(room).emit('stroke', { ...p, tMs: ev.tMs });
+        try {
+          if (s.status === 'ended') return;
+          socket.to(room).emit('stroke', { ...p, tMs: await recordTMs(s, 'stroke', p) });
+        } catch (err) {
+          app.log.error(err);
+        }
       });
 
       socket.on('stroke_progress', (p) => {
@@ -791,9 +826,12 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       });
 
       socket.on('clear_slide', async (p) => {
-        if (s.status === 'ended') return;
-        const ev = await recordEvent(s, 'clear_slide', p);
-        socket.to(room).emit('clear_slide', { ...p, tMs: ev.tMs });
+        try {
+          if (s.status === 'ended') return;
+          socket.to(room).emit('clear_slide', { ...p, tMs: await recordTMs(s, 'clear_slide', p) });
+        } catch (err) {
+          app.log.error(err);
+        }
       });
 
       socket.on('insert_blank_slide', withAck(async (afterPosition, cb) => {
@@ -892,7 +930,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         if (!text) return;
         const t = tMs(s);
         io.to(room).emit('caption', { text, final: !!p.final, tMs: t });
-        // 記録するのは確定ぶんだけ。暫定は同じ発話が何度も届くので残さない
+        // 記録するのは確定した分だけ。暫定は同じ発話が何度も届くので残さない
         if (p.final) {
           try {
             await recordEvent(s, 'caption', { text }, t);
@@ -1048,7 +1086,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         }
         // 生徒は接続のたびに現在の希望を送り直すので、変わっていなければ何もしない。
         // syncStudentAv は在室者**全員**へ audio_permission を送り直すため、
-        // そのままでは授業開始の一斉入室で人数の二乗ぶんの通信になる
+        // そのままでは授業開始の一斉入室で人数の二乗分の通信になる
         if (s.videoClosedBy.has(pid) !== wasClosed) {
           void syncStudentAv(io, s, room).catch((err) => app.log.error(err));
         }
@@ -1195,53 +1233,60 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
     }));
 
     socket.on('disconnect', async () => {
-      if (s.status !== 'ended') {
-        updateTelemetry(s, (m) => {
-          m.disconnects += 1;
-        });
-      }
-      // ここに来る時点で部屋からは外れているので、そのまま数え直せばよい
-      sendAvFormats();
-      sendAudioFormats();
-      // 端末を閉じた生徒のぶんで音声認識を回し続けない
-      if (dropCaptionWant(s, socket.id)) broadcastCaptionUse();
-      // 映像を送っていた先生が抜けたら、カメラは止まったものとして扱う。
-      // 先生がページを読み込み直しただけでも送信は途切れるので、
-      // 教室モニターに止まった絵を映し続けさせない
-      if (s.cameraSocketId === socket.id) {
-        if (s.telemetryCameraStartedAt !== null) {
-          const activeMs = Math.max(0, Date.now() - s.telemetryCameraStartedAt);
-          s.telemetryCameraStartedAt = null;
+      // 切断時の処理は生徒の操作（タブを閉じる）で走る。ここで投げると
+      // socket.io は拾わないので unhandledRejection になり、**サーバごと終了する**。
+      // 1人が抜けただけで授業中の全員が切れないように、ここで受け止める
+      try {
+        if (s.status !== 'ended') {
           updateTelemetry(s, (m) => {
-            m.video.activeMs += activeMs;
+            m.disconnects += 1;
           });
         }
-        s.cameraOn = false;
-        s.cameraSocketId = null;
-        s.avStreams.clear();
-        if (s.screenLayout === 'video') s.screenLayout = 'slide';
-        io.to(room).emit('av_state', avState());
-      }
-      broadcastParticipantCount(io, room, teacherRoom);
-      broadcastScreenCount(io, room, teacherRoom);
-      if (socket.data.participantId) {
-        s.composing.delete(socket.data.participantId);
-        await touchParticipants([socket.data.participantId]).catch(() => {});
-      }
-      if (socket.data.role === 'student') {
-        if (socket.data.participantId) {
-          sendParticipantChange(
-            io,
-            s,
-            teacherRoom,
-            { id: socket.data.participantId, displayName: socket.data.participantName ?? '' },
-            false
-          );
+        // ここに来る時点で部屋からは外れているので、そのまま数え直せばよい
+        sendAvFormats();
+        sendAudioFormats();
+        // 端末を閉じた生徒の分まで音声認識を回し続けない
+        if (dropCaptionWant(s, socket.id)) broadcastCaptionUse();
+        // 映像を送っていた先生が抜けたら、カメラは止まったものとして扱う。
+        // 先生がページを読み込み直しただけでも送信は途切れるので、
+        // 教室モニターに止まった絵を映し続けさせない
+        if (s.cameraSocketId === socket.id) {
+          if (s.telemetryCameraStartedAt !== null) {
+            const activeMs = Math.max(0, Date.now() - s.telemetryCameraStartedAt);
+            s.telemetryCameraStartedAt = null;
+            updateTelemetry(s, (m) => {
+              m.video.activeMs += activeMs;
+            });
+          }
+          s.cameraOn = false;
+          s.cameraSocketId = null;
+          s.avStreams.clear();
+          if (s.screenLayout === 'video') s.screenLayout = 'slide';
+          io.to(room).emit('av_state', avState());
         }
-        await broadcastDenominators(io, s, teacherRoom);
+        broadcastParticipantCount(io, room, teacherRoom);
+        broadcastScreenCount(io, room, teacherRoom);
+        if (socket.data.participantId) {
+          s.composing.delete(socket.data.participantId);
+          await touchParticipants([socket.data.participantId]).catch(() => {});
+        }
+        if (socket.data.role === 'student') {
+          if (socket.data.participantId) {
+            sendParticipantChange(
+              io,
+              s,
+              teacherRoom,
+              { id: socket.data.participantId, displayName: socket.data.participantName ?? '' },
+              false
+            );
+          }
+          await broadcastDenominators(io, s, teacherRoom);
+        }
+      } catch (err) {
+        app.log.error(err);
       }
     });
-  });
+  }
 }
 
 function isScreenLayout(v: string): v is ScreenLayout {
@@ -1370,11 +1415,11 @@ function broadcastScreenCount(io: TypedServer, room: string, teacherRoom: string
 }
 
 /**
- * 参加者1人ぶんの変化だけを先生へ送る（入室・退室）。
+ * 参加者1人分の変化だけを先生へ送る（入室・退室）。
  *
  * 全件を送る broadcastParticipants() と違い、**DBもソケット一覧も見ない**。
  * 名前も設定も、いま扱っているソケットとメモリ上の授業から分かるため。
- * 入退室のたびに全件を作り直すと人数の二乗で効くので、ここは1人ぶんに絞る。
+ * 入退室のたびに全件を作り直すと人数の二乗で効くので、ここは1人分に絞る。
  */
 function sendParticipantChange(
   io: TypedServer,
