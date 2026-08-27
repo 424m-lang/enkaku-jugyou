@@ -15,6 +15,9 @@ export default function Dashboard() {
   const [lessons, setLessons] = useState<LessonSummary[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [error, setError] = useState('');
+  // 削除は元に戻せないので、押したカードだけ確認の表示に切り替える
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -31,6 +34,20 @@ export default function Dashboard() {
   async function logout() {
     await api('/api/auth/logout', { method: 'POST' });
     navigate('/login');
+  }
+
+  async function deleteLesson(id: string) {
+    setDeleting(true);
+    setError('');
+    try {
+      await api(`/api/lessons/${id}`, { method: 'DELETE' });
+      setLessons((prev) => prev.filter((l) => l.id !== id));
+      setConfirmDelete(null);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : '削除に失敗しました');
+    } finally {
+      setDeleting(false);
+    }
   }
 
   return (
@@ -78,18 +95,52 @@ export default function Dashboard() {
                 スライド {l.pdfPageCount ?? '-'} ページ ・{' '}
                 {new Date(l.createdAt).toLocaleDateString('ja-JP')}
               </p>
-              <div className="lesson-card-actions">
-                {l.status !== 'ended' && (
-                  <Link className="btn primary" to={`/teach/${l.id}`}>
-                    {l.status === 'live' ? '授業画面に戻る' : '授業画面へ'}
-                  </Link>
-                )}
-                {l.status === 'ended' && (
-                  <Link className="btn" to={`/review/${l.id}`}>
-                    振り返り・統計
-                  </Link>
-                )}
-              </div>
+              {confirmDelete === l.id ? (
+                <div className="lesson-delete-confirm">
+                  <p>
+                    <strong>{l.title}</strong> を削除します。スライド・録音・反応・コメント・
+                    文字起こし・要約がすべて消え、<strong>元に戻せません</strong>。
+                  </p>
+                  <div className="lesson-card-actions">
+                    <button
+                      className="btn danger"
+                      disabled={deleting}
+                      onClick={() => deleteLesson(l.id)}
+                    >
+                      {deleting ? '削除中...' : '削除する'}
+                    </button>
+                    <button
+                      className="btn"
+                      disabled={deleting}
+                      onClick={() => setConfirmDelete(null)}
+                    >
+                      やめる
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="lesson-card-actions">
+                  {l.status !== 'ended' && (
+                    <Link className="btn primary" to={`/teach/${l.id}`}>
+                      {l.status === 'live' ? '授業画面に戻る' : '授業画面へ'}
+                    </Link>
+                  )}
+                  {l.status === 'ended' && (
+                    <Link className="btn" to={`/review/${l.id}`}>
+                      振り返り・統計
+                    </Link>
+                  )}
+                  {/* 授業中は消せない（サーバ側も拒否する）ので、ボタン自体を出さない */}
+                  {l.status !== 'live' && (
+                    <button
+                      className="btn-link lesson-delete"
+                      onClick={() => setConfirmDelete(l.id)}
+                    >
+                      削除
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           ))}
           {lessons.length === 0 && !showCreate && (

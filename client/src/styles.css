@@ -419,6 +419,22 @@ textarea:focus {
   display: inline-block;
 }
 
+/* 削除は使う頻度が低いので、他のボタンと同じ重さでは出さない */
+.lesson-delete {
+  margin-left: auto;
+  color: var(--muted);
+}
+
+.lesson-delete:hover {
+  color: var(--danger);
+}
+
+.lesson-delete-confirm p {
+  font-size: 0.85rem;
+  line-height: 1.6;
+  margin: 0 0 10px;
+}
+
 /* ---- 授業実施画面（先生） ---- */
 .teach {
   display: flex;

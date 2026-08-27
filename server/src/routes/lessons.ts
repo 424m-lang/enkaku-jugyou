@@ -8,8 +8,8 @@ import { PDFDocument } from 'pdf-lib';
 import { DEFAULT_REACTION_BUTTONS, type ReactionButtonDef } from '@shared';
 import { db, schema } from '../db';
 import { requireTeacher, teacherIdOf, verifyParticipantToken } from '../auth';
-import { pdfPath, lessonDir } from '../storage';
-import { loadSlides } from '../live/liveSessions';
+import { pdfPath, lessonDir, lessonDirPath } from '../storage';
+import { loadSlides, forgetSession } from '../live/liveSessions';
 import { listCommentInsights } from '../live/commentInsights';
 
 // 授業コード（4文字）の文字セット。
@@ -341,6 +341,56 @@ export async function lessonRoutes(app: FastifyInstance): Promise<void> {
       .where(eq(schema.lessons.id, id));
     const [updated] = await db.select().from(schema.lessons).where(eq(schema.lessons.id, id));
     return lessonToSummary(updated);
+  });
+
+  /**
+   * 授業を消す。
+   *
+   * 消えるのは、その授業に紐づくものすべて（スライド・録音・反応・コメント・
+   * 文字起こし・要約）。**元に戻せない**ので、画面側では確認を挟んでいる。
+   *
+   * 授業中は消せない。生徒がつないだままの画面が理由も出ずに壊れるうえ、
+   * 録音や文字起こしが、消したはずの授業IDへ書きに来るため。
+   *
+   * 消す順番は**外部キーの子から親へ**。逆にすると外部キー制約で落ちる
+   * （本番のPostgreSQLでも開発のPGliteでも同じように拒否される）。
+   */
+  app.delete('/api/lessons/:id', { preHandler: requireTeacher }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const [lesson] = await db
+      .select()
+      .from(schema.lessons)
+      .where(and(eq(schema.lessons.id, id), eq(schema.lessons.teacherId, teacherIdOf(req))));
+    if (!lesson) return reply.code(404).send({ error: '授業が見つかりません' });
+    if (lesson.status === 'live') {
+      return reply
+        .code(409)
+        .send({ error: '授業中は削除できません。授業を終了してから削除してください' });
+    }
+
+    // メモリ側を先に外す。残っていると、消したあとの授業IDへ書き込もうとする
+    forgetSession(id);
+
+    // 子 → 親。並びを変えないこと
+    await db.delete(schema.pollAnswers).where(eq(schema.pollAnswers.lessonId, id));
+    await db.delete(schema.commentClips).where(eq(schema.commentClips.lessonId, id));
+    await db.delete(schema.reactions).where(eq(schema.reactions.lessonId, id));
+    await db.delete(schema.polls).where(eq(schema.polls.lessonId, id));
+    await db.delete(schema.participants).where(eq(schema.participants.lessonId, id));
+    await db.delete(schema.timelineEvents).where(eq(schema.timelineEvents.lessonId, id));
+    await db.delete(schema.commentInsights).where(eq(schema.commentInsights.lessonId, id));
+    await db.delete(schema.reflectionPoints).where(eq(schema.reflectionPoints.lessonId, id));
+    await db.delete(schema.reviewChapters).where(eq(schema.reviewChapters.lessonId, id));
+    await db.delete(schema.transcripts).where(eq(schema.transcripts.lessonId, id));
+    await db.delete(schema.lessonSlides).where(eq(schema.lessonSlides.lessonId, id));
+    await db.delete(schema.lessonTelemetry).where(eq(schema.lessonTelemetry.lessonId, id));
+    await db.delete(schema.lessons).where(eq(schema.lessons.id, id));
+
+    // ファイルは最後。先に消して行の削除が失敗すると、開けない授業が一覧に残る
+    await fs.promises.rm(lessonDirPath(id), { recursive: true, force: true });
+
+    req.log.info({ lessonId: id }, '[lessons] 授業を削除しました');
+    return { ok: true };
   });
 
   // ---- コメント・振り返り一覧（先生画面の初期表示・再接続時の復元用） ----

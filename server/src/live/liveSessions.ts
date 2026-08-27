@@ -886,3 +886,18 @@ export async function touchParticipants(participantIds: string[]): Promise<void>
     .set({ lastSeenAt: new Date() })
     .where(inArray(schema.participants.id, participantIds));
 }
+
+/**
+ * 授業をメモリから外す（削除したときだけ使う）。
+ *
+ * DBの行を消しても、その授業のLiveSessionが残っていると、
+ * 消えた授業IDに向けて書き込みが走って外部キー違反になる。
+ * 読み込み中のPromiseも一緒に外さないと、削除の直後に呼ばれた
+ * getSession() が消えた授業を組み立て直してしまう。
+ */
+export function forgetSession(lessonId: string): void {
+  const s = sessions.get(lessonId);
+  if (s?.transcribeTimer) clearInterval(s.transcribeTimer);
+  sessions.delete(lessonId);
+  sessionLoads.delete(lessonId);
+}
