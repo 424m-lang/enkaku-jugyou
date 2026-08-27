@@ -216,11 +216,11 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
     const doneIds = new Set(done.map((d) => d.reactionId));
 
     // 授業全体の文字起こしを一度だけ用意する。
-    // 授業中に貯めたぶん（scope='clip'）を組み合わせ、足りない範囲だけを追加で起こす。
+    // 授業中に貯めた分（scope='clip'）を組み合わせ、足りない範囲だけを追加で起こす。
     //
     // 以前はコメント1件ごとに「手前4分」を起こし直していた。
     // その範囲は授業中にすでに起こしてあるので、**同じ音声をもう一度Whisperへ送っていた**。
-    // コメントが10件あれば最大40分ぶん、費用も待ち時間も余分にかかっていた
+    // コメントが10件あれば最大40分の音声について、費用も待ち時間も余分にかかっていた
     const durationMs = lesson.audioDurationMs ?? 0;
     const allSegments = durationMs > 0 ? await ensureFullTranscript(id, durationMs) : [];
 
@@ -407,7 +407,7 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
 
     // 授業中に貯めた文字起こしを組み合わせ、足りない範囲だけを追加で起こす。
     // ここで毎回 0〜終わり を起こし直していたころは、「AI要約」を押すたびに
-    // **授業1コマぶんの文字起こし料金がもう一度**かかっていた
+    // **授業1コマ分の文字起こし料金がもう一度**かかっていた
     const segments = await ensureFullTranscript(id, durationMs);
     if (segments.length === 0) {
       return reply.code(409).send({ error: '録音ファイルが見つかりません' });

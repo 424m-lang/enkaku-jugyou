@@ -176,7 +176,7 @@ export default function Teach() {
       socket.on('audio_restart', () => audioStopRef.current?.restart());
       socket.on('participant_count', (n) => setParticipantCount(n));
       socket.on('participants', (list) => setParticipants(list));
-      // 入退室は1人ぶんだけ届く。id が一致する行を差し替え、無ければ末尾に足す
+      // 入退室は1人分だけ届く。id が一致する行を差し替え、無ければ末尾に足す
       // （サーバ側は参加順に並べているので、新しい参加者は末尾で正しい）
       socket.on('participant_changed', (p) =>
         setParticipants((prev) => {

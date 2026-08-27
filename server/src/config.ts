@@ -37,7 +37,7 @@ export const config = {
   insightFocusBeforeMs: Number(process.env.INSIGHT_FOCUS_BEFORE_MS ?? 30_000),
   insightFocusAfterMs: Number(process.env.INSIGHT_FOCUS_AFTER_MS ?? 60_000),
 
-  // 授業中のローリング文字起こし: 裏でこの間隔ごとに新しいぶんを文字起こしして貯める
+  // 授業中のローリング文字起こし: 裏でこの間隔ごとに新しい分を文字起こしして貯める
   liveTranscribeIntervalMs: Number(process.env.LIVE_TRANSCRIBE_INTERVAL_MS ?? 300_000), // 5分
   // 各区切りに直前のこの時間を重ねて文字起こしし、つなぎ目の欠けを防ぐ
   liveTranscribeOverlapMs: Number(process.env.LIVE_TRANSCRIBE_OVERLAP_MS ?? 15_000),

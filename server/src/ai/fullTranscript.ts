@@ -64,7 +64,7 @@ export async function ensureFullTranscript(
     return dedupe(existing);
   }
 
-  // 授業中に貯めたぶんを集める
+  // 授業中に貯めた分を集める
   const clipRows = await db
     .select()
     .from(schema.transcripts)

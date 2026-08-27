@@ -116,7 +116,7 @@ export async function captionHistory(s: LiveSession): Promise<CaptionLine[]> {
     if (matched) out.push({ tMs: seg.startMs, text: seg.text.trim(), source: 'whisper' });
   }
 
-  // Whisperがまだ追いついていない／認識できなかったぶんは、ライブの文をそのまま残す
+  // Whisperがまだ追いついていない／認識できなかった分は、ライブの文をそのまま残す
   liveLines.forEach((l, i) => {
     if (!supersededLive.has(i)) out.push({ tMs: l.tMs, text: l.text, source: 'live' });
   });

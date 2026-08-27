@@ -77,7 +77,7 @@ async function pickAvcCodec(
  *
  * MP4は [4バイトの長さ][4バイトの種類][中身] の箱が並んだ形をしている。
  * ftyp+moov が先頭（＝デコーダ初期化用のヘッダ）、そのあとは moof+mdat の対が
- * 断片ひとつぶん。muxerがどう書き込みを分割してくるかに依存しないよう、
+ * 断片ひとつ分。muxerがどう書き込みを分割してくるかに依存しないよう、
  * 箱の境目は自分で数える。
  */
 class BoxSplitter {
@@ -163,7 +163,7 @@ export type LowLatencyMp4 = { stop: () => void };
 type Options = {
   stream: MediaStream;
   bitrate: number;
-  /** 断片ひとつぶん。先頭のヘッダは isInit=true で来る */
+  /** 断片ひとつ分。先頭のヘッダは isInit=true で来る */
   onSegment: (bytes: Uint8Array, mime: string, isInit: boolean) => void;
   /** 途中で符号化に失敗したとき。呼び出し側は MediaRecorder に戻す */
   onFailure: () => void;
@@ -188,7 +188,7 @@ export async function startLowLatencyMp4(opts: Options): Promise<LowLatencyMp4 |
    * そのままMP4に入れると、MSEが2つのトラックの重なりを取れず再生が止まる。
    *
    * そこで各トラックの最初の1枚が「届いた実時刻」を基準にして、共通の時計へ移す。
-   * 相対的なずれ（＝口の動きと声のずれ）は実時刻で測ったぶんだけ保たれる
+   * 相対的なずれ（＝口の動きと声のずれ）は実時刻で測った分だけ保たれる
    */
   const startedAt = performance.now();
   const offsets: { v?: number; a?: number } = {};
@@ -280,7 +280,7 @@ export async function startLowLatencyMp4(opts: Options): Promise<LowLatencyMp4 |
         : {}),
       fastStart: 'fragmented',
       // 断片の長さは自分で打つキーフレームで決める。muxer側の下限（既定1秒）を
-      // 残すと、キーフレーム2枚ぶんが1つの断片にまとめられて遅延が倍になる
+      // 残すと、キーフレーム2枚分が1つの断片にまとめられて遅延が倍になる
       minFragmentDuration: 0,
       // 映像と音声の時刻は同じ時計から来るので、そろえてから0起点にする
       firstTimestampBehavior: 'cross-track-offset',
@@ -339,7 +339,7 @@ export async function startLowLatencyMp4(opts: Options): Promise<LowLatencyMp4 |
           return;
         }
         const frame = value;
-        // 詰まっているときは捨てる。溜めるとそのぶん遅れが伸びるだけで、
+        // 詰まっているときは捨てる。溜めても遅れが伸びるだけで、
         // 授業では「少しカクつく」より「ずっと遅れる」ほうが困る
         if (videoEncoder.encodeQueueSize > MAX_QUEUE) {
           frame.close();

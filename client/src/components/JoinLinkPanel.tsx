@@ -19,7 +19,7 @@ export default function JoinLinkPanel({ joinCode }: Props) {
   const [qrDataUrl, setQrDataUrl] = useState('');
   const [copied, setCopied] = useState(false);
   // 配るURLには最初から授業コードを入れておく。
-  // 生徒にコードを打たせる手順を残すと、聞き間違い・打ち間違いのぶんだけ入室が遅れる
+  // 生徒にコードを打たせる手順を残すと、聞き間違い・打ち間違いの分だけ入室が遅れる
   const directUrl = `${window.location.origin}/join?code=${joinCode}`;
 
   async function copy(text: string) {

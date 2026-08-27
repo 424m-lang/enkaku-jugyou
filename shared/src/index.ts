@@ -69,7 +69,7 @@ export function applyTaskChange(
   const next = new Set(current);
   if (mode === 'sequential') {
     // 押したタスクまで一気に完了 / 押したタスク以降をまとめて取り消し。
-    // これによって「押し忘れたぶんを一覧から選んで取り戻す」動作が自然に成立する
+    // これによって「押し忘れた分を一覧から選んで取り戻す」動作が自然に成立する
     tasks.forEach((t, i) => {
       if (done ? i <= index : i >= index) {
         if (done) next.add(t.id);
@@ -238,7 +238,7 @@ export type TimelineEventType =
   | 'reflection_end' // 旧機能（過去データ用）
   | 'audio_part'
   | 'task_progress'
-  | 'caption'; // ブラウザ音声認識の確定ぶん（読み返し用。暫定は記録しない）
+  | 'caption'; // ブラウザ音声認識の確定した分（読み返し用。暫定は記録しない）
 
 export type TimelineEvent = {
   id: string;
@@ -653,9 +653,9 @@ export interface ServerToClientEvents {
   // 先生がつないだときと、授業全体の設定を変えたときだけ全件を送る
   participants: (list: ParticipantInfo[]) => void;
   /**
-   * 参加者1人ぶんの変化（入室・退室）。先生側で id を見て差し替える。
-   * 入退室のたびに全件を送ると、N人の入室で「N人ぶんの一覧」をN回作ることになり、
-   * 人数の二乗で重くなるため、ここだけ1人ぶんに絞っている
+   * 参加者1人分の変化（入室・退室）。先生側で id を見て差し替える。
+   * 入退室のたびに全件を送ると、N人の入室で「N人分の一覧」をN回作ることになり、
+   * 人数の二乗で重くなるため、ここだけ1人分に絞っている
    */
   participant_changed: (participant: ParticipantInfo) => void;
 
@@ -716,7 +716,7 @@ export interface ClientToServerEvents {
   /**
    * 教室モニターに字幕の帯を出すか（先生）。
    * 「字幕を作る」という単体のスイッチは無く、出し先がひとつでもONなら作り始める。
-   * 生徒の端末ぶんは先生が決めない（`set_my_captions` を参照）
+   * 生徒の端末側は先生が決めない（`set_my_captions` を参照）
    */
   set_captions: (
     p: { onScreen?: boolean },

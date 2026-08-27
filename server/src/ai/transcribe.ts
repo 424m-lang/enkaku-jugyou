@@ -40,7 +40,7 @@ export async function transcribeRange(
       // 誰も話していない範囲は、そもそも問い合わせない。
       // Whisperは声の無い音声に対して必ず何かを書こうとするため、渡せば作り話しか返らない
       // （検証では、暗騒音10分に対して支離滅裂な文が44個生成された）。
-      // 呼ばないので、その時間ぶんの料金と待ち時間もかからない
+      // 呼ばないので、その時間分の料金と待ち時間もかからない
       if (audio && audio.quietFraction >= SILENT_RANGE_QUIET_FRACTION) {
         return { text: '', segments: [], provider: 'openai-whisper' };
       }

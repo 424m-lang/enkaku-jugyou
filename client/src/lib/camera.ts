@@ -22,7 +22,7 @@ import { startLowLatencyMp4, lowLatencyMp4Supported, type LowLatencyMp4 } from '
  * 断片を切らない**ため、timesliceに500msを指定しても実際には約4.1秒ごとにしか
  * データが出てこない。同一条件の実測で総遅延は WebM 1.4秒 / MP4 5.3秒。
  * 全体をMP4に落とすと、Apple系が1台混じるだけで**全員が4秒損をする**。
- * 2本流すぶん先生の端末の負荷と上り通信量は増えるが、それは混在時だけで済む。
+ * 2本流す分、先生の端末の負荷と上り通信量は増えるが、それは混在時だけで済む。
  *
  * なおMP4は、使える環境ではWebCodecsで自前に組み立てて断片を0.5秒ごとに切る
  * （`lowLatencyMp4.ts`）。ここのMediaRecorderは、それが使えない環境の受け皿。

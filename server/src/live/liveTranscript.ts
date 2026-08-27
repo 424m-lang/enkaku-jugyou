@@ -8,7 +8,7 @@ import { tMs, type LiveSession } from './liveSessions';
 
 /**
  * 授業中に裏で文字起こしを貯める仕組み。
- * - 5分間隔で「前回からの新しいぶん」だけを文字起こしして継ぎ足す
+ * - 5分間隔で「前回からの新しい分」だけを文字起こしして継ぎ足す
  * - コメントが来たときは、まだ文字起こししていない直近だけを追加で文字起こしする
  * - 各区切りは直前を少し重ねて文字起こしし、つなぎ目の重複は取り除く
  * これにより、コメントが来た時点で授業全体の文字起こしがほぼ手元にある状態にする。
@@ -54,7 +54,7 @@ async function catchUp(s: LiveSession, targetMs: number): Promise<void> {
     if (!t) return; // まだ音声が無い区間（録音していない等）→ 次の機会に再挑戦
 
     // つなぎ目の重複除去: 既に貯めた範囲(before)より後のセグメントだけ採用する。
-    // 重ねたぶん(from〜before)はWhisperに前後の文脈を与えるためだけに使い、捨てる
+    // 重ねた分(from〜before)はWhisperに前後の文脈を与えるためだけに使い、捨てる
     const newSegs = (t.segments ?? []).filter((seg) => seg.startMs >= before);
     s.transcriptSegments = s.transcriptSegments
       .concat(newSegs)

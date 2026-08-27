@@ -75,7 +75,7 @@ export function startCaptions(opts: {
     r.interimResults = true;
 
     r.onresult = (e) => {
-      // resultIndex 以降が今回更新されたぶん
+      // resultIndex 以降が今回更新された分
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const result = e.results[i];
         const text = result[0]?.transcript?.trim();

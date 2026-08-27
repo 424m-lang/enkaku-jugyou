@@ -194,7 +194,7 @@ export default function Class() {
       });
       socket.on('audio_permission', (p) => setAudioAllowed(p.audio));
       // 字幕の希望は接続ごとに送り直す。サーバは接続単位で数えていて、
-      // 再接続すると前の申告は消えるため（端末を閉じた生徒のぶんで認識を回さないための作り）
+      // 再接続すると前の申告は消えるため（端末を閉じた生徒の分まで認識を回さないための作り）
       socket.on('connect', () => {
         if (readCaptionsOn()) socket.emit('set_my_captions', { on: true }, () => {});
       });

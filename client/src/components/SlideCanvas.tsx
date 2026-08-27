@@ -110,7 +110,7 @@ function hitStroke(
   if (n === 0) return false;
   const tol = Math.max((s.width * W) / 2, 5) + 5;
   if (s.tool === 'rect' || s.tool === 'ellipse') {
-    // 旧データ用: 外接矩形（許容幅ぶん拡大）に入っていればヒット
+    // 旧データ用: 外接矩形（許容幅の分だけ拡大）に入っていればヒット
     const x0 = Math.min(pts[0], pts[(n - 1) * 2]) * W - tol;
     const x1 = Math.max(pts[0], pts[(n - 1) * 2]) * W + tol;
     const y0 = Math.min(pts[1], pts[(n - 1) * 2 + 1]) * H - tol;

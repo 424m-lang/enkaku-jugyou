@@ -104,7 +104,7 @@ export type LiveSession = {
    *
    * 先生に「生徒の端末に出す」というスイッチは無く、ここが空でなければ
    * 先生の端末で音声認識が始まる。socket.id をキーにしているのは、
-   * 端末を閉じた生徒のぶんで認識を回し続けないようにするため
+   * 端末を閉じた生徒の分まで認識を回し続けないようにするため
    */
   captionWants: Map<string, string>;
   /** 先生の端末で音声認識が動かない。字幕をONにした生徒に理由を返すために持つ */
@@ -265,7 +265,7 @@ async function loadSession(lessonId: string): Promise<LiveSession | null> {
     tasksActive: lesson.tasksActive,
     captionsOnScreen: lesson.captionsOnScreen,
     captionsForStudents: lesson.captionsForStudents,
-    // 生徒ぶんは接続している生徒から決まるので、読み込み時は必ず0人から始める
+    // 生徒の分は接続している生徒から決まるので、読み込み時は必ず0人から始める
     captionsEnabled: lesson.captionsOnScreen,
     captionWants: new Map(),
     captionsUnavailable: false,
@@ -493,7 +493,7 @@ function recomputeCaptions(s: LiveSession): void {
 
 /**
  * 教室モニターに字幕を出すか（先生の操作）。
- * 生徒ぶんはここでは触らない。保存するのも教室モニターぶんだけで、
+ * 生徒の分はここでは触らない。保存するのも教室モニターの分だけで、
  * 生徒の希望は「いま繋がっている生徒」から毎回決め直す
  */
 export async function setCaptionsOnScreen(s: LiveSession, onScreen: boolean): Promise<void> {
@@ -505,7 +505,7 @@ export async function setCaptionsOnScreen(s: LiveSession, onScreen: boolean): Pr
     .where(eq(schema.lessons.id, s.lessonId));
 }
 
-/** 生徒1人ぶんの字幕の希望。保存しない（授業をまたいで引き継ぐものではない） */
+/** 生徒1人分の字幕の希望。保存しない（授業をまたいで引き継ぐものではない） */
 export function setStudentCaptions(
   s: LiveSession,
   socketId: string,
@@ -517,7 +517,7 @@ export function setStudentCaptions(
   recomputeCaptions(s);
 }
 
-/** 接続が切れた端末のぶんを外す。変化があったときだけ true */
+/** 接続が切れた端末の分を外す。変化があったときだけ true */
 export function dropCaptionWant(s: LiveSession, socketId: string): boolean {
   if (!s.captionWants.delete(socketId)) return false;
   recomputeCaptions(s);
@@ -894,7 +894,7 @@ export async function touchParticipants(participantIds: string[]): Promise<void>
  * 立ち上げ直せば同じ授業の続きから再開できる状態のままにしておく。
  * ここで閉じるのは、閉じないと失われるものだけ:
  * - 録音の書き込みストリーム（end しないと最後の数秒がファイルに残らない）
- * - 5秒ごとにまとめて保存している匿名集計（待機中のぶんが消える）
+ * - 5秒ごとにまとめて保存している匿名集計（待機中の分が消える）
  * - 文字起こしのタイマー（残っているとプロセスが終わらない）
  */
 export async function flushAllSessions(): Promise<void> {

@@ -128,7 +128,7 @@ export default function AudioCaptionPanel({
 
       {/* ---- 自動字幕 ---- */}
       {/* 「字幕を作る」というスイッチは置かない。出し先がひとつでもONなら作り始める。
-          生徒の端末ぶんは先生が決めない。誰に字幕が要るかは本人にしか分からず、
+          生徒の端末側は先生が決めない。誰に字幕が要るかは本人にしか分からず、
           先生が押し忘れれば必要な生徒が読めなくなるため */}
       <div className="classroom-sec">
         <span className="classroom-label">自動字幕</span>
