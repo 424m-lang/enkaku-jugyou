@@ -235,6 +235,39 @@ async function noteConcurrency(io: TypedServer, s: LiveSession, room: string): P
   });
 }
 
+/** ack を渡してこなかったときに代わりに呼ばれる、何もしない応答 */
+const NO_ACK = (): void => {};
+
+/**
+ * ack（応答）を渡してこない相手からの通信でも落ちないようにする包み。
+ *
+ * `socket.emit('reaction', {...})` のように**応答を受け取らずに**送ると、
+ * socket.io はハンドラに ack の関数を足さない。素の `cb(...)` は
+ * 「cb is not a function」で投げ、catch の中の `cb(...)` も同じ行で投げ直すため、
+ * 拾い手のいない reject になってプロセスごと落ちる。
+ * ブラウザのコンソール1行で、授業中の全員の接続が切れてしまう。
+ *
+ * 本物のクライアントは必ず ack を渡すが、それを当てにしない。
+ * 足りない・関数でないときは何もしない応答で埋め、ハンドラ本体は今までどおり
+ * `cb(...)` を書けるままにしておく（包み忘れが本体側に散らばらないようにする）。
+ *
+ * ack は必ず最後の引数（socket.io の仕様）で、その位置は handler.length で見る。
+ * ここへ渡すハンドラに既定値つき引数・可変長引数を使うと位置がずれるので使わないこと
+ */
+function withAck<A extends unknown[]>(
+  handler: (...args: A) => void | Promise<void>
+): (...args: A) => void | Promise<void> {
+  const ackIndex = handler.length - 1;
+  return (...args: unknown[]) => {
+    const passed = args.slice(0, ackIndex);
+    // 引数ごと省かれていることもある（例: 中身なしの `emit('reaction')`）
+    while (passed.length < ackIndex) passed.push(undefined);
+    const ack = args.length > ackIndex ? args[args.length - 1] : undefined;
+    passed.push(typeof ack === 'function' ? ack : NO_ACK);
+    return handler(...(passed as A));
+  };
+}
+
 export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
   // ---- 接続時の認証 ----
   io.use(async (socket, next) => {
@@ -520,7 +553,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
 
     // ================= 先生のイベント =================
     if (role === 'teacher') {
-      socket.on('start_lesson', async (cb) => {
+      socket.on('start_lesson', withAck(async (cb) => {
         try {
           if (s.status === 'ended') return cb({ ok: false, error: 'この授業は終了済みです' });
           if (s.status !== 'live') {
@@ -545,9 +578,9 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           app.log.error(err);
           cb({ ok: false, error: '開始に失敗しました' });
         }
-      });
+      }));
 
-      socket.on('end_lesson', async (cb) => {
+      socket.on('end_lesson', withAck(async (cb) => {
         try {
           if (s.status !== 'live') return cb({ ok: false, error: '授業中ではありません' });
           const endMs = tMs(s);
@@ -562,7 +595,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           app.log.error(err);
           cb({ ok: false, error: '終了に失敗しました' });
         }
-      });
+      }));
 
       // 音声（文字起こし用の録音と共通）。教室で受けている生徒には音が要らないので、
       // 教室モニターと、音声を鳴らす設定の生徒だけに中継する
@@ -661,7 +694,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       });
 
       // 生徒端末の音声: まとめて切り替え（教室で受ける授業は全員OFFが既定）
-      socket.on('set_audio_default', async (p, cb) => {
+      socket.on('set_audio_default', withAck(async (p, cb) => {
         try {
           if (p?.mode !== 'on' && p?.mode !== 'off') return cb({ ok: false });
           await setAudioDefault(s, p.mode);
@@ -673,10 +706,10 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           app.log.error(err);
           cb({ ok: false });
         }
-      });
+      }));
 
       // 生徒端末の音声: 1人だけ切り替え（教室に1人だけ遠隔がいる場合など）
-      socket.on('set_participant_audio', async (p, cb) => {
+      socket.on('set_participant_audio', withAck(async (p, cb) => {
         try {
           const mode = p?.mode;
           if (mode !== 'on' && mode !== 'off' && mode !== null) return cb({ ok: false });
@@ -689,7 +722,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           app.log.error(err);
           cb({ ok: false });
         }
-      });
+      }));
 
       socket.on('slide_change', async (p) => {
         if (s.status !== 'live') {
@@ -728,7 +761,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         socket.to(room).emit('clear_slide', { ...p, tMs: ev.tMs });
       });
 
-      socket.on('insert_blank_slide', async (afterPosition, cb) => {
+      socket.on('insert_blank_slide', withAck(async (afterPosition, cb) => {
         try {
           const { slides, newSlideId } = await insertBlankSlide(s, afterPosition);
           io.to(room).emit('slides_updated', slides);
@@ -737,10 +770,10 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           app.log.error(err);
           cb({ ok: false });
         }
-      });
+      }));
 
       // タスク一覧の設定。授業前の事前設定と授業中の追加が同じ経路を通る
-      socket.on('set_tasks', async (p, cb) => {
+      socket.on('set_tasks', withAck(async (p, cb) => {
         try {
           if (!Array.isArray(p?.tasks)) return cb({ ok: false, error: '入力が不正です' });
           if (p.tasks.length > MAX_TASKS) {
@@ -758,9 +791,9 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           app.log.error(err);
           cb({ ok: false });
         }
-      });
+      }));
 
-      socket.on('set_task_config', async (p, cb) => {
+      socket.on('set_task_config', withAck(async (p, cb) => {
         try {
           if (p?.mode !== undefined && p.mode !== 'sequential' && p.mode !== 'free') {
             return cb({ ok: false });
@@ -773,9 +806,9 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           app.log.error(err);
           cb({ ok: false });
         }
-      });
+      }));
 
-      socket.on('set_reactions_enabled', async (p, cb) => {
+      socket.on('set_reactions_enabled', withAck(async (p, cb) => {
         try {
           if (typeof p?.enabled !== 'boolean') return cb({ ok: false });
           await setReactionsEnabled(s, p.enabled);
@@ -785,9 +818,9 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           app.log.error(err);
           cb({ ok: false });
         }
-      });
+      }));
 
-      socket.on('set_insight_resolved', async (p, cb) => {
+      socket.on('set_insight_resolved', withAck(async (p, cb) => {
         try {
           if (typeof p?.insightId !== 'string' || typeof p?.resolved !== 'boolean') {
             return cb({ ok: false });
@@ -799,9 +832,9 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           app.log.error(err);
           cb({ ok: false });
         }
-      });
+      }));
 
-      socket.on('set_reaction_buttons', async (p, cb) => {
+      socket.on('set_reaction_buttons', withAck(async (p, cb) => {
         try {
           if (!Array.isArray(p?.buttons)) return cb({ ok: false });
           const { error } = await setReactionButtons(s, p.buttons);
@@ -812,7 +845,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           app.log.error(err);
           cb({ ok: false });
         }
-      });
+      }));
 
       // ---- 自動字幕 ----
       // 先生の端末のブラウザ音声認識の結果を、そのまま参加者へ配る。
@@ -834,7 +867,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         }
       });
 
-      socket.on('set_captions', async (p, cb) => {
+      socket.on('set_captions', withAck(async (p, cb) => {
         try {
           if (typeof p?.onScreen !== 'boolean') return cb({ ok: false });
           await setCaptionsOnScreen(s, p.onScreen);
@@ -844,7 +877,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           app.log.error(err);
           cb({ ok: false });
         }
-      });
+      }));
 
       // 音声認識が動かないことを生徒にも伝える（出てこない理由が分かるように）
       socket.on('set_caption_status', (p) => {
@@ -856,7 +889,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
 
       // ---- アンケート ----
       // 設問一覧は先生にだけ配る（生徒に配ると次に聞く質問が見えてしまう）
-      socket.on('save_poll', async (p, cb) => {
+      socket.on('save_poll', withAck(async (p, cb) => {
         try {
           if (!isPollType(p?.type)) return cb({ ok: false, error: '設問の型が不正です' });
           const { poll, error } = await savePoll(s, p);
@@ -867,9 +900,9 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           app.log.error(err);
           cb({ ok: false });
         }
-      });
+      }));
 
-      socket.on('delete_poll', async (p, cb) => {
+      socket.on('delete_poll', withAck(async (p, cb) => {
         try {
           if (typeof p?.pollId !== 'string') return cb({ ok: false });
           const wasOpen = s.openPollId === p.pollId;
@@ -884,9 +917,9 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           app.log.error(err);
           cb({ ok: false });
         }
-      });
+      }));
 
-      socket.on('open_poll', async (p, cb) => {
+      socket.on('open_poll', withAck(async (p, cb) => {
         try {
           if (s.status !== 'live') return cb({ ok: false, error: '授業を開始してください' });
           if (typeof p?.pollId !== 'string') return cb({ ok: false });
@@ -905,11 +938,11 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           app.log.error(err);
           cb({ ok: false });
         }
-      });
+      }));
 
       // 締め切ったあとに結果を見せる／引っ込める。
       // 締め切りと結果表示を分けてあるので、先生は集計を見てから見せるか決められる
-      socket.on('reveal_poll', async (p, cb) => {
+      socket.on('reveal_poll', withAck(async (p, cb) => {
         try {
           if (typeof p?.pollId !== 'string') return cb({ ok: false });
           const poll = s.polls.find((x) => x.id === p.pollId);
@@ -933,9 +966,9 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           app.log.error(err);
           cb({ ok: false });
         }
-      });
+      }));
 
-      socket.on('close_poll', async (p, cb) => {
+      socket.on('close_poll', withAck(async (p, cb) => {
         try {
           if (typeof p?.pollId !== 'string') return cb({ ok: false });
           const type = s.polls.find((x) => x.id === p.pollId)?.type;
@@ -955,7 +988,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           app.log.error(err);
           cb({ ok: false });
         }
-      });
+      }));
     }
 
     // ================= 生徒のイベント =================
@@ -964,7 +997,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       // 1人でもONなら先生の端末で音声認識が始まり、全員OFFで止まる。
       // 誰がONにしたかは先生にも他の生徒にも見せない（人数だけ先生に届く）
       // 先生の映像を受け取るか。閉じたら配信を止める（見ていないものに帯域を使わせない）
-      socket.on('set_my_video', (p, cb) => {
+      socket.on('set_my_video', withAck((p, cb) => {
         const pid = socket.data.participantId;
         if (!pid) return cb({ ok: false });
         const wasClosed = s.videoClosedBy.has(pid);
@@ -985,16 +1018,16 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           void syncStudentAv(io, s, room).catch((err) => app.log.error(err));
         }
         cb({ ok: true });
-      });
+      }));
 
-      socket.on('set_my_captions', (p, cb) => {
+      socket.on('set_my_captions', withAck((p, cb) => {
         const pid = socket.data.participantId;
         if (!pid) return cb({ ok: false });
         setStudentCaptions(s, socket.id, pid, !!p?.on);
         // 人数の表示が変わるので、認識の要否が変わらなくても配り直す
         broadcastCaptionUse();
         cb({ ok: true });
-      });
+      }));
 
       // コメント入力中の合図: 最初の合図の時刻を「入力開始時刻」として記録し、
       // コメント・振り返りのAI分析対象の音声範囲を決めるのに使う
@@ -1013,7 +1046,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         }
       });
 
-      socket.on('reaction', async (input, cb) => {
+      socket.on('reaction', withAck(async (input, cb) => {
         try {
           if (s.status !== 'live') return cb({ ok: false });
           const kind = typeof input?.kind === 'string' ? input.kind.trim() : '';
@@ -1072,10 +1105,10 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           app.log.error(err);
           cb({ ok: false });
         }
-      });
+      }));
 
       // タスクの完了・取り消し
-      socket.on('task_set', async (p, cb) => {
+      socket.on('task_set', withAck(async (p, cb) => {
         try {
           if (s.status !== 'live' || !s.tasksActive) return cb({ ok: false });
           if (typeof p?.taskId !== 'string' || typeof p?.done !== 'boolean') {
@@ -1096,10 +1129,10 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           app.log.error(err);
           cb({ ok: false });
         }
-      });
+      }));
 
       // アンケートへの回答。締め切りまでは送り直すたびに上書きされる
-      socket.on('poll_answer', async (p, cb) => {
+      socket.on('poll_answer', withAck(async (p, cb) => {
         try {
           if (s.status !== 'live') return cb({ ok: false });
           if (typeof p?.pollId !== 'string') return cb({ ok: false });
@@ -1113,18 +1146,18 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           app.log.error(err);
           cb({ ok: false });
         }
-      });
+      }));
     }
 
     // 字幕の履歴。開いたときだけ取りに来るので、常時配らない
-    socket.on('get_captions', async (cb) => {
+    socket.on('get_captions', withAck(async (cb) => {
       try {
         cb({ lines: await captionHistory(s) });
       } catch (err) {
         app.log.error(err);
         cb({ lines: [] });
       }
-    });
+    }));
 
     socket.on('disconnect', async () => {
       if (s.status !== 'ended') {
