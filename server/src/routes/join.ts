@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { generateParticipantToken, verifyParticipantToken } from '../auth';
-import { generateAnonymousName } from '../anonymousName';
+import { generateAnonymousName, noteAnonymousName } from '../anonymousName';
 
 const joinSchema = z.object({
   code: z
@@ -83,6 +83,8 @@ export async function joinRoutes(app: FastifyInstance): Promise<void> {
     // 入力があればそれを使い、無ければ「青いネコ」のような仮名を配る
     const displayName =
       parsed.data.displayName || (await generateAnonymousName(lesson.id));
+    // 自分で入れた名前も、仮名として配られないように控えておく
+    if (parsed.data.displayName) await noteAnonymousName(lesson.id, displayName);
 
     const lessonPayload = {
       id: lesson.id,

@@ -79,11 +79,7 @@ export const ANONYMOUS_NAME_COMBINATIONS = COLORS.length * ANIMALS.length;
  * 2つ並ぶだけで、参加者IDは別なので集計・重複排除には影響しない。
  */
 export async function generateAnonymousName(lessonId: string): Promise<string> {
-  const rows = await db
-    .select({ displayName: schema.participants.displayName })
-    .from(schema.participants)
-    .where(eq(schema.participants.lessonId, lessonId));
-  const used = new Set(rows.map((r) => r.displayName));
+  const used = await usedNamesOf(lessonId);
 
   // 空きの中からランダムに選ぶ。先頭から順に配ると「赤いネコ」「赤いイヌ」…と
   // 並んでしまい、結局そこから参加順が読めてしまう
@@ -94,11 +90,54 @@ export async function generateAnonymousName(lessonId: string): Promise<string> {
       if (!used.has(name)) free.push(name);
     }
   }
-  if (free.length > 0) return free[crypto.randomInt(free.length)];
+  if (free.length > 0) {
+    const name = free[crypto.randomInt(free.length)];
+    // 次の人が同じ名前を引かないよう、DBへ書く前にここで押さえる
+    used.add(name);
+    return name;
+  }
 
   // 全通りを使い切ったときだけ、末尾に番号を足して延長する
   for (let n = 2; ; n++) {
     const name = `${COLORS[crypto.randomInt(COLORS.length)]}${ANIMALS[crypto.randomInt(ANIMALS.length)]}${n}`;
-    if (!used.has(name)) return name;
+    if (!used.has(name)) {
+      used.add(name);
+      return name;
+    }
   }
+}
+
+/**
+ * 授業ごとの「もう使われている名前」。
+ *
+ * 以前はここで毎回 participants を全件読んでいた。1人入るたびにN行読むので、
+ * **一斉入室では人数の二乗**になり、600人の入室で10秒かかっていた。
+ * 最初の1回だけDBから作り、あとはメモリの上で足していく。
+ *
+ * サーバを立ち上げ直せば作り直されるだけなので、消えても困らない。
+ * 授業を削除したときは forgetAnonymousNames() で捨てる。
+ */
+const usedNames = new Map<string, Set<string>>();
+
+async function usedNamesOf(lessonId: string): Promise<Set<string>> {
+  const cached = usedNames.get(lessonId);
+  if (cached) return cached;
+  const rows = await db
+    .select({ displayName: schema.participants.displayName })
+    .from(schema.participants)
+    .where(eq(schema.participants.lessonId, lessonId));
+  const set = new Set(rows.map((r) => r.displayName));
+  usedNames.set(lessonId, set);
+  return set;
+}
+
+/** 生徒が自分で名前を入れた場合も、その名前は仮名として配らない */
+export async function noteAnonymousName(lessonId: string, name: string): Promise<void> {
+  const used = await usedNamesOf(lessonId);
+  used.add(name);
+}
+
+/** 授業を削除したときに捨てる */
+export function forgetAnonymousNames(lessonId: string): void {
+  usedNames.delete(lessonId);
 }

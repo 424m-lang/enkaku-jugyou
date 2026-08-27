@@ -649,8 +649,15 @@ export interface ServerToClientEvents {
 
   // 教室モニターの接続台数（先生向け。0なら教室モニターが映っていない）
   screen_count: (count: number) => void;
-  // 参加者一覧（先生向け。音声の個別切替に使う）
+  // 参加者一覧（先生向け。音声の個別切替に使う）。
+  // 先生がつないだときと、授業全体の設定を変えたときだけ全件を送る
   participants: (list: ParticipantInfo[]) => void;
+  /**
+   * 参加者1人ぶんの変化（入室・退室）。先生側で id を見て差し替える。
+   * 入退室のたびに全件を送ると、N人の入室で「N人ぶんの一覧」をN回作ることになり、
+   * 人数の二乗で重くなるため、ここだけ1人ぶんに絞っている
+   */
+  participant_changed: (participant: ParticipantInfo) => void;
 
   // リアクション（先生向け）
   reaction_feed: (item: ReactionFeedItem, counts: ReactionCounts) => void;

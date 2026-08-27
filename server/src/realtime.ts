@@ -127,6 +127,26 @@ function avRoomOf(room: string, format: VideoFormat): string {
 }
 
 /** 音声も形式別の部屋へ分け、受け手にはOpusかAACの片方だけを送る */
+/**
+ * 役割ごとのルーム。人数を数えるためだけに使う。
+ *
+ * 数えるのに io.in(room).fetchSockets() を使うと、**接続の数だけ包み直す**ので、
+ * 一斉入室では「入室のたびに全員を並べる」＝人数の二乗になる。
+ * 役割ごとに部屋を分けておけば adapter.rooms.get(...).size で一発で数えられる。
+ */
+function studentRoomOf(room: string): string {
+  return `${room}:students`;
+}
+
+function screenRoomOf(room: string): string {
+  return `${room}:screens`;
+}
+
+/** その部屋にいる接続の数（O(1)。中身は見ない） */
+function roomSize(io: TypedServer, room: string): number {
+  return io.sockets.adapter.rooms.get(room)?.size ?? 0;
+}
+
 function audioRoomOf(room: string, format: AudioFormat): string {
   return `${room}:audio:${format}`;
 }
@@ -221,11 +241,10 @@ function noteAudioStartedInRoom(io: TypedServer, s: LiveSession, targetRoom: str
   }
 }
 
-async function noteConcurrency(io: TypedServer, s: LiveSession, room: string): Promise<void> {
+function noteConcurrency(io: TypedServer, s: LiveSession, room: string): void {
   if (s.status === 'ended') return;
-  const sockets = await io.in(room).fetchSockets();
-  const students = sockets.filter((x) => x.data.role === 'student').length;
-  const screens = sockets.filter((x) => x.data.role === 'screen').length;
+  const students = roomSize(io, studentRoomOf(room));
+  const screens = roomSize(io, screenRoomOf(room));
   if (students <= s.telemetry.maxConcurrentStudents && screens <= s.telemetry.maxConcurrentScreens) {
     return;
   }
@@ -360,7 +379,11 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
     if (role === 'teacher') {
       await socket.join(teacherRoom);
     }
+    if (role === 'student') {
+      await socket.join(studentRoomOf(room));
+    }
     if (role === 'screen') {
+      await socket.join(screenRoomOf(room));
       await socket.join(myAvRoom);
       await socket.join(myAudioRoom);
       noteVideoReceiver(s, socket, videoFormatFor(socket.data.videoCanPlay));
@@ -458,10 +481,22 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       socket.emit('av_init', toArrayBuffer(myStream.init), myStream.seq, myStream.mime);
     }
 
-    await broadcastParticipantCount(io, room);
-    await broadcastScreenCount(io, room, teacherRoom);
-    await noteConcurrency(io, s, room);
-    await broadcastParticipants(io, s, room, teacherRoom);
+    broadcastParticipantCount(io, room, teacherRoom);
+    broadcastScreenCount(io, room, teacherRoom);
+    noteConcurrency(io, s, room);
+    // 先生がつないだときだけ全件をそろえる（再接続の復元もここ）。
+    // 生徒の入室は1人ぶんだけ送る（全件だと一斉入室で人数の二乗になる）
+    if (role === 'teacher') {
+      await broadcastParticipants(io, s, room, teacherRoom);
+    } else if (role === 'student' && socket.data.participantId) {
+      sendParticipantChange(
+        io,
+        s,
+        teacherRoom,
+        { id: socket.data.participantId, displayName: socket.data.participantName ?? '' },
+        true
+      );
+    }
     // 途中参加で分母（参加者数）が変わるため、先生の集計を配り直す。
     // これを忘れると「12人中3人」がいつまでも「2人中1人」のまま見え、判断を誤らせる
     if (role === 'student') await broadcastDenominators(io, s, teacherRoom);
@@ -1154,14 +1189,22 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         if (s.screenLayout === 'video') s.screenLayout = 'slide';
         io.to(room).emit('av_state', avState());
       }
-      await broadcastParticipantCount(io, room);
-      await broadcastScreenCount(io, room, teacherRoom);
+      broadcastParticipantCount(io, room, teacherRoom);
+      broadcastScreenCount(io, room, teacherRoom);
       if (socket.data.participantId) {
         s.composing.delete(socket.data.participantId);
         await touchParticipants([socket.data.participantId]).catch(() => {});
       }
       if (socket.data.role === 'student') {
-        await broadcastParticipants(io, s, room, teacherRoom);
+        if (socket.data.participantId) {
+          sendParticipantChange(
+            io,
+            s,
+            teacherRoom,
+            { id: socket.data.participantId, displayName: socket.data.participantName ?? '' },
+            false
+          );
+        }
         await broadcastDenominators(io, s, teacherRoom);
       }
     });
@@ -1277,20 +1320,43 @@ async function syncStudentAv(
   io.to(`${room}:teacher`).emit('audio_formats', { formats: audioFormats });
 }
 
-async function broadcastParticipantCount(io: TypedServer, room: string): Promise<void> {
-  const sockets = await io.in(room).fetchSockets();
-  const count = sockets.filter((x) => x.data.role === 'student').length;
-  io.to(room).emit('participant_count', count);
+/**
+ * 生徒の人数。**先生にだけ送る。**
+ *
+ * 以前は授業のルーム全体へ送っていたが、この数を使うのは先生画面だけで、
+ * 生徒側は受け取って捨てていた。1人入るたびに全員へ配ることになるので、
+ * 一斉入室では人数の二乗のメッセージが飛んでいた。
+ */
+function broadcastParticipantCount(io: TypedServer, room: string, teacherRoom: string): void {
+  io.to(teacherRoom).emit('participant_count', roomSize(io, studentRoomOf(room)));
 }
 
 /** 教室モニターが何台つながっているか（0なら投影されていないと先生が気づける） */
-async function broadcastScreenCount(
+function broadcastScreenCount(io: TypedServer, room: string, teacherRoom: string): void {
+  io.to(teacherRoom).emit('screen_count', roomSize(io, screenRoomOf(room)));
+}
+
+/**
+ * 参加者1人ぶんの変化だけを先生へ送る（入室・退室）。
+ *
+ * 全件を送る broadcastParticipants() と違い、**DBもソケット一覧も見ない**。
+ * 名前も設定も、いま扱っているソケットとメモリ上の授業から分かるため。
+ * 入退室のたびに全件を作り直すと人数の二乗で効くので、ここは1人ぶんに絞る。
+ */
+function sendParticipantChange(
   io: TypedServer,
-  room: string,
-  teacherRoom: string
-): Promise<void> {
-  const sockets = await io.in(room).fetchSockets();
-  io.to(teacherRoom).emit('screen_count', sockets.filter((x) => x.data.role === 'screen').length);
+  s: LiveSession,
+  teacherRoom: string,
+  participant: { id: string; displayName: string },
+  online: boolean
+): void {
+  io.to(teacherRoom).emit('participant_changed', {
+    id: participant.id,
+    displayName: participant.displayName,
+    audio: effectiveAudio(s, participant.id),
+    overridden: s.audioOverrides.has(participant.id),
+    online,
+  });
 }
 
 async function broadcastParticipants(

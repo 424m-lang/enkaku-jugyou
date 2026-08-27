@@ -10,6 +10,7 @@ import { db, schema } from '../db';
 import { requireTeacher, teacherIdOf, verifyParticipantToken } from '../auth';
 import { pdfPath, lessonDir, lessonDirPath } from '../storage';
 import { loadSlides, forgetSession } from '../live/liveSessions';
+import { forgetAnonymousNames } from '../anonymousName';
 import { listCommentInsights } from '../live/commentInsights';
 
 // 授業コード（4文字）の文字セット。
@@ -370,6 +371,7 @@ export async function lessonRoutes(app: FastifyInstance): Promise<void> {
 
     // メモリ側を先に外す。残っていると、消したあとの授業IDへ書き込もうとする
     forgetSession(id);
+    forgetAnonymousNames(id);
 
     // 子 → 親。並びを変えないこと
     await db.delete(schema.pollAnswers).where(eq(schema.pollAnswers.lessonId, id));

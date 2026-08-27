@@ -176,6 +176,17 @@ export default function Teach() {
       socket.on('audio_restart', () => audioStopRef.current?.restart());
       socket.on('participant_count', (n) => setParticipantCount(n));
       socket.on('participants', (list) => setParticipants(list));
+      // 入退室は1人ぶんだけ届く。id が一致する行を差し替え、無ければ末尾に足す
+      // （サーバ側は参加順に並べているので、新しい参加者は末尾で正しい）
+      socket.on('participant_changed', (p) =>
+        setParticipants((prev) => {
+          const i = prev.findIndex((x) => x.id === p.id);
+          if (i === -1) return [...prev, p];
+          const next = [...prev];
+          next[i] = p;
+          return next;
+        })
+      );
       socket.on('screen_count', (n) => setScreenCount(n));
       socket.on('reaction_feed', (item) => {
         // 同じ反応が重複して届いても二重表示しない（再接続時の取りこぼし補完に備える）
