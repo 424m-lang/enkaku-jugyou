@@ -104,13 +104,13 @@ async function authorizeLessonAccess(
   }
   // 教室モニター（表示専用。スライドを描くためにPDFと授業情報だけ読めればよい）
   const screenToken = req.headers['x-screen-token'];
-  if (
-    lesson.screenToken &&
-    typeof screenToken === 'string' &&
-    screenToken.length === lesson.screenToken.length &&
-    crypto.timingSafeEqual(Buffer.from(screenToken), Buffer.from(lesson.screenToken))
-  ) {
-    return lesson;
+  if (lesson.screenToken && typeof screenToken === 'string') {
+    // 長さは**バイト数**で比べる。文字数（String.length）で比べると、
+    // マルチバイトの混ざったトークンを送られたときにバイト長が食い違い、
+    // timingSafeEqual が例外を投げて 401 ではなく 500 になる
+    const given = Buffer.from(screenToken, 'utf8');
+    const want = Buffer.from(lesson.screenToken, 'utf8');
+    if (given.length === want.length && crypto.timingSafeEqual(given, want)) return lesson;
   }
   // 生徒
   const token = req.headers['x-participant-token'];
@@ -373,20 +373,24 @@ export async function lessonRoutes(app: FastifyInstance): Promise<void> {
     forgetSession(id);
     forgetAnonymousNames(id);
 
-    // 子 → 親。並びを変えないこと
-    await db.delete(schema.pollAnswers).where(eq(schema.pollAnswers.lessonId, id));
-    await db.delete(schema.commentClips).where(eq(schema.commentClips.lessonId, id));
-    await db.delete(schema.reactions).where(eq(schema.reactions.lessonId, id));
-    await db.delete(schema.polls).where(eq(schema.polls.lessonId, id));
-    await db.delete(schema.participants).where(eq(schema.participants.lessonId, id));
-    await db.delete(schema.timelineEvents).where(eq(schema.timelineEvents.lessonId, id));
-    await db.delete(schema.commentInsights).where(eq(schema.commentInsights.lessonId, id));
-    await db.delete(schema.reflectionPoints).where(eq(schema.reflectionPoints.lessonId, id));
-    await db.delete(schema.reviewChapters).where(eq(schema.reviewChapters.lessonId, id));
-    await db.delete(schema.transcripts).where(eq(schema.transcripts.lessonId, id));
-    await db.delete(schema.lessonSlides).where(eq(schema.lessonSlides.lessonId, id));
-    await db.delete(schema.lessonTelemetry).where(eq(schema.lessonTelemetry.lessonId, id));
-    await db.delete(schema.lessons).where(eq(schema.lessons.id, id));
+    // 子 → 親。並びを変えないこと。
+    // ひとまとめのトランザクションにしてあるのは、途中で失敗したときに
+    // 「反応だけ消えて授業は一覧に残る」半端な状態を作らないため
+    await db.transaction(async (tx) => {
+      await tx.delete(schema.pollAnswers).where(eq(schema.pollAnswers.lessonId, id));
+      await tx.delete(schema.commentClips).where(eq(schema.commentClips.lessonId, id));
+      await tx.delete(schema.reactions).where(eq(schema.reactions.lessonId, id));
+      await tx.delete(schema.polls).where(eq(schema.polls.lessonId, id));
+      await tx.delete(schema.participants).where(eq(schema.participants.lessonId, id));
+      await tx.delete(schema.timelineEvents).where(eq(schema.timelineEvents.lessonId, id));
+      await tx.delete(schema.commentInsights).where(eq(schema.commentInsights.lessonId, id));
+      await tx.delete(schema.reflectionPoints).where(eq(schema.reflectionPoints.lessonId, id));
+      await tx.delete(schema.reviewChapters).where(eq(schema.reviewChapters.lessonId, id));
+      await tx.delete(schema.transcripts).where(eq(schema.transcripts.lessonId, id));
+      await tx.delete(schema.lessonSlides).where(eq(schema.lessonSlides.lessonId, id));
+      await tx.delete(schema.lessonTelemetry).where(eq(schema.lessonTelemetry.lessonId, id));
+      await tx.delete(schema.lessons).where(eq(schema.lessons.id, id));
+    });
 
     // ファイルは最後。先に消して行の削除が失敗すると、開けない授業が一覧に残る
     await fs.promises.rm(lessonDirPath(id), { recursive: true, force: true });

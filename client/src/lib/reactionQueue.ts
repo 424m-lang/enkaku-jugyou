@@ -98,12 +98,15 @@ export class ReactionQueue {
     if (this.flushing) return;
     this.flushing = true;
     try {
-      let items = this.load();
-      while (items.length > 0) {
-        const ok = await this.trySend(items[0]);
-        if (!ok) break;
-        items = items.slice(1);
-        this.save(items);
+      for (;;) {
+        // 毎回読み直す。1件の送信を待っている間に生徒がボタンを押すと、
+        // send() が保存へ足しに来る。ここで古い配列を保存し直すと、
+        // その反応を消してしまう（送れなかった反応を残すのがこの仕組みの目的）
+        const items = this.load();
+        if (items.length === 0) break;
+        if (!(await this.trySend(items[0]))) break;
+        // 送れたのは先頭。あとから足された分は末尾なので、読み直して1件落とす
+        this.save(this.load().slice(1));
       }
     } finally {
       this.flushing = false;

@@ -68,6 +68,24 @@ async function main() {
   await app.listen({ port: config.port, host: config.host });
   console.log(`[server] http://localhost:${config.port} で起動しました`);
 
+  // インターネットに公開して動かすときだけ効く注意書き。
+  // どちらも「未設定でも動いてしまう」ため、黙っていると気づけない。
+  // 止めはしない（設定漏れで授業が始められないほうが困る）
+  if (config.isProd) {
+    if (config.sessionSecret === 'dev-secret-change-me') {
+      console.warn(
+        '[server] SESSION_SECRET が既定のままです。先生のログインCookieの署名鍵が' +
+          'ソースに書かれている文字列になります。公開して使う場合は設定してください'
+      );
+    }
+    if (!config.registerCode) {
+      console.warn(
+        '[server] REGISTER_CODE が未設定です。URLを知っていれば誰でも先生アカウントを' +
+          '作れる状態です（AIの利用料が発生します）。公開して使う場合は設定してください'
+      );
+    }
+  }
+
   // ---- 終了処理 ----
   // Ctrl+C や、コンソールのウィンドウを閉じたとき（Windows では SIGHUP）に、
   // 録音のファイルとDBを閉じてから終わる。ローカル運用のDBは PGlite で、

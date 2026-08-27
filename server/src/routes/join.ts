@@ -80,12 +80,6 @@ export async function joinRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(410).send({ error: 'この授業は終了しています' });
     }
 
-    // 入力があればそれを使い、無ければ「青いネコ」のような仮名を配る
-    const displayName =
-      parsed.data.displayName || (await generateAnonymousName(lesson.id));
-    // 自分で入れた名前も、仮名として配られないように控えておく
-    if (parsed.data.displayName) await noteAnonymousName(lesson.id, displayName);
-
     const lessonPayload = {
       id: lesson.id,
       title: lesson.title,
@@ -94,7 +88,10 @@ export async function joinRoutes(app: FastifyInstance): Promise<void> {
     };
 
     // 「続きから」: 前回のトークンがこの授業のものなら、同じ参加者として戻す。
-    // 期限切れや別授業のものだった場合は、そのまま下の新規参加へ落とす
+    // 期限切れや別授業のものだった場合は、そのまま下の新規参加へ落とす。
+    //
+    // **仮名を作る前に**確かめる。先に作ってしまうと、ここで戻る生徒の分まで
+    // 仮名を1つ使ったことにしてしまい、その授業で配れる名前が読み込み直すたびに減る
     if (parsed.data.resumeToken) {
       const prev = await verifyParticipantToken(parsed.data.resumeToken);
       if (prev && prev.lessonId === lesson.id) {
@@ -109,6 +106,12 @@ export async function joinRoutes(app: FastifyInstance): Promise<void> {
         };
       }
     }
+
+    // 入力があればそれを使い、無ければ「青いネコ」のような仮名を配る
+    const displayName =
+      parsed.data.displayName || (await generateAnonymousName(lesson.id));
+    // 自分で入れた名前も、仮名として配られないように控えておく
+    if (parsed.data.displayName) await noteAnonymousName(lesson.id, displayName);
 
     const participantId = crypto.randomUUID();
     const { token, tokenHash } = generateParticipantToken(participantId);
