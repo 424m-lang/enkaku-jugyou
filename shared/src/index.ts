@@ -942,3 +942,53 @@ export type LessonStats = {
     reactions: { tMs: number; kind: string; comment: string | null }[];
   }[];
 };
+
+// ---- 授業後に見るアンケートとタスク ----
+
+/** 授業後のアンケート1問。授業中の PollResults と違い、締め切り後の確定値だけを持つ */
+export type PollReview = {
+  pollId: string;
+  question: string;
+  type: PollType;
+  options: PollOption[];
+  minLabel: string | null;
+  maxLabel: string | null;
+  /** 授業開始からの経過ms。開始していない設問は null */
+  openedAtMs: number | null;
+  closedAtMs: number | null;
+  /** optionId → 人数（自由記述では空） */
+  counts: Record<string, number>;
+  answered: number;
+  /** 分母。その授業の参加者数 */
+  total: number;
+  /** 自由記述の回答。先生だけが見る画面なので名前を付ける */
+  texts: { participantName: string; text: string; answeredAtMs: number }[];
+  /**
+   * 同じ質問を「もう一度聞く」で繰り返した場合の回数（1から始まる）。
+   * 繰り返していない設問は 1 のみ
+   */
+  round: number;
+  roundCount: number;
+};
+
+/** 授業後のタスク1つ */
+export type TaskReview = {
+  taskId: string;
+  label: string;
+  /** 授業中に追加したタスクは追加時刻が入る（0%を「誰もやっていない」と読み違えないため） */
+  addedAtMs: number | null;
+  done: number;
+  total: number;
+  /** 完了時刻（授業開始からのms）。誰も完了していなければ null */
+  firstDoneMs: number | null;
+  medianDoneMs: number | null;
+  lastDoneMs: number | null;
+};
+
+export type LessonTaskReview = {
+  mode: TaskMode;
+  tasks: TaskReview[];
+  /** 全部のタスクを完了した人数 */
+  allDone: number;
+  total: number;
+};

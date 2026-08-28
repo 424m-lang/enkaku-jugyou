@@ -20,8 +20,9 @@ import SlideCanvas from '../../components/SlideCanvas';
  * （同じ音が何台からも鳴ると反響するため）。
  *
  * 先生のPCの拡張ディスプレイへドラッグして使うこともできる（その場合はトークン不要）。
- * そのときは先生画面から self=1 付きで開かれる。生徒に見せる参加用QRも、
- * 教室のスピーカーを鳴らすボタンも、先生自身の端末では意味がないので出さない。
+ * そのときは先生画面から self=1 付きで開かれる。教室のスピーカーを鳴らすボタンだけは、
+ * 先生自身の端末では意味がないので出さない。参加用QRは、この窓を教室へ投影して
+ * 使うことがあるため出す。
  */
 
 /** 操作バーを自動で隠すまでの時間。投影中に不要なUIが映り込まないようにする */
@@ -48,6 +49,9 @@ export default function Screen() {
   const [qrDataUrl, setQrDataUrl] = useState('');
   const [controlsVisible, setControlsVisible] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  // 授業中にも参加用QRを出すための状態。画面を閉じてしまった生徒と、
+  // あとから教室に来た生徒が、その場で入り直せるようにする
+  const [joinPanelOpen, setJoinPanelOpen] = useState(false);
 
   const audioElRef = useRef<HTMLAudioElement>(null);
   const videoElRef = useRef<HTMLVideoElement>(null);
@@ -319,7 +323,7 @@ export default function Screen() {
             ) : (
               <>
                 <p>授業の開始を待っています</p>
-                {!isSelfWindow && qrDataUrl && (
+                {qrDataUrl && (
                   <div className="screen-join">
                     <img className="screen-qr" src={qrDataUrl} alt="参加用QRコード" />
                     <div className="screen-join-text">
@@ -334,6 +338,22 @@ export default function Screen() {
           </div>
         )}
       </div>
+
+      {/*
+        授業中の参加案内。スライドを隠さないよう隅に置く。
+        字幕を出しているときは、字幕帯の上へ逃がす（下記 screen-join-live-raised）
+      */}
+      {inLesson && joinPanelOpen && qrDataUrl && (
+        <div
+          className={
+            captionsOnScreen ? 'screen-join-live screen-join-live-raised' : 'screen-join-live'
+          }
+        >
+          <img className="screen-qr" src={qrDataUrl} alt="参加用QRコード" />
+          <p className="screen-join-code">{joinCode}</p>
+          <p className="screen-join-url">{window.location.origin}/join</p>
+        </div>
+      )}
 
       {inLesson && captionsOnScreen && (
         <CaptionBar
@@ -354,7 +374,24 @@ export default function Screen() {
         </div>
       )}
 
-      <div className={`screen-controls ${controlsVisible ? '' : 'screen-controls-hidden'}`}>
+      {/*
+        操作バーは字幕帯と同じ下端に出るため、字幕を出している間は字幕帯の上へ逃がす。
+        字幕のほうを動かさないのは、読んでいる途中で文の位置が変わるのを避けるため
+      */}
+      <div
+        className={[
+          'screen-controls',
+          controlsVisible ? '' : 'screen-controls-hidden',
+          inLesson && captionsOnScreen ? 'screen-controls-raised' : '',
+        ]
+          .filter(Boolean)
+          .join(' ')}
+      >
+        {inLesson && qrDataUrl && (
+          <button className="btn" onClick={() => setJoinPanelOpen((v) => !v)}>
+            {joinPanelOpen ? '参加用QRを消す' : '参加用QRを出す'}
+          </button>
+        )}
         {isSelfWindow ? null : !soundOn ? (
           <button className="btn primary" onClick={enableSound}>
             ♪ 教室のスピーカーで音を鳴らす

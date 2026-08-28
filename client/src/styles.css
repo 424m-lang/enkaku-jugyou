@@ -1085,6 +1085,40 @@ button.slide-thumb:hover {
   color: #9ca3af;
 }
 
+/*
+  授業中に出す参加案内。開始前と違ってスライドが映っているので、
+  左下の隅に小さく置く（カメラ映像の小窓は右下が既定のため、左右で分ける）
+*/
+.screen-join-live {
+  position: absolute;
+  left: 3%;
+  bottom: 3%;
+  z-index: 25;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: rgb(17 24 39 / 92%);
+  color: #f9fafb;
+  text-align: center;
+}
+
+/* 字幕を出しているときは、字幕帯の上へ逃がす */
+.screen-join-live-raised {
+  bottom: calc(3% + 96px);
+}
+
+.screen-join-live .screen-qr {
+  width: min(26vh, 220px);
+}
+
+.screen-join-live .screen-join-code {
+  font-size: 1.8rem;
+  margin: 6px 0 2px;
+}
+
+.screen-join-live .screen-join-url {
+  font-size: 0.85rem;
+}
+
 /* スライドとカメラ映像の配置。主役を全面に出し、もう一方は右下の小窓に重ねる */
 .screen-stage {
   position: relative;
@@ -1144,7 +1178,17 @@ button.slide-thumb:hover {
   padding: 8px 14px;
   border-radius: 999px;
   background: rgba(17, 24, 39, 0.85);
-  transition: opacity 0.3s;
+  /* 字幕帯（z-index:20）より手前に置く。同じ下端に出るため、無いと隠れて押せない */
+  z-index: 30;
+  transition: opacity 0.3s, bottom 0.2s;
+}
+
+/*
+  字幕を出している間の位置。字幕帯の上へ逃がして、字幕を隠さずに操作できるようにする。
+  動かすのは操作バーのほうで、字幕は動かさない（読んでいる途中で文の位置が変わるため）
+*/
+.screen-controls-raised {
+  bottom: calc(3% + 96px);
 }
 
 .screen-controls-hidden {
@@ -1550,10 +1594,16 @@ button.slide-thumb:hover {
   display: flex;
   gap: 6px;
   margin-bottom: 10px;
+  /* タブが増えると等分では文字が折り返すため、収まらない分は横へ流す */
+  overflow-x: auto;
+  scrollbar-width: thin;
 }
 
 .btn.tab {
-  flex: 1;
+  flex: 1 0 auto;
+  white-space: nowrap;
+  padding-left: 10px;
+  padding-right: 10px;
 }
 
 .tab-active {
@@ -3428,4 +3478,116 @@ button.slide-thumb:hover {
   .telemetry-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* ---- 授業後の振り返り: アンケートとタスク ---- */
+
+/* 反応タブの「全体」に出す、アンケートとタスクの要旨 */
+.review-digest {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.poll-review-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.poll-review-head h3 {
+  margin: 0;
+}
+
+/* 授業後は分母が確定しているので円で出す（授業中の先生画面は横棒のまま） */
+.poll-review-chart {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.poll-pie {
+  width: 132px;
+  height: 132px;
+  flex-shrink: 0;
+  border-radius: 50%;
+}
+
+.poll-legend {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  flex: 1;
+  min-width: 180px;
+  font-size: 0.82rem;
+}
+
+.poll-legend li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.poll-legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.poll-legend-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.poll-legend-value {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+
+.poll-review-texts {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  font-size: 0.85rem;
+}
+
+.poll-review-texts li {
+  display: flex;
+  gap: 10px;
+  padding: 5px 0;
+  border-top: 1px solid var(--border);
+}
+
+.poll-review-name {
+  flex-shrink: 0;
+  width: 7em;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* タスクの進み具合。棒は poll-bar-track / poll-bar-fill を共用する */
+.poll-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0 6px;
+}
+
+.poll-bar-count {
+  flex-shrink: 0;
+  font-size: 0.8rem;
+  color: var(--muted);
 }

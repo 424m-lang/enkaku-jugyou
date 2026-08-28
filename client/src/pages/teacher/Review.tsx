@@ -4,7 +4,9 @@ import type {
   ButtonClip,
   CommentClip,
   LessonStats,
+  LessonTaskReview,
   PointerPayload,
+  PollReview,
   ReactionButtonDef,
   ReviewChapter,
   ReviewVideo,
@@ -30,10 +32,12 @@ type LessonDetail = {
 };
 
 type AudioPart = { file: string; startMs: number };
-type Tab = 'reactions' | 'video' | 'slides';
+type Tab = 'reactions' | 'polls' | 'tasks' | 'video' | 'slides';
 type SlideSort = 'order' | 'comments' | 'buttons' | 'shown';
 /** スライド一覧の絞り込み: 全部 / どのブロックにも属さない / 特定のブロックのid */
 type SlideFilter = 'all' | 'unassigned' | string;
+/** アンケートの円グラフの色。選択肢の順に使い、足りなければ先頭へ戻る */
+const POLL_COLORS = ['#2563eb', '#16a34a', '#f59e0b', '#dc2626', '#7c3aed', '#0891b2'];
 
 /** 反応タブ: ボタンとコメントを1本の時系列に混ぜたもの */
 type FeedItem =
@@ -62,6 +66,8 @@ export default function Review() {
   const [commentClips, setCommentClips] = useState<CommentClip[]>([]);
   const [slideStats, setSlideStats] = useState<SlideStat[]>([]);
   const [stats, setStats] = useState<LessonStats | null>(null);
+  const [pollReview, setPollReview] = useState<PollReview[]>([]);
+  const [taskReview, setTaskReview] = useState<LessonTaskReview | null>(null);
   const [pdf, setPdf] = useState<PdfCache | null>(null);
   const [tab, setTab] = useState<Tab>('reactions');
   const [playhead, setPlayhead] = useState(0);
@@ -84,7 +90,7 @@ export default function Review() {
     if (!lessonId) return;
     (async () => {
       try {
-        const [detail, tl, bc, cc, ss, st, rv] = await Promise.all([
+        const [detail, tl, bc, cc, ss, st, rv, pr, tr] = await Promise.all([
           api<LessonDetail>(`/api/lessons/${lessonId}`),
           api<{ durationMs: number; events: TimelineEvent[] }>(`/api/lessons/${lessonId}/timeline`),
           api<ButtonClip[]>(`/api/lessons/${lessonId}/button-clips`),
@@ -92,6 +98,8 @@ export default function Review() {
           api<SlideStat[]>(`/api/lessons/${lessonId}/slide-stats`),
           api<LessonStats>(`/api/lessons/${lessonId}/stats`),
           api<ReviewVideo>(`/api/lessons/${lessonId}/review-video`),
+          api<{ polls: PollReview[] }>(`/api/lessons/${lessonId}/poll-review`),
+          api<LessonTaskReview>(`/api/lessons/${lessonId}/task-review`),
         ]);
         setLesson(detail);
         setTimeline(tl.events);
@@ -101,6 +109,8 @@ export default function Review() {
         setSlideStats(ss);
         setStats(st);
         setVideo(rv);
+        setPollReview(pr.polls);
+        setTaskReview(tr);
         const cache = await loadLessonPdf(lessonId);
         setPdf(cache);
         // ブロック分けのAIにスライドの内容も渡せるよう、本文を抽出して保存しておく
@@ -431,6 +441,14 @@ export default function Review() {
   const kindLabel = reactionMeta.label;
   const kindColor = reactionMeta.color;
 
+  /** 全設問をまとめた回答率。分母が0（開始しなかった設問だけ）のときは出さない */
+  const pollAnswerRate = useMemo(() => {
+    const asked = pollReview.filter((p) => p.openedAtMs !== null);
+    const total = asked.reduce((n, p) => n + p.total, 0);
+    if (total === 0) return null;
+    return Math.round((asked.reduce((n, p) => n + p.answered, 0) / total) * 100);
+  }, [pollReview]);
+
   // ---- 反応タブ: ボタンとコメントを時系列に混ぜる ----
   const feed = useMemo<FeedItem[]>(
     () =>
@@ -569,6 +587,18 @@ export default function Review() {
               反応 ({feed.length})
             </button>
             <button
+              className={`btn tab ${tab === 'polls' ? 'tab-active' : ''}`}
+              onClick={() => setTab('polls')}
+            >
+              アンケート ({pollReview.length})
+            </button>
+            <button
+              className={`btn tab ${tab === 'tasks' ? 'tab-active' : ''}`}
+              onClick={() => setTab('tasks')}
+            >
+              タスク ({taskReview?.tasks.length ?? 0})
+            </button>
+            <button
               className={`btn tab ${tab === 'video' ? 'tab-active' : ''}`}
               onClick={() => setTab('video')}
             >
@@ -592,6 +622,36 @@ export default function Review() {
                     参加者 <strong>{stats.totalParticipants}</strong>人 ・ 反応{' '}
                     <strong>{stats.totalReactions}</strong>件
                   </p>
+                  {/*
+                    アンケートとタスクの要旨。details を読むためにタブを開く前に、
+                    この授業がどうだったかをここで分かるようにする
+                  */}
+                  {(pollReview.length > 0 || (taskReview?.tasks.length ?? 0) > 0) && (
+                    <ul className="review-digest">
+                      {pollReview.length > 0 && (
+                        <li>
+                          <button className="btn-link" onClick={() => setTab('polls')}>
+                            アンケート {pollReview.length}問
+                          </button>
+                          <span className="muted small">
+                            {' '}
+                            回答率 {pollAnswerRate === null ? '—' : `${pollAnswerRate}%`}
+                          </span>
+                        </li>
+                      )}
+                      {taskReview && taskReview.tasks.length > 0 && (
+                        <li>
+                          <button className="btn-link" onClick={() => setTab('tasks')}>
+                            タスク {taskReview.tasks.length}件
+                          </button>
+                          <span className="muted small">
+                            {' '}
+                            全部終えた生徒 {taskReview.allDone} / {taskReview.total}人
+                          </span>
+                        </li>
+                      )}
+                    </ul>
+                  )}
                   <div className="clip-kinds">
                     {Object.entries(stats.countsByKind)
                       .filter(([k]) => k !== 'comment')
@@ -693,6 +753,117 @@ export default function Review() {
                   </div>
                 )
               )}
+            </div>
+          )}
+
+          {/* ================= アンケート ================= */}
+          {tab === 'polls' && (
+            <div className="panel-scroll">
+              {pollReview.length === 0 && <p className="muted">アンケートはありませんでした</p>}
+              {pollReview.map((p) => (
+                <div key={p.pollId} className="card">
+                  <div className="poll-review-head">
+                    <h3>{p.question}</h3>
+                    {p.roundCount > 1 && (
+                      <span className="chip">
+                        {p.round}回目 / {p.roundCount}回
+                      </span>
+                    )}
+                  </div>
+                  <p className="muted small">
+                    {p.openedAtMs === null ? (
+                      '授業では開始しませんでした'
+                    ) : (
+                      <>
+                        <button className="btn-link" onClick={() => seek(p.openedAtMs as number)}>
+                          {fmtClock(p.openedAtMs)}
+                        </button>
+                        に開始 ・ 回答 {p.answered} / {p.total}人
+                      </>
+                    )}
+                  </p>
+
+                  {p.type === 'text' ? (
+                    p.texts.length === 0 ? (
+                      <p className="muted">回答はありませんでした</p>
+                    ) : (
+                      <ul className="poll-review-texts">
+                        {p.texts.map((t, i) => (
+                          <li key={i}>
+                            <span className="poll-review-name">{t.participantName}</span>
+                            <span>{t.text}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )
+                  ) : (
+                    <PollReviewChart poll={p} />
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* ================= タスク ================= */}
+          {tab === 'tasks' && (
+            <div className="panel-scroll">
+              {(taskReview?.tasks.length ?? 0) === 0 && (
+                <p className="muted">タスクはありませんでした</p>
+              )}
+              {taskReview && taskReview.tasks.length > 0 && (
+                <div className="card">
+                  <h3>全体</h3>
+                  <p>
+                    全部終えた生徒 <strong>{taskReview.allDone}</strong> / {taskReview.total}人
+                  </p>
+                  <p className="muted small">
+                    {taskReview.mode === 'sequential'
+                      ? '順番通りのため、棒は「そこまで終えた人数」です。落差の大きいところが難所にあたります。'
+                      : '順不同のため、棒は「そのタスクを終えた人数」です。短い棒が難所にあたります。'}
+                  </p>
+                </div>
+              )}
+              {taskReview?.tasks.map((t, i) => (
+                <div key={t.taskId} className="card">
+                  <div className="poll-review-head">
+                    <h3>
+                      {i + 1}. {t.label}
+                    </h3>
+                    {t.addedAtMs !== null && <span className="chip">授業中に追加</span>}
+                  </div>
+                  <div className="poll-bar-row">
+                    <div className="poll-bar-track">
+                      <div
+                        className="poll-bar-fill"
+                        style={{ width: `${t.total ? (t.done / t.total) * 100 : 0}%` }}
+                      />
+                    </div>
+                    <span className="poll-bar-count">
+                      {t.done} / {t.total}人
+                    </span>
+                  </div>
+                  <p className="muted small">
+                    {t.done === 0 ? (
+                      '完了した生徒はいませんでした'
+                    ) : (
+                      <>
+                        はじめ{' '}
+                        <button className="btn-link" onClick={() => seek(t.firstDoneMs as number)}>
+                          {fmtClock(t.firstDoneMs as number)}
+                        </button>{' '}
+                        ・ 半数{' '}
+                        <button className="btn-link" onClick={() => seek(t.medianDoneMs as number)}>
+                          {fmtClock(t.medianDoneMs as number)}
+                        </button>{' '}
+                        ・ 最後{' '}
+                        <button className="btn-link" onClick={() => seek(t.lastDoneMs as number)}>
+                          {fmtClock(t.lastDoneMs as number)}
+                        </button>
+                      </>
+                    )}
+                  </p>
+                </div>
+              ))}
             </div>
           )}
 
@@ -1031,6 +1202,49 @@ export default function Review() {
       </div>
 
       <audio ref={audioRef} style={{ display: 'none' }} />
+    </div>
+  );
+}
+
+/** アンケート1問分の集計。授業後は分母が確定しているので、円で出す */
+function PollReviewChart({ poll }: { poll: PollReview }) {
+  // 未回答も1つの区画として扱う。「40人中3人」と「5人中3人」を取り違えないため
+  const noAnswer = Math.max(0, poll.total - poll.answered);
+  const slices = [
+    ...poll.options.map((o, i) => ({
+      key: o.id,
+      label: o.label,
+      value: poll.counts[o.id] ?? 0,
+      color: POLL_COLORS[i % POLL_COLORS.length],
+    })),
+    { key: '__none', label: '未回答', value: noAnswer, color: '#d1d5db' },
+  ].filter((s) => s.value > 0);
+
+  const sum = slices.reduce((n, s) => n + s.value, 0);
+  if (sum === 0) return <p className="muted">回答はありませんでした</p>;
+
+  // conic-gradient の切れ目を作る。円弧の描画をCSSに任せ、SVGを持ち込まない
+  let at = 0;
+  const stops = slices.map((s) => {
+    const from = (at / sum) * 100;
+    at += s.value;
+    return `${s.color} ${from}% ${(at / sum) * 100}%`;
+  });
+
+  return (
+    <div className="poll-review-chart">
+      <div className="poll-pie" style={{ background: `conic-gradient(${stops.join(', ')})` }} />
+      <ul className="poll-legend">
+        {slices.map((s) => (
+          <li key={s.key}>
+            <span className="poll-legend-dot" style={{ background: s.color }} />
+            <span className="poll-legend-label">{s.label}</span>
+            <span className="poll-legend-value">
+              {s.value}人（{Math.round((s.value / sum) * 100)}%）
+            </span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

@@ -1,7 +1,16 @@
 import crypto from 'node:crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { and, asc, desc, eq, ne } from 'drizzle-orm';
-import type { ButtonClip, CommentClip, LessonStats, ReactionCounts, SlideStat } from '@shared';
+import type {
+  ButtonClip,
+  CommentClip,
+  LessonStats,
+  LessonTaskReview,
+  PollReview,
+  ReactionCounts,
+  SlideStat,
+  TaskReview,
+} from '@shared';
 import { config } from '../config';
 import { db, schema } from '../db';
 import { requireTeacher, teacherIdOf } from '../auth';
@@ -99,6 +108,64 @@ async function listCommentClips(lessonId: string): Promise<CommentClip[]> {
   });
 }
 
+/**
+ * 完了を取り消した直後にやり直した分は、誤操作とみなして完了時刻に数えない。
+ * この幅より後の取り消しは、考え直して戻したものとして扱う
+ */
+const TASK_UNDO_WINDOW_MS = 10_000;
+
+/**
+ * task_progress は「その時点で完了しているタスクidの集合」のスナップショット。
+ * 生徒ごとに時刻順へ並べ、タスクが集合へ入った時刻を完了時刻とする。
+ * ただし入ってすぐ（TASK_UNDO_WINDOW_MS 以内に）外れたものは押し間違いなので捨て、
+ * 次に入った時刻を採る。
+ */
+function taskDoneTimes(
+  events: { tMs: number; actor: string; payload: unknown }[]
+): Map<string, Map<string, number>> {
+  const byParticipant = new Map<string, { tMs: number; taskIds: string[] }[]>();
+  for (const ev of events) {
+    const p = ev.payload as { participantId?: string; taskIds?: string[] } | null;
+    const pid = p?.participantId ?? ev.actor;
+    if (!pid || !Array.isArray(p?.taskIds)) continue;
+    const list = byParticipant.get(pid) ?? [];
+    list.push({ tMs: ev.tMs, taskIds: p.taskIds });
+    byParticipant.set(pid, list);
+  }
+
+  const out = new Map<string, Map<string, number>>();
+  for (const [pid, list] of byParticipant) {
+    list.sort((a, b) => a.tMs - b.tMs);
+    const done = new Map<string, number>(); // taskId → 完了とみなす時刻
+    let prev = new Set<string>();
+    for (const snap of list) {
+      const cur = new Set(snap.taskIds);
+      for (const taskId of cur) {
+        if (!prev.has(taskId)) done.set(taskId, snap.tMs); // 入った
+      }
+      for (const taskId of prev) {
+        if (cur.has(taskId)) continue; // まだ入っている
+        const at = done.get(taskId);
+        // 押してすぐ外したものは無かったことにする
+        if (at !== undefined && snap.tMs - at <= TASK_UNDO_WINDOW_MS) done.delete(taskId);
+      }
+      prev = cur;
+    }
+    // 最後のスナップショットに残っていないタスクは、完了として数えない
+    for (const taskId of [...done.keys()]) {
+      if (!prev.has(taskId)) done.delete(taskId);
+    }
+    out.set(pid, done);
+  }
+  return out;
+}
+
+function median(sorted: number[]): number | null {
+  if (sorted.length === 0) return null;
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
+}
+
 export async function reviewRoutes(app: FastifyInstance): Promise<void> {
   // ---- 開発・検証用: 自分が担当した授業の匿名通信集計 ----
   app.get('/api/telemetry', { preHandler: requireTeacher }, async (req) => {
@@ -120,6 +187,134 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt?.toISOString() ?? null,
     }));
+  });
+
+  // ---- 「アンケート」タブ: 締め切り後の確定した集計 ----
+  app.get('/api/lessons/:id/poll-review', { preHandler: requireTeacher }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const lesson = await ownLesson(req, reply, id);
+    if (!lesson) return;
+
+    const [polls, answers, parts] = await Promise.all([
+      db
+        .select()
+        .from(schema.polls)
+        .where(eq(schema.polls.lessonId, id))
+        .orderBy(asc(schema.polls.position)),
+      db
+        .select({
+          pollId: schema.pollAnswers.pollId,
+          optionIds: schema.pollAnswers.optionIds,
+          text: schema.pollAnswers.text,
+          answeredAtMs: schema.pollAnswers.answeredAtMs,
+          participantName: schema.participants.displayName,
+        })
+        .from(schema.pollAnswers)
+        .innerJoin(
+          schema.participants,
+          eq(schema.participants.id, schema.pollAnswers.participantId)
+        )
+        .where(eq(schema.pollAnswers.lessonId, id)),
+      db.select().from(schema.participants).where(eq(schema.participants.lessonId, id)),
+    ]);
+
+    // 「もう一度聞く」は同じ質問で別の設問を作る。何回目かを出すために質問文でまとめる
+    const rounds = new Map<string, number>();
+    for (const p of polls) rounds.set(p.question, (rounds.get(p.question) ?? 0) + 1);
+    const seen = new Map<string, number>();
+
+    const list: PollReview[] = polls.map((p) => {
+      const round = (seen.get(p.question) ?? 0) + 1;
+      seen.set(p.question, round);
+
+      const mine = answers.filter((a) => a.pollId === p.id);
+      const counts: Record<string, number> = {};
+      for (const o of p.options) counts[o.id] = 0;
+      for (const a of mine) {
+        for (const oid of a.optionIds) counts[oid] = (counts[oid] ?? 0) + 1;
+      }
+      return {
+        pollId: p.id,
+        question: p.question,
+        type: p.type,
+        options: p.options,
+        minLabel: p.minLabel,
+        maxLabel: p.maxLabel,
+        openedAtMs: p.openedAtMs,
+        closedAtMs: p.closedAtMs,
+        counts,
+        answered: mine.length,
+        total: parts.length,
+        texts: mine
+          .filter((a) => a.text)
+          .map((a) => ({
+            participantName: a.participantName,
+            text: a.text as string,
+            answeredAtMs: a.answeredAtMs,
+          }))
+          .sort((x, y) => x.answeredAtMs - y.answeredAtMs),
+        round,
+        roundCount: rounds.get(p.question) ?? 1,
+      };
+    });
+    return { polls: list };
+  });
+
+  // ---- 「タスク」タブ: どのタスクまで、いつ、何人が進んだか ----
+  app.get('/api/lessons/:id/task-review', { preHandler: requireTeacher }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const lesson = await ownLesson(req, reply, id);
+    if (!lesson) return;
+
+    const [events, parts] = await Promise.all([
+      db
+        .select({
+          tMs: schema.timelineEvents.tMs,
+          actor: schema.timelineEvents.actor,
+          payload: schema.timelineEvents.payload,
+        })
+        .from(schema.timelineEvents)
+        .where(
+          and(
+            eq(schema.timelineEvents.lessonId, id),
+            eq(schema.timelineEvents.type, 'task_progress')
+          )
+        )
+        .orderBy(asc(schema.timelineEvents.tMs)),
+      db.select().from(schema.participants).where(eq(schema.participants.lessonId, id)),
+    ]);
+
+    const doneTimes = taskDoneTimes(events);
+    const tasks: TaskReview[] = lesson.tasks.map((t) => {
+      const times: number[] = [];
+      for (const done of doneTimes.values()) {
+        const at = done.get(t.id);
+        if (at !== undefined) times.push(at);
+      }
+      times.sort((a, b) => a - b);
+      return {
+        taskId: t.id,
+        label: t.label,
+        addedAtMs: t.addedAtMs,
+        done: times.length,
+        total: parts.length,
+        firstDoneMs: times[0] ?? null,
+        medianDoneMs: median(times),
+        lastDoneMs: times[times.length - 1] ?? null,
+      };
+    });
+
+    const allDone = lesson.tasks.length
+      ? [...doneTimes.values()].filter((d) => lesson.tasks.every((t) => d.has(t.id))).length
+      : 0;
+
+    const review: LessonTaskReview = {
+      mode: lesson.taskMode,
+      tasks,
+      allDone,
+      total: parts.length,
+    };
+    return review;
   });
 
   // ---- タイムライン全イベント（同期再生用） ----
