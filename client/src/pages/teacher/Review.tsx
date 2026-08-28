@@ -847,7 +847,7 @@ export default function Review() {
                       '完了した生徒はいませんでした'
                     ) : (
                       <>
-                        はじめ{' '}
+                        1人目{' '}
                         <button className="btn-link" onClick={() => seek(t.firstDoneMs as number)}>
                           {fmtClock(t.firstDoneMs as number)}
                         </button>{' '}
@@ -855,7 +855,7 @@ export default function Review() {
                         <button className="btn-link" onClick={() => seek(t.medianDoneMs as number)}>
                           {fmtClock(t.medianDoneMs as number)}
                         </button>{' '}
-                        ・ 最後{' '}
+                        ・ 最後の1人{' '}
                         <button className="btn-link" onClick={() => seek(t.lastDoneMs as number)}>
                           {fmtClock(t.lastDoneMs as number)}
                         </button>
