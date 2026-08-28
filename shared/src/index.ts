@@ -207,6 +207,23 @@ export type StrokePayload = {
   fontSize?: number; // スライド高さに対する比（tool=text のとき）
 };
 
+/**
+ * 描き込んでいる途中のプレビュー。
+ *
+ * ペンで長い線を引くと点が増え続けるため、毎回すべてを送ると
+ * 受け取る端末1台あたりの通信量が線の長さの2乗で増える。
+ * そこで前回から**増えた点だけ**を送り、受け取る側が末尾へ足す。
+ *
+ * テキストの入力・移動は点が2つしかないので、そのまま全体を送る（fromIndex なし）。
+ */
+export type StrokeProgressPayload = StrokePayload & {
+  /**
+   * points が元の配列のどこから始まるか（フラット配列の添字）。
+   * 省略時は points が全体を表す。
+   */
+  fromIndex?: number;
+};
+
 export type PointerPayload = {
   slideId: string;
   x: number;
@@ -596,7 +613,7 @@ export interface ServerToClientEvents {
   // タイムライン系のブロードキャスト
   slide_change: (p: SlideChangePayload & { tMs: number }) => void;
   stroke: (p: StrokePayload & { tMs: number }) => void;
-  stroke_progress: (p: StrokePayload) => void; // 描画途中のプレビュー（記録されない）
+  stroke_progress: (p: StrokeProgressPayload) => void; // 描画途中のプレビュー（記録されない）
   pointer: (p: PointerPayload) => void;
   clear_slide: (p: ClearSlidePayload & { tMs: number }) => void;
 
@@ -778,7 +795,7 @@ export interface ClientToServerEvents {
   ) => void;
   slide_change: (p: SlideChangePayload) => void;
   stroke: (p: StrokePayload) => void;
-  stroke_progress: (p: StrokePayload) => void;
+  stroke_progress: (p: StrokeProgressPayload) => void;
   pointer: (p: PointerPayload) => void;
   clear_slide: (p: ClearSlidePayload) => void;
   insert_blank_slide: (
@@ -941,4 +958,54 @@ export type LessonStats = {
     counts: ReactionCounts;
     reactions: { tMs: number; kind: string; comment: string | null }[];
   }[];
+};
+
+// ---- 授業後に見るアンケートとタスク ----
+
+/** 授業後のアンケート1問。授業中の PollResults と違い、締め切り後の確定値だけを持つ */
+export type PollReview = {
+  pollId: string;
+  question: string;
+  type: PollType;
+  options: PollOption[];
+  minLabel: string | null;
+  maxLabel: string | null;
+  /** 授業開始からの経過ms。開始していない設問は null */
+  openedAtMs: number | null;
+  closedAtMs: number | null;
+  /** optionId → 人数（自由記述では空） */
+  counts: Record<string, number>;
+  answered: number;
+  /** 分母。その授業の参加者数 */
+  total: number;
+  /** 自由記述の回答。先生だけが見る画面なので名前を付ける */
+  texts: { participantName: string; text: string; answeredAtMs: number }[];
+  /**
+   * 同じ質問を「もう一度聞く」で繰り返した場合の回数（1から始まる）。
+   * 繰り返していない設問は 1 のみ
+   */
+  round: number;
+  roundCount: number;
+};
+
+/** 授業後のタスク1つ */
+export type TaskReview = {
+  taskId: string;
+  label: string;
+  /** 授業中に追加したタスクは追加時刻が入る（0%を「誰もやっていない」と読み違えないため） */
+  addedAtMs: number | null;
+  done: number;
+  total: number;
+  /** 完了時刻（授業開始からのms）。誰も完了していなければ null */
+  firstDoneMs: number | null;
+  medianDoneMs: number | null;
+  lastDoneMs: number | null;
+};
+
+export type LessonTaskReview = {
+  mode: TaskMode;
+  tasks: TaskReview[];
+  /** 全部のタスクを完了した人数 */
+  allDone: number;
+  total: number;
 };

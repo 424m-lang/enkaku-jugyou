@@ -11,6 +11,7 @@ import type {
   PollType,
   ReactionFeedItem,
   StrokePayload,
+  StrokeProgressPayload,
   TaskMode,
   TaskProgressEntry,
 } from '@shared';
@@ -432,7 +433,7 @@ export default function Teach() {
   );
 
   const onProgress = useCallback(
-    (p: StrokePayload) => {
+    (p: StrokeProgressPayload) => {
       socketRef.current?.emit('stroke_progress', p);
     },
     [socketRef]
