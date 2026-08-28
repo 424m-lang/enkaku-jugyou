@@ -17,7 +17,7 @@ import type {
 import { DEFAULT_PIP_POS } from '@shared';
 import { connectLessonSocket, type AppSocket } from './socket';
 import { loadLessonPdf, type PdfCache } from './pdf';
-import { rebuildStrokes, applyDrawingEvent, type StrokesBySlide } from './strokes';
+import { rebuildStrokes, applyDrawingEvent, applyStrokeProgress, type StrokesBySlide } from './strokes';
 
 type Options = {
   /** 教室モニターとして接続する場合のトークン（先生のログイン不要） */
@@ -132,9 +132,7 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
         return rest;
       });
     });
-    socket.on('stroke_progress', (p) =>
-      setRemoteProgress((prev) => ({ ...prev, [p.strokeId]: p }))
-    );
+    socket.on('stroke_progress', (p) => setRemoteProgress((prev) => applyStrokeProgress(prev, p)));
     socket.on('clear_slide', (p) => {
       setStrokes((prev) => applyDrawingEvent({ ...prev }, 'clear_slide', p));
       // 削除されたストロークの描画途中プレビューも破棄（テキスト編集・移動で使用）

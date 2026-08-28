@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { PointerPayload, SlideInfo, StrokePayload, StrokeTool } from '@shared';
+import type {
+  PointerPayload,
+  SlideInfo,
+  StrokePayload,
+  StrokeProgressPayload,
+  StrokeTool,
+} from '@shared';
 import type { PdfCache } from '../lib/pdf';
 
 export type DrawingTool = StrokeTool | 'pointer' | 'none';
@@ -9,7 +15,7 @@ type DrawingProps = {
   color: string;
   lineWidth: number; // スライド幅に対する比（例 0.004）
   onStroke: (s: StrokePayload) => void;
-  onProgress: (s: StrokePayload) => void;
+  onProgress: (s: StrokeProgressPayload) => void;
   onPointer: (x: number, y: number, visible: boolean) => void;
   /** ストローク単位の削除（消しゴムで使用） */
   onErase: (slideId: string, strokeIds: string[]) => void;
@@ -288,6 +294,8 @@ export default function SlideCanvas({ pdf, slide, strokes, progressStrokes, poin
   // ローカル描画中ストローク（refで保持し再レンダリングを避ける）
   const localStrokeRef = useRef<StrokePayload | null>(null);
   const lastProgressSentRef = useRef(0);
+  /** いま引いている線について、途中経過として既に送った点の数（フラット配列の長さ） */
+  const progressSentRef = useRef(0);
   const drawingRef = useRef(drawing);
   drawingRef.current = drawing;
 
@@ -578,11 +586,20 @@ export default function SlideCanvas({ pdf, slide, strokes, progressStrokes, poin
   }, [slide?.id]);
 
   // ---- 描画入力（先生） ----
+  /**
+   * 座標は 0..1 に正規化したうえで**小数4桁に丸める**。
+   *
+   * 丸めないと 0.4837209302325581 のような桁になり、1点あたり約40バイトを
+   * 生徒・教室モニターの全端末へ配ることになる。4桁は幅1600pxのスライドで
+   * 0.16px にあたるので、描画にも当たり判定にも影響しない
+   */
+  const round4 = (v: number): number => Math.round(v * 1e4) / 1e4;
+
   const posFromClient = (clientX: number, clientY: number): { x: number; y: number } => {
     const rect = overlayRef.current!.getBoundingClientRect();
     return {
-      x: Math.min(1, Math.max(0, (clientX - rect.left) / rect.width)),
-      y: Math.min(1, Math.max(0, (clientY - rect.top) / rect.height)),
+      x: round4(Math.min(1, Math.max(0, (clientX - rect.left) / rect.width))),
+      y: round4(Math.min(1, Math.max(0, (clientY - rect.top) / rect.height))),
     };
   };
 
@@ -777,6 +794,7 @@ export default function SlideCanvas({ pdf, slide, strokes, progressStrokes, poin
       width: d.lineWidth,
       points: [x, y],
     };
+    progressSentRef.current = 0;
     drawOverlay();
   };
 
@@ -833,7 +851,11 @@ export default function SlideCanvas({ pdf, slide, strokes, progressStrokes, poin
     const now = performance.now();
     if (now - lastProgressSentRef.current > 66) {
       lastProgressSentRef.current = now;
-      d.onProgress({ ...cur, points: [...cur.points] });
+      // 増えた点だけを送る。線が長いほど効き、受け取る端末1台ずつに効く。
+      // 直線・矩形などは点が2組しかないので毎回0から送り直す
+      const from = cur.tool === 'pen' ? Math.min(progressSentRef.current, cur.points.length) : 0;
+      d.onProgress({ ...cur, points: cur.points.slice(from), fromIndex: from });
+      progressSentRef.current = cur.points.length;
     }
   };
 
@@ -843,6 +865,7 @@ export default function SlideCanvas({ pdf, slide, strokes, progressStrokes, poin
     if (d && cur) {
       d.onStroke({ ...cur, points: [...cur.points] });
     }
+    progressSentRef.current = 0;
     localStrokeRef.current = null;
     drawOverlay();
   };

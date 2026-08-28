@@ -207,6 +207,23 @@ export type StrokePayload = {
   fontSize?: number; // スライド高さに対する比（tool=text のとき）
 };
 
+/**
+ * 描き込んでいる途中のプレビュー。
+ *
+ * ペンで長い線を引くと点が増え続けるため、毎回すべてを送ると
+ * 受け取る端末1台あたりの通信量が線の長さの2乗で増える。
+ * そこで前回から**増えた点だけ**を送り、受け取る側が末尾へ足す。
+ *
+ * テキストの入力・移動は点が2つしかないので、そのまま全体を送る（fromIndex なし）。
+ */
+export type StrokeProgressPayload = StrokePayload & {
+  /**
+   * points が元の配列のどこから始まるか（フラット配列の添字）。
+   * 省略時は points が全体を表す。
+   */
+  fromIndex?: number;
+};
+
 export type PointerPayload = {
   slideId: string;
   x: number;
@@ -596,7 +613,7 @@ export interface ServerToClientEvents {
   // タイムライン系のブロードキャスト
   slide_change: (p: SlideChangePayload & { tMs: number }) => void;
   stroke: (p: StrokePayload & { tMs: number }) => void;
-  stroke_progress: (p: StrokePayload) => void; // 描画途中のプレビュー（記録されない）
+  stroke_progress: (p: StrokeProgressPayload) => void; // 描画途中のプレビュー（記録されない）
   pointer: (p: PointerPayload) => void;
   clear_slide: (p: ClearSlidePayload & { tMs: number }) => void;
 
@@ -778,7 +795,7 @@ export interface ClientToServerEvents {
   ) => void;
   slide_change: (p: SlideChangePayload) => void;
   stroke: (p: StrokePayload) => void;
-  stroke_progress: (p: StrokePayload) => void;
+  stroke_progress: (p: StrokeProgressPayload) => void;
   pointer: (p: PointerPayload) => void;
   clear_slide: (p: ClearSlidePayload) => void;
   insert_blank_slide: (
