@@ -6,12 +6,21 @@ import { LiveMediaPlayer } from './liveMedia';
  * 音声は受け手ごとに形式を選ぶ。
  *
  * - WebM/Opus: 通信量が少ないため標準
- * - MP4/AAC: Opusをライブ再生できないApple系・テレビ系端末の受け皿
+ * - MP4/AAC: Opusをライブ再生できない端末の受け皿
  */
 const AUDIO_MIME_CANDIDATES: Record<AudioFormat, string[]> = {
   webm: ['audio/webm;codecs=opus', 'audio/webm'],
   mp4: ['audio/mp4;codecs=mp4a.40.2', 'audio/mp4'],
 };
+
+/**
+ * 音声のみで受講する生徒が、128kbps程度の速度制限中でも受信しやすい値。
+ *
+ * モノラルの発話を対象とし、書き込み（約32kbps）が重なっても公称64kbpsに
+ * 収める。MediaRecorderが実際に出す量はブラウザごとに異なるため、先生用の
+ * 端末チェックではこの値を指定してOpusとAACを実測する。
+ */
+export const AUDIO_BITS_PER_SECOND = 32_000;
 
 const CHUNK_MS = 500;
 /** 1バイトも出なければ、対応判定が誤っていたものとしてその形式を停止する */
@@ -132,7 +141,7 @@ export async function startAudioBroadcast(
     const myGeneration = ++generation;
     const recorder = new MediaRecorder(stream, {
       mimeType: mime,
-      audioBitsPerSecond: 48_000,
+      audioBitsPerSecond: AUDIO_BITS_PER_SECOND,
     });
     const actualMime = recorder.mimeType || mime;
     let gotData = false;

@@ -1,19 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { LiveMediaPlayer, canPlayMime, getMediaSourceCtor } from '../lib/liveMedia';
-import { supportedAudioMime } from '../lib/audio';
+import { AUDIO_BITS_PER_SECOND, supportedAudioMime } from '../lib/audio';
 import { supportedVideoMime } from '../lib/camera';
 
 /**
- * 端末チェックページ（/check）。ログインも授業コードも要らない。
+ * 端末チェックページ（/check）。ログインと授業コードは不要。
  *
  * 同じ端末でも用途によって必要な条件が変わる（教室のモニターには音が要るが、
  * 教室で受ける生徒の端末には要らない）ため、まず役割を選んでから判定する。
  *
- * 見ているのは3つ:
+ * 確認する項目:
  * 1. 通信が通るか（学校のフィルタリングでWebSocketが塞がれていないか）
- * 2. 先生が送るOpus/AACのどちらかをこの端末がライブ再生できるか
- * 3. 実際にスピーカーから音が出るか（アプリ・OS・モニター本体の3段の音量）
+ * 2. 端末の受信・送信速度から、各機能を使用できる目安
+ * 3. 先生が送るOpus/AACのどちらかをこの端末がライブ再生できるか
+ * 4. 実際にスピーカーから音が出るか（アプリ・OS・モニター本体の3段の音量）
  */
 
 /** 実測にかける秒数。短すぎると無音とのばらつきを拾う */
@@ -21,10 +22,20 @@ const MEASURE_SEC = 10;
 /** 目安に使う1コマの長さ（分） */
 const LESSON_MIN = 50;
 /**
- * ギガの上限を超えたあとの速度制限。ここに収まるかが、細い回線の家庭で
- * 授業が成立するかの分かれ目になる。余裕を見て6割を「○」の線にする
+ * ギガの上限を超えたあとの速度制限。実際の音声量がこの値の6割を超える場合は、
+ * 書き込みと通信方式に使える余裕が少ないことを先生へ知らせる
  */
 const THROTTLED_KBPS = 128;
+/** 回線測定で送受信するデータ量。サーバ側の上限と対応させる */
+const SPEED_TEST_BYTES = 128 * 1024;
+const SPEED_TEST_TIMEOUT_MS = 30_000;
+
+/** 用途別判定に使用する通信速度。公称値に通信方式の上乗せと変動分を含める */
+const BASIC_DOWNLOAD_KBPS = 64;
+const AUDIO_DOWNLOAD_KBPS = 96;
+const VIDEO_DOWNLOAD_KBPS = 1_500;
+const AUDIO_UPLOAD_KBPS = 96;
+const VIDEO_UPLOAD_KBPS = 2_500;
 
 type AudioRate = {
   /** 標準のOpusと、互換用AACを同じマイクで同時に測る */
@@ -53,6 +64,11 @@ function mimeMatches(kind: 'opus' | 'aac', mime: string | null): boolean {
 
 type State = 'pending' | 'ok' | 'warn' | 'ng' | 'skip';
 type Role = 'monitor' | 'student-remote' | 'student-room' | 'teacher';
+type SpeedMeasurement = {
+  status: 'pending' | 'done' | 'error';
+  kbps: number | null;
+  error: string;
+};
 
 const MARK: Record<State, string> = {
   pending: '…',
@@ -97,7 +113,7 @@ const ROLES: Record<Role, RoleSpec> = {
   },
   teacher: {
     label: '先生の端末',
-    hint: 'マイクとカメラで配信する',
+    hint: 'マイクで配信し、必要に応じてカメラも使う',
     needsPlayback: false,
     needsMic: true,
     watchesVideo: false,
@@ -126,6 +142,24 @@ function Row({ state, label, detail }: { state: State; label: string; detail?: s
   );
 }
 
+function formatSpeed(kbps: number): string {
+  return kbps >= 1_000 ? `${(kbps / 1_000).toFixed(1)}Mbps` : `${kbps}kbps`;
+}
+
+/** 測定値が目安の75%未満なら×、目安未満なら△、目安以上なら○ */
+function speedState(measurement: SpeedMeasurement, requiredKbps: number): State {
+  if (measurement.status === 'pending') return 'pending';
+  if (measurement.status === 'error' || measurement.kbps === null) return 'ng';
+  if (measurement.kbps >= requiredKbps) return 'ok';
+  return measurement.kbps >= requiredKbps * 0.75 ? 'warn' : 'ng';
+}
+
+function speedDetail(measurement: SpeedMeasurement, requiredKbps: number): string {
+  if (measurement.status === 'pending') return '測定しています';
+  if (measurement.status === 'error') return measurement.error;
+  return `測定 ${formatSpeed(measurement.kbps ?? 0)}・必要な目安 ${formatSpeed(requiredKbps)}`;
+}
+
 export default function Check() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -146,6 +180,18 @@ export default function Check() {
   const [rateBusy, setRateBusy] = useState(0); // 残り秒数（0なら測っていない）
   const [rateResult, setRateResult] = useState<AudioRate | null>(null);
   const [rateError, setRateError] = useState('');
+  const [downloadSpeed, setDownloadSpeed] = useState<SpeedMeasurement>({
+    status: 'pending',
+    kbps: null,
+    error: '',
+  });
+  const [uploadSpeed, setUploadSpeed] = useState<SpeedMeasurement>({
+    status: 'pending',
+    kbps: null,
+    error: '',
+  });
+  const downloadStartedRef = useRef(false);
+  const teacherUploadStartedRef = useRef(false);
   const audioElRef = useRef<HTMLAudioElement>(null);
   const playerRef = useRef<LiveMediaPlayer | null>(null);
 
@@ -155,6 +201,7 @@ export default function Check() {
   const videoSupport = VIDEO_FORMATS.map((f) => ({ ...f, ok: canPlayMime(f.mime) }));
   // どちらか一方を再生できれば、サーバがその端末を対応する形式の部屋へ入れる
   const canPlayLikely = audioSupport.some((f) => f.ok);
+  const playbackUnsupported = spec.needsPlayback && (!hasMse || !canPlayLikely);
   const broadcastOpus = supportedAudioMime('webm');
   const broadcastAac = supportedAudioMime('mp4');
   const broadcastVideo = supportedVideoMime();
@@ -214,6 +261,85 @@ export default function Check() {
   }, []);
 
   useEffect(() => () => playerRef.current?.dispose(), []);
+
+  /** サーバから端末へ、固定量の測定データを受信する */
+  const measureDownloadSpeed = useCallback(async () => {
+    setDownloadSpeed({ status: 'pending', kbps: null, error: '' });
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), SPEED_TEST_TIMEOUT_MS);
+    const startedAt = performance.now();
+    try {
+      const response = await fetch(`/api/check/download?t=${Date.now()}`, {
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`サーバが ${response.status} を返しました`);
+      const body = await response.arrayBuffer();
+      const elapsedMs = Math.max(1, performance.now() - startedAt);
+      setDownloadSpeed({
+        status: 'done',
+        kbps: Math.round((body.byteLength * 8) / elapsedMs),
+        error: '',
+      });
+    } catch (error) {
+      const timedOut = error instanceof DOMException && error.name === 'AbortError';
+      setDownloadSpeed({
+        status: 'error',
+        kbps: null,
+        error: timedOut ? '30秒以内に測定できませんでした' : '受信速度を測定できませんでした',
+      });
+    } finally {
+      window.clearTimeout(timer);
+    }
+  }, []);
+
+  /** 先生端末からサーバへ、固定量の測定データを送信する */
+  const measureUploadSpeed = useCallback(async () => {
+    setUploadSpeed({ status: 'pending', kbps: null, error: '' });
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), SPEED_TEST_TIMEOUT_MS);
+    const body = new ArrayBuffer(SPEED_TEST_BYTES);
+    const startedAt = performance.now();
+    try {
+      const response = await fetch(`/api/check/upload?t=${Date.now()}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body,
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`サーバが ${response.status} を返しました`);
+      const elapsedMs = Math.max(1, performance.now() - startedAt);
+      setUploadSpeed({
+        status: 'done',
+        kbps: Math.round((body.byteLength * 8) / elapsedMs),
+        error: '',
+      });
+    } catch (error) {
+      const timedOut = error instanceof DOMException && error.name === 'AbortError';
+      setUploadSpeed({
+        status: 'error',
+        kbps: null,
+        error: timedOut ? '30秒以内に測定できませんでした' : '送信速度を測定できませんでした',
+      });
+    } finally {
+      window.clearTimeout(timer);
+    }
+  }, []);
+
+  // 受信速度はすべての役割で使用するため、画面を開いた時点で測定する。
+  useEffect(() => {
+    if (downloadStartedRef.current) return;
+    downloadStartedRef.current = true;
+    void measureDownloadSpeed();
+  }, [measureDownloadSpeed]);
+
+  // 先生を選んだ場合だけ、配信に使用する送信速度も測定する。
+  useEffect(() => {
+    if (role !== 'teacher' || teacherUploadStartedRef.current) return;
+    teacherUploadStartedRef.current = true;
+    void measureUploadSpeed();
+  }, [measureUploadSpeed, role]);
 
   /**
    * テスト音を鳴らす。
@@ -333,7 +459,10 @@ export default function Check() {
     const bytes: Record<string, number> = {};
     const actualMime: Record<string, string> = {};
     const recs = targets.map(({ key, mime }) => {
-      const rec = new MediaRecorder(stream, { mimeType: mime, audioBitsPerSecond: 48_000 });
+      const rec = new MediaRecorder(stream, {
+        mimeType: mime,
+        audioBitsPerSecond: AUDIO_BITS_PER_SECOND,
+      });
       bytes[key] = 0;
       rec.ondataavailable = (e) => {
         bytes[key] += e.data.size;
@@ -382,12 +511,30 @@ export default function Check() {
 
   // ---- 役割ごとの合否 ----
   const netOk = health !== 'ng' && polling !== 'ng';
+  // 総合判定では、その役割に必須の方向をすべて確認する。
+  // 先生は送信だけでなく、PDFや操作画面を受け取るための受信速度も必要になる。
+  const requiredSpeedChecks =
+    role === 'teacher'
+      ? [
+          { measurement: downloadSpeed, state: speedState(downloadSpeed, BASIC_DOWNLOAD_KBPS) },
+          { measurement: uploadSpeed, state: speedState(uploadSpeed, AUDIO_UPLOAD_KBPS) },
+        ]
+      : [
+          {
+            measurement: downloadSpeed,
+            state: speedState(
+              downloadSpeed,
+              spec.needsPlayback ? AUDIO_DOWNLOAD_KBPS : BASIC_DOWNLOAD_KBPS
+            ),
+          },
+        ];
+  const canBroadcastAudio = broadcastOpus !== null || broadcastAac !== null;
   let verdict: State;
   let verdictWhy = '';
   if (!netOk) {
     verdict = 'ng';
     verdictWhy = 'サーバに繋がりません。ネットワークかフィルタリングの問題です。';
-  } else if (spec.needsPlayback && (!hasMse || !canPlayLikely)) {
+  } else if (playbackUnsupported) {
     verdict = 'ng';
     verdictWhy = !hasMse
       ? 'このブラウザはライブ音声の再生に対応していません。'
@@ -395,9 +542,24 @@ export default function Check() {
   } else if (spec.needsMic && micState === 'ng') {
     verdict = 'ng';
     verdictWhy = 'マイクを使えません。ブラウザの許可設定を確認してください。';
+  } else if (role === 'teacher' && !canBroadcastAudio) {
+    verdict = 'ng';
+    verdictWhy = 'このブラウザでは、授業に使用する音声形式を生成できません。';
   } else if (spec.needsMic && micState !== 'ok') {
     verdict = 'warn';
     verdictWhy = '下の「マイクを確認する」を押してください。';
+  } else if (requiredSpeedChecks.some((check) => check.state === 'pending')) {
+    verdict = 'warn';
+    verdictWhy = '回線速度を測定しています。';
+  } else if (requiredSpeedChecks.some((check) => check.measurement.status === 'error')) {
+    verdict = 'warn';
+    verdictWhy = '回線速度を測定できませんでした。「もう一度測る」を押してください。';
+  } else if (requiredSpeedChecks.some((check) => check.state === 'ng')) {
+    verdict = 'ng';
+    verdictWhy = 'この測定では、授業に必要な回線速度の目安を下回りました。';
+  } else if (requiredSpeedChecks.some((check) => check.state === 'warn')) {
+    verdict = 'warn';
+    verdictWhy = '回線速度が必要な目安に近いため、実際の授業でも確認してください。';
   } else if (spec.needsPlayback && toneState !== 'ok') {
     verdict = 'warn';
     verdictWhy = '下の「テスト音を鳴らす」で、実際に聞こえるか確かめてください。';
@@ -417,7 +579,7 @@ export default function Check() {
       )}
       <h1>端末チェック</h1>
       <p className="muted">
-        確認したい端末で、この画面を開いてください。ログインは要りません。
+        確認したい端末で、この画面を開いてください。ログインは必要ありません。
         どの画面からでも <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>C</kbd> で開けます。
       </p>
 
@@ -440,17 +602,17 @@ export default function Check() {
       <div className={'check-verdict check-' + verdict}>
         <strong>
           {verdict === 'ok'
-            ? `この端末は「${spec.label}」として使えます`
+            ? `この測定では「${spec.label}」として使用できる目安です`
             : verdict === 'ng'
-              ? `この端末は「${spec.label}」には使えません`
-              : 'あと少しです'}
+              ? `「${spec.label}」に必要な条件を満たしていません`
+              : '確認が必要です'}
         </strong>
         <span>
           {verdictWhy}
-          {verdict === 'ng' && spec.needsPlayback && netOk
-            ? ' Windows・Chromebook・Android の端末をお使いください。'
+          {verdict === 'ng' && playbackUnsupported && netOk
+            ? ' 対応形式を再生できる別の端末で確認してください。'
             : ''}
-          {verdict === 'ok' ? '必要な条件をすべて満たしています。' : ''}
+          {verdict === 'ok' ? '端末1台について、測定時点の必要条件を満たしています。' : ''}
         </span>
       </div>
 
@@ -461,18 +623,124 @@ export default function Check() {
           <Row
             state={polling}
             label="授業の通信が通る（ポーリング方式）"
-            detail={polling === 'ng' ? 'これが × だと授業できません' : undefined}
+            detail={polling === 'ng' ? '×の場合は授業に接続できません' : undefined}
           />
           <Row
             state={websocket}
             label="WebSocketが通る"
-            detail={wsDetail || (websocket === 'ok' ? '最も快適な方式で繋がります' : undefined)}
+            detail={wsDetail || (websocket === 'ok' ? 'WebSocket方式で接続できます' : undefined)}
           />
         </ul>
         {websocket === 'warn' && polling === 'ok' && (
           <p className="check-note">
             WebSocketは通りませんでしたが、ポーリング方式で授業は成立します。
             学校のフィルタリングによるものと思われます。
+          </p>
+        )}
+        <h3>回線速度</h3>
+        <ul className="check-list">
+          <Row
+            state={
+              downloadSpeed.status === 'pending'
+                ? 'pending'
+                : downloadSpeed.status === 'done'
+                  ? 'ok'
+                  : 'ng'
+            }
+            label="端末への受信速度"
+            detail={
+              downloadSpeed.status === 'done' && downloadSpeed.kbps !== null
+                ? formatSpeed(downloadSpeed.kbps)
+                : downloadSpeed.status === 'error'
+                  ? downloadSpeed.error
+                  : '測定しています'
+            }
+          />
+          {role === 'teacher' && (
+            <Row
+              state={
+                uploadSpeed.status === 'pending'
+                  ? 'pending'
+                  : uploadSpeed.status === 'done'
+                    ? 'ok'
+                    : 'ng'
+              }
+              label="先生端末からの送信速度"
+              detail={
+                uploadSpeed.status === 'done' && uploadSpeed.kbps !== null
+                  ? formatSpeed(uploadSpeed.kbps)
+                  : uploadSpeed.status === 'error'
+                    ? uploadSpeed.error
+                    : '測定しています'
+              }
+            />
+          )}
+        </ul>
+        <div className="check-actions">
+          <button
+            className="btn"
+            onClick={() => {
+              void measureDownloadSpeed();
+              if (role === 'teacher') void measureUploadSpeed();
+            }}
+            disabled={
+              downloadSpeed.status === 'pending' ||
+              (role === 'teacher' && uploadSpeed.status === 'pending')
+            }
+          >
+            もう一度測る
+          </button>
+        </div>
+        <h3>この回線で使用できる機能</h3>
+        <ul className="check-list">
+          <Row
+            state={speedState(downloadSpeed, BASIC_DOWNLOAD_KBPS)}
+            label="スライド・ボタン・コメント"
+            detail={speedDetail(downloadSpeed, BASIC_DOWNLOAD_KBPS)}
+          />
+          {spec.needsPlayback && (
+            <Row
+              state={speedState(downloadSpeed, AUDIO_DOWNLOAD_KBPS)}
+              label="音声・スライド・書き込み"
+              detail={speedDetail(downloadSpeed, AUDIO_DOWNLOAD_KBPS)}
+            />
+          )}
+          {spec.watchesVideo && (
+            <Row
+              state={speedState(downloadSpeed, VIDEO_DOWNLOAD_KBPS)}
+              label="先生のカメラ映像"
+              detail={speedDetail(downloadSpeed, VIDEO_DOWNLOAD_KBPS)}
+            />
+          )}
+          {role === 'teacher' && (
+            <>
+              <Row
+                state={speedState(uploadSpeed, AUDIO_UPLOAD_KBPS)}
+                label="音声の配信"
+                detail={speedDetail(uploadSpeed, AUDIO_UPLOAD_KBPS)}
+              />
+              <Row
+                state={speedState(uploadSpeed, VIDEO_UPLOAD_KBPS)}
+                label="カメラ映像の配信"
+                detail={speedDetail(uploadSpeed, VIDEO_UPLOAD_KBPS)}
+              />
+            </>
+          )}
+        </ul>
+        <p className="check-note">
+          1回の測定で、受信に約128KB
+          {role === 'teacher' ? '、送信に約128KB' : ''}を使用します。
+          結果は測定時点の目安です。授業中の回線の混雑によって変わることがあります。
+        </p>
+        {role === 'student-room' && (
+          <p className="check-note">
+            この結果は生徒端末1台の判定です。学校全体の回線は、教室数と生徒端末数を含めて確認してください。
+          </p>
+        )}
+        {role === 'student-remote' && websocket !== 'ok' && (
+          <p className="check-note">
+            WebSocketを使用できない場合は通信方式の上乗せが増えます。
+            速度制限中の回線では、実際の授業でも音声を確認してください。
           </p>
         )}
       </section>
@@ -517,7 +785,7 @@ export default function Check() {
           <h2>3. スピーカーから音が出るか</h2>
           <p className="muted">
             {role === 'monitor'
-              ? '音量はアプリ・OS・モニター本体の3か所にあります。必ず耳で確認してください。'
+              ? '音量はアプリ・OS・モニター本体の3か所にあります。実際に音を確認してください。'
               : 'イヤホンを使う場合は、挿した状態で確認してください。'}
           </p>
           <div className="check-actions">
@@ -570,12 +838,12 @@ export default function Check() {
             <Row
               state={broadcastOpus ? 'ok' : 'warn'}
               label="Opus音声を配信できる"
-              detail={broadcastOpus ?? '作れない場合はAACで録音・配信します'}
+              detail={broadcastOpus ?? '非対応の場合はAACで録音・配信します'}
             />
             <Row
               state={broadcastAac ? 'ok' : 'warn'}
               label="AAC音声を配信できる"
-              detail={broadcastAac ?? 'AAC専用端末には音を届けられません'}
+              detail={broadcastAac ?? 'AACのみを再生できる端末には配信できません'}
             />
             <Row
               state={broadcastVideo ? 'ok' : 'warn'}
@@ -589,8 +857,8 @@ export default function Check() {
             </button>
           </div>
           <p className="check-note">
-            <strong>測定中は、普段の授業と同じ声で話し続けてください。</strong>
-            黙っていると実際より小さく出ます。
+            <strong>測定中は、授業中と同程度の声量で話し続けてください。</strong>
+            無音の時間が長い場合は、実際より小さい値になります。
           </p>
           {rateError && <p className="check-note check-ng-text">{rateError}</p>}
           {rateResult && (
@@ -604,9 +872,9 @@ export default function Check() {
                       : 'warn'
                 }
                 label="Opus（標準・対応端末向け）"
-                detail={
-                  rateResult.opusKbps === null
-                    ? '測れませんでした'
+                  detail={
+                    rateResult.opusKbps === null
+                    ? '測定できませんでした'
                     : `${rateResult.opusKbps} kbps ・ ${LESSON_MIN}分で約${Math.round(
                         (rateResult.opusKbps * LESSON_MIN * 60) / 8 / 1000
                       )}MB（生徒1人あたり） ・ 実際の形式 ${rateResult.opusMime ?? '不明'}`
@@ -634,16 +902,15 @@ export default function Check() {
             (!mimeMatches('opus', rateResult.opusMime) ||
               !mimeMatches('aac', rateResult.aacMime)) && (
               <p className="check-note check-ng-text">
-                この端末は、指定した形式とは違う形式で録っています。上の行の
-                「実際の形式」を見てください。名前だけで判断すると、
-                中身は別形式なのに対応していると読み違えます。
+                この端末では、指定した形式と異なる形式で記録されました。上の行の
+                「実際の形式」を確認してください。形式名だけでは対応状況を判定できません。
               </p>
             )}
           {(rateResult?.opusKbps === 0 || rateResult?.aacKbps === 0) && (
-            <p className="check-note check-ng-text">
-              {rateResult.opusKbps === 0 ? 'Opus' : 'AAC'}形式では音声が1バイトも出ていません。
-              マイクの周波数が48kHz以外だとAAC形式で起きることがあります
-              。授業中はその形式を自動停止し、先生画面に届かない端末の警告を出します。
+              <p className="check-note check-ng-text">
+                {rateResult.opusKbps === 0 ? 'Opus' : 'AAC'}形式では音声が1バイトも出ていません。
+                マイクの周波数が48kHz以外の場合、AAC形式で発生することがあります。
+                授業中はその形式を自動停止し、先生画面に受信できない端末の警告を表示します。
             </p>
           )}
           {rateResult?.opusKbps != null &&
@@ -651,7 +918,8 @@ export default function Check() {
             rateResult.opusKbps > THROTTLED_KBPS * 0.6 && (
             <p className="check-note">
               速度制限のかかった回線（{THROTTLED_KBPS}kbps程度）で受ける生徒がいる場合、
-              この値だと苦しくなります。通常の光・モバイル回線であれば問題ありません。
+              この音声量では、書き込みと通信方式の上乗せに使用できる余裕が少なくなります。
+              受講に使用する回線で事前に音声を確認してください。
             </p>
           )}
           {rateResult?.opusKbps != null &&

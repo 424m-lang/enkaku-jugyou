@@ -10,6 +10,7 @@ import { config } from './config';
 import { initDb, closeDb } from './db';
 import { flushAllSessions } from './live/liveSessions';
 import { authRoutes } from './routes/auth';
+import { checkRoutes } from './routes/check';
 import { joinRoutes } from './routes/join';
 import { lessonRoutes } from './routes/lessons';
 import { reviewRoutes } from './routes/review';
@@ -20,7 +21,22 @@ async function main() {
   await initDb();
   fs.mkdirSync(config.dataDir, { recursive: true });
 
-  const app = Fastify({ logger: { level: 'info' } });
+  const app = Fastify({
+    logger: {
+      level: 'info',
+      // 既定のrequest serializerは接続元IPを含む。匿名集計の方針に合わせて除外し、
+      // 教室モニターのトークンなどが入るクエリ文字列もログへ残さない。
+      serializers: {
+        req(request) {
+          return {
+            method: request.method,
+            url: request.url.split('?')[0],
+            hostname: request.hostname,
+          };
+        },
+      },
+    },
+  });
 
   await app.register(fastifyCookie, { secret: config.sessionSecret });
   await app.register(fastifyMultipart, {
@@ -29,6 +45,7 @@ async function main() {
 
   app.get('/api/health', async () => ({ ok: true, time: new Date().toISOString() }));
 
+  await app.register(checkRoutes);
   await app.register(authRoutes);
   await app.register(joinRoutes);
   await app.register(lessonRoutes);
