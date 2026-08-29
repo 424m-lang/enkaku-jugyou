@@ -7,7 +7,8 @@
  * Whisperに差し替える。
  *
  * 制約: Chrome・Edge が前提。Safariは不安定、Firefoxは非対応。
- * Chromeの実装は音声をGoogleのサーバへ送るため、その点は利用者に伝えること。
+ * 認識処理はブラウザの既定サービスに委ねられ、端末内か外部かをアプリから指定しない。
+ * 先生の音声がブラウザの音声認識へ渡ることは、利用者へ事前に案内する。
  */
 
 type SpeechResultAlternative = { transcript: string };

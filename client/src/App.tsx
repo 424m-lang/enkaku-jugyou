@@ -33,7 +33,7 @@ export default function App() {
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/teach/:id" element={<Teach />} />
           <Route path="/screen/:id" element={<Screen />} />
-          {/* 教室モニターの短い入口。テレビのリモコンでも打てる長さにするため */}
+          {/* 教室モニター用の短い入口。6文字の短縮コードで開く */}
           <Route path="/m/:code" element={<ScreenEntry />} />
           <Route path="/review/:id" element={<Review />} />
           {/* 開発・検証用の匿名通信集計。通常の先生向け導線には表示しない */}

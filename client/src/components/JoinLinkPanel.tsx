@@ -65,7 +65,7 @@ export default function JoinLinkPanel({ joinCode }: Props) {
         <button className="btn" onClick={() => void copy(directUrl)}>
           {copied ? 'コピーしました' : 'URLをコピー'}
         </button>
-        <p className="muted small">授業コードは入っているので、名前を入れるだけで参加できます</p>
+        <p className="muted small">授業コードは入力済みです。名前は任意です</p>
       </div>
 
       <div className="classroom-sec">

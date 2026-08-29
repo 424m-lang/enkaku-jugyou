@@ -24,8 +24,8 @@ export type TranscribeResult = {
 
 /**
  * 指定タイムスタンプ範囲の音声を文字起こしする。
- * 授業中の「振り返り提案」（範囲を絞ったクリップ）と授業後の全体文字起こしの
- * 両方がこの同じ関数を使う。
+ * 授業中のコメント分析（範囲を絞ったクリップ）と授業後の全体文字起こしの
+ * 両方でこの関数を使用する。
  */
 export async function transcribeRange(
   lessonId: string,

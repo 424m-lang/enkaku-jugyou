@@ -58,7 +58,7 @@ function TelemetryDetail({ metrics }: { metrics: LessonTelemetry }) {
 
         <section className="card telemetry-card">
           <h3>端末の大分類</h3>
-          <p>Apple系スマホ・タブレット <strong>{metrics.platforms['apple-mobile']}画面</strong></p>
+          <p>iPhone・iPadなど <strong>{metrics.platforms['apple-mobile']}画面</strong></p>
           <p>Android <strong>{metrics.platforms.android}画面</strong></p>
           <p>PC等 <strong>{metrics.platforms.desktop}画面</strong></p>
           <p className="muted small">

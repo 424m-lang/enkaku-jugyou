@@ -292,7 +292,7 @@ export async function describeChapter(
 
 /**
  * 授業後: 全体の文字起こしと反応集中箇所から、先生が全クリップを聞かなくても
- * 把握できる要約を作る（振り返り提案と同じ仕組みを全体範囲に適用したもの）。
+ * 把握できる要約を作る（コメント分析と同じ要約処理を授業全体へ適用する）。
  */
 export async function summarizeLesson(
   fullTranscript: string,

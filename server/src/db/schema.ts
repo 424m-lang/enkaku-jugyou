@@ -69,7 +69,7 @@ export const lessons = pgTable('lessons', {
   captionsEnabled: boolean('captions_enabled').notNull().default(false),
   // 教室モニターを先生のログイン無しで開くためのトークン
   screenToken: text('screen_token').unique(),
-  // 教室モニターを開くための短いコード。テレビのリモコンでURLを打つことがあるため、
+  // 教室モニターを開くための短いコード。長いトークン入りURLを入力せずに済むよう、
   // トークン入りの長いURLとは別に用意する（/m/XXXXXX で同じ画面に着く）
   screenCode: text('screen_code').unique(),
   // 復習動画（章立て再生ページ）の公開用トークン。未公開ならnull

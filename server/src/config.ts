@@ -17,7 +17,7 @@ export const config = {
   sessionSecret: process.env.SESSION_SECRET || 'dev-secret-change-me',
 
   // 登録の合言葉。設定すると、先生アカウントの登録にこの文字列が要るようになる。
-  // 未設定なら誰でも登録できる（ローカル運用や校内限定ならこのままでよい）。
+  // 未設定の場合は登録コードを求めない（ローカル運用や校内限定向け）。
   // インターネットに公開する場合は、勝手に登録されてAI利用料が出るのを防ぐために設定する
   registerCode: process.env.REGISTER_CODE || '',
 

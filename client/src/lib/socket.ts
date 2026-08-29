@@ -12,8 +12,8 @@ export type AppSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
  */
 /**
  * この端末が再生できる映像形式。
- * MSEの対応はブラウザによって割れる（SafariはWebMを一切再生できない）ので、
- * 先生の端末が「誰に何を送ればよいか」を決めるための材料になる。
+ * MSEの対応形式は端末とブラウザによって異なるため、ブラウザ名ではなく
+ * 実際の対応形式を先生の端末が配信形式を決めるための材料にする。
  */
 function videoCanPlay() {
   return {

@@ -153,7 +153,7 @@ export default function AudioCaptionPanel({
           </span>
         </div>
         <p className="muted small">
-          遠隔で参加している生徒は各自の端末で字幕を出せます。
+          生徒は、教室・遠隔を問わず各自の端末で字幕を出せます。
           {captionsEnabled
             ? '先生の話を文字にしています。自動認識なので誤変換があります。Chrome・Edgeでのみ動きます。'
             : '教室モニターに出すか、生徒が1人でも字幕を出すと、認識が始まります。'}

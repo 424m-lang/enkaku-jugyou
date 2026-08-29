@@ -159,8 +159,8 @@ export type LiveSession = {
   /**
    * 形式ごとのカメラ配信。同じ映像を2形式で同時に送ることがある。
    *
-   * WebMしか再生できない端末は無いが、MP4しか再生できない端末（Safari系）はある。
-   * どちらか一方に決めると、Apple系が1台混じるだけで全員が4秒遅い映像になるため、
+   * 受信端末によって再生できる形式が異なる。
+   * どちらか一方に決めると、MediaRecorderのMP4が必要な端末に合わせて全員の遅延が増えるため、
    * **必要な形式だけを並行して流す**。受け手は自分の形式の部屋にだけ入る。
    */
   avStreams: Map<VideoFormat, { init: Buffer; mime: string; seq: number }>;

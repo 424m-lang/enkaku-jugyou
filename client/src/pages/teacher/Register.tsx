@@ -10,7 +10,7 @@ export default function Register() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   // サーバが REGISTER_CODE を設定しているときだけ合言葉の欄を出す。
-  // 設定していない環境（ローカル・校内運用）で、無い欄を見せて迷わせない
+  // 設定していない環境（ローカル・校内運用）では、不要な欄を表示しない
   const [code, setCode] = useState('');
   const [codeRequired, setCodeRequired] = useState(false);
 

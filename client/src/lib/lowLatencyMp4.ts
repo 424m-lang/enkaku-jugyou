@@ -8,8 +8,7 @@
  * 教室で使うには遅すぎる。WebCodecsなら**キーフレームを自分で打てる**ので、
  * 0.5秒ごとに断片を切れる。
  *
- * WebMにこの問題は無いので、この経路は**MP4が必要なとき（Safari・iPad・Mac・
- * テレビ内蔵ブラウザが受け手にいるとき）だけ**使う。
+ * WebMにこの問題は無いので、この経路は**MP4形式が必要な受信端末があるときだけ**使う。
  *
  * 送信側はChrome・Edge限定（WebCodecsと MediaStreamTrackProcessor が要る）。
  * 使えない環境や途中で失敗したときは MediaRecorder に戻す（`onFailure`）。
