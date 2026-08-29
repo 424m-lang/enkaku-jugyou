@@ -249,16 +249,26 @@ export function myPollAnswer(
 }
 
 /**
- * 集計。分母は参加者全員なので、未回答が「回答済みの内訳」に埋もれない。
- * 選択式は誰が何を選んだかを一切返さない（正直に答えられるようにするため）。
+ * 集計。分母には、設問を締め切るまでに参加した生徒だけを含める。
+ * 締め切り後に参加した生徒まで「未回答」にすると、回答する機会がなかった人を
+ * 未回答者として数えることになるため。選択式では、誰が何を選んだかを返さない。
  */
 export async function pollResults(s: LiveSession, pollId: string): Promise<PollResults> {
   const poll = s.polls.find((p) => p.id === pollId);
   const answers = s.pollAnswers.get(pollId) ?? new Map<string, PollAnswer>();
-  const rows = await db
-    .select({ id: schema.participants.id, displayName: schema.participants.displayName })
+  const allRows = await db
+    .select({
+      id: schema.participants.id,
+      displayName: schema.participants.displayName,
+      joinedAt: schema.participants.joinedAt,
+    })
     .from(schema.participants)
     .where(eq(schema.participants.lessonId, s.lessonId));
+  const cutoffEpochMs =
+    poll && s.startedAtEpochMs !== null
+      ? s.startedAtEpochMs + (poll.closedAtMs ?? tMs(s))
+      : Number.POSITIVE_INFINITY;
+  const rows = allRows.filter((p) => p.joinedAt.getTime() <= cutoffEpochMs);
 
   const counts: Record<string, number> = {};
   for (const o of poll?.options ?? []) counts[o.id] = 0;

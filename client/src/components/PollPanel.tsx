@@ -244,7 +244,7 @@ export default function PollPanel({
                     <ul className="poll-bars">
                       {p.options.map((o) => {
                         const n = r.counts[o.id] ?? 0;
-                        // 分母は参加者全員。未回答が「回答済みの内訳」に埋もれないようにする
+                        // 分母は締め切りまでに参加した生徒。未回答は残りの幅として表示する
                         const pct = r.total > 0 ? (n / r.total) * 100 : 0;
                         return (
                           <li key={o.id}>

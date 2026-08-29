@@ -818,8 +818,8 @@ export default function Review() {
                   </p>
                   <p className="muted small">
                     {taskReview.mode === 'sequential'
-                      ? '順番通りのため、棒は「そこまで終えた人数」です。落差の大きいところが難所にあたります。'
-                      : '順不同のため、棒は「そのタスクを終えた人数」です。短い棒が難所にあたります。'}
+                      ? '順番通りのため、棒は「そこまで終えた人数」です。前のタスクとの人数差を確認できます。'
+                      : '順不同のため、棒は「そのタスクを終えた人数」です。タスクごとの人数を比較できます。'}
                   </p>
                 </div>
               )}
@@ -852,13 +852,21 @@ export default function Review() {
                           {fmtClock(t.firstDoneMs as number)}
                         </button>{' '}
                         ・ 半数{' '}
-                        <button className="btn-link" onClick={() => seek(t.medianDoneMs as number)}>
-                          {fmtClock(t.medianDoneMs as number)}
-                        </button>{' '}
-                        ・ 最後の1人{' '}
-                        <button className="btn-link" onClick={() => seek(t.lastDoneMs as number)}>
-                          {fmtClock(t.lastDoneMs as number)}
-                        </button>
+                        {t.halfDoneMs === null ? (
+                          <span>未到達</span>
+                        ) : (
+                          <button className="btn-link" onClick={() => seek(t.halfDoneMs as number)}>
+                            {fmtClock(t.halfDoneMs)}
+                          </button>
+                        )}{' '}
+                        ・ 全員{' '}
+                        {t.allDoneMs === null ? (
+                          <span>未到達</span>
+                        ) : (
+                          <button className="btn-link" onClick={() => seek(t.allDoneMs as number)}>
+                            {fmtClock(t.allDoneMs)}
+                          </button>
+                        )}
                       </>
                     )}
                   </p>
@@ -872,7 +880,7 @@ export default function Review() {
             <div className="panel-scroll">
               <div className="card">
                 <p className="muted">
-                  先生の話とスライドの内容をAIが読み、授業全体を話題のまとまりごとのブロックに分けます。
+                  授業全体の文字起こしとPDFの文章をもとに、AIが話題のまとまりごとのブロックに分けます。
                   それぞれのブロックだけを見ても内容が分かるように区切られるので、
                   復習させたいブロックだけを選んで公開できます。
                 </p>

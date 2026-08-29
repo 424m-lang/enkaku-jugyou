@@ -164,7 +164,7 @@ export type PollResults = {
   pollId: string;
   /** optionId → 人数（自由記述では空） */
   counts: Record<string, number>;
-  /** 回答した人数。分母は total（未回答を含めた参加者数） */
+  /** 回答した人数。分母は total（締め切りまでに参加した未回答者を含む） */
   answered: number;
   total: number;
   /**
@@ -489,13 +489,14 @@ export function clampPipPos(p: unknown): PipPos | null {
 /**
  * ライブ映像の形式。
  *
- * webm(VP8/Opus) は要求どおり0.5秒ごとに断片が出るが、
- * mp4(H.264/AAC) はChromeのMediaRecorderが**キーフレーム単位でしか断片を切らない**ため
- * 4秒ごとにまとめて出てくる（実測）。同じ条件で総遅延は 1.4秒 対 5.3秒。
- * それでもSafari・Apple TV・テレビ内蔵ブラウザはWebMを再生できない。
+ * webm(VP8/Opus) は要求どおり0.5秒ごとに断片が出る。
+ * ChromeのMediaRecorderでmp4(H.264/AAC)を生成した試験では、キーフレーム単位でしか
+ * 断片を切れず、約4秒ごとにまとまった（同じ条件で総遅延は1.4秒対5.3秒）。
+ * 現在は、対応環境ではWebCodecsを使用してMP4も0.5秒ごとに分割する。
+ * 一部のブラウザやテレビ内蔵ブラウザはWebMを再生できない。
  *
- * どちらか一方に決めると、Apple系が1台混じるだけで全員が4秒損をするので、
- * **必要な形式だけを同時に送る**。受け手は自分が再生できる方だけを受け取る。
+ * どちらか一方に固定せず、**受信端末が必要とする形式だけを同時に送る**。
+ * 受信端末は、自端末で再生できる形式だけを受け取る。
  */
 export type VideoFormat = 'webm' | 'mp4';
 
@@ -507,8 +508,7 @@ export type VideoCanPlay = { webm: boolean; mp4: boolean };
 
 /** その端末に届けるべき形式。WebMを再生できるなら遅れの少ないWebMを選ぶ */
 export function videoFormatFor(canPlay: VideoCanPlay | undefined): VideoFormat {
-  // 申告が無い相手（古いページを開いたままの端末など）には、どこでも再生できるMP4を送る。
-  // 遅いより映らない方が困るため
+  // 申告が無い相手（古いページを開いたままの端末など）には、互換性を優先してMP4を送る。
   return canPlay?.webm ? 'webm' : 'mp4';
 }
 
@@ -642,7 +642,7 @@ export interface ServerToClientEvents {
 
   /**
    * いま送る必要のある形式。先生の端末だけが受け取り、この数だけ録画器を動かす。
-   * 受け手が全員Chrome系なら ['webm'] の1本で済み、Apple系が混じったときだけ2本になる
+   * 受信端末が全台WebM対応なら ['webm'] の1本とし、MP4が必要な端末がある場合だけ2本にする
    */
   av_formats: (p: { formats: VideoFormat[] }) => void;
 
@@ -687,7 +687,7 @@ export interface ServerToClientEvents {
   // ---- タスク ----
   /**
    * 自分の進捗（生徒向け）。他の生徒の進捗は生徒には一切届けない。
-   * 進んでいる人が見えると、遅れている生徒への圧力になってしまうため
+   * 各生徒の進捗は、本人と先生だけが確認する設計にしている
    */
   my_task_progress: (p: { taskIds: string[] }) => void;
   /** 参加者全員の進捗（先生向け。接続直後のスナップショット） */
@@ -976,7 +976,7 @@ export type PollReview = {
   /** optionId → 人数（自由記述では空） */
   counts: Record<string, number>;
   answered: number;
-  /** 分母。その授業の参加者数 */
+  /** 分母。設問を締め切るまでに参加した生徒の数 */
   total: number;
   /** 自由記述の回答。先生だけが見る画面なので名前を付ける */
   texts: { participantName: string; text: string; answeredAtMs: number }[];
@@ -996,10 +996,10 @@ export type TaskReview = {
   addedAtMs: number | null;
   done: number;
   total: number;
-  /** 完了時刻（授業開始からのms）。誰も完了していなければ null */
+  /** 完了時刻（授業開始からのms）。各段階へ到達していなければ null */
   firstDoneMs: number | null;
-  medianDoneMs: number | null;
-  lastDoneMs: number | null;
+  halfDoneMs: number | null;
+  allDoneMs: number | null;
 };
 
 export type LessonTaskReview = {

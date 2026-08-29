@@ -108,7 +108,7 @@ export default function PollBar({ poll, answer, disabled, onAnswer }: Props) {
 
 /**
  * 締め切り後に先生が「結果を見せる」を選んだときだけ出る集計。
- * 単一選択・段階評価は円グラフ（誰でも一目で分かる）、
+ * 単一選択・段階評価は円グラフで割合を表示し、
  * 複数選択は割合の合計が100%を超えるので横棒にする。
  */
 export function PollResultView({

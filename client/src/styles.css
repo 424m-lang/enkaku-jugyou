@@ -2354,7 +2354,7 @@ button.slide-thumb:hover {
   margin: 8px 0 4px;
 }
 
-/* 集計。分母は参加者全員なので、未回答は自然に「残りのグレー」として見える */
+/* 回答数を分母全体に対する幅で表示し、未回答分は残りのグレーとして見せる */
 .poll-bars {
   list-style: none;
   margin: 0;
@@ -2632,7 +2632,7 @@ button.slide-thumb:hover {
   margin: 6px 0;
 }
 
-/* 先生画面: 配信形式がWebM系のときの警告（Apple系・テレビで音が出ない） */
+/* 先生画面: 一部の受信端末へ配信できる音声形式がない場合の警告 */
 .teach-format-warn {
   display: flex;
   align-items: flex-start;

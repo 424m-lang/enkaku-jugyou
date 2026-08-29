@@ -160,10 +160,10 @@ function taskDoneTimes(
   return out;
 }
 
-function median(sorted: number[]): number | null {
-  if (sorted.length === 0) return null;
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 1 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
+/** 参加者のうち required 人が完了した実際の時刻。未到達なら null */
+function completionMilestone(sorted: number[], required: number): number | null {
+  if (required <= 0 || sorted.length < required) return null;
+  return sorted[required - 1] ?? null;
 }
 
 export async function reviewRoutes(app: FastifyInstance): Promise<void> {
@@ -215,7 +215,10 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
           eq(schema.participants.id, schema.pollAnswers.participantId)
         )
         .where(eq(schema.pollAnswers.lessonId, id)),
-      db.select().from(schema.participants).where(eq(schema.participants.lessonId, id)),
+      db
+        .select({ joinedAt: schema.participants.joinedAt })
+        .from(schema.participants)
+        .where(eq(schema.participants.lessonId, id)),
     ]);
 
     // 「もう一度聞く」は同じ質問で別の設問を作る。何回目かを出すために質問文でまとめる
@@ -228,6 +231,13 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
       seen.set(p.question, round);
 
       const mine = answers.filter((a) => a.pollId === p.id);
+      const cutoffEpochMs =
+        lesson.startedAt && p.closedAtMs !== null
+          ? lesson.startedAt.getTime() + p.closedAtMs
+          : Number.POSITIVE_INFINITY;
+      const eligibleCount = parts.filter((participant) =>
+        participant.joinedAt.getTime() <= cutoffEpochMs
+      ).length;
       const counts: Record<string, number> = {};
       for (const o of p.options) counts[o.id] = 0;
       for (const a of mine) {
@@ -244,7 +254,7 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
         closedAtMs: p.closedAtMs,
         counts,
         answered: mine.length,
-        total: parts.length,
+        total: eligibleCount,
         texts: mine
           .filter((a) => a.text)
           .map((a) => ({
@@ -292,6 +302,7 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
         if (at !== undefined) times.push(at);
       }
       times.sort((a, b) => a - b);
+      const halfway = Math.ceil(parts.length / 2);
       return {
         taskId: t.id,
         label: t.label,
@@ -299,8 +310,8 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
         done: times.length,
         total: parts.length,
         firstDoneMs: times[0] ?? null,
-        medianDoneMs: median(times),
-        lastDoneMs: times[times.length - 1] ?? null,
+        halfDoneMs: completionMilestone(times, halfway),
+        allDoneMs: completionMilestone(times, parts.length),
       };
     });
 
@@ -589,7 +600,7 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
     return { text: t.text };
   });
 
-  // ---- 授業全体の文字起こし + AI要約（振り返り提案と同じ仕組みを全体に適用） ----
+  // ---- 授業全体の文字起こし + AI要約 ----
   app.post('/api/lessons/:id/summarize', { preHandler: requireTeacher }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const lesson = await ownLesson(req, reply, id);

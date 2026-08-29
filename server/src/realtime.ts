@@ -649,6 +649,12 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           if (s.status !== 'live') return cb({ ok: false, error: '授業中ではありません' });
           const endMs = tMs(s);
           stopLiveTranscription(s);
+          // 開いたままの設問は授業終了時刻で締め切り、授業後の集計を確定させる。
+          if (s.openPollId) {
+            const pollId = s.openPollId;
+            await closePoll(s, pollId);
+            io.to(room).emit('poll_closed', { pollId, results: null });
+          }
           await endLesson(s);
           io.to(room).emit('lesson_ended');
           io.to(room).emit('lesson_state', toLiveState(s));
