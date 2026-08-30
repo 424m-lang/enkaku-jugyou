@@ -654,6 +654,7 @@ textarea:focus {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  min-width: 0;
   min-height: 0;
   overflow-y: auto;
 }
@@ -665,7 +666,9 @@ textarea:focus {
 
 .feed-card {
   flex: 1;
+  width: 100%;
   min-height: 0;
+  padding: 16px;
   display: flex;
   flex-direction: column;
 }
@@ -698,7 +701,7 @@ textarea:focus {
   font-size: 0.9rem;
 }
 
-/* ---- コメント・振り返り（サイドバーのカード一覧） ---- */
+/* ---- コメント（サイドバーのカード一覧） ---- */
 .insight-list {
   flex: 1;
   overflow-y: auto;
@@ -732,9 +735,35 @@ textarea:focus {
   margin-right: 6px;
 }
 
-.insight-comment .feed-body {
-  display: block;
+.insight-comment-body {
   margin-top: 2px;
+}
+
+.insight-comment-body .feed-body {
+  min-width: 0;
+}
+
+.insight-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.insight-card-header .insight-slide,
+.insight-card-type {
+  margin: 0;
+}
+
+.insight-card-type {
+  flex: 0 0 auto;
+}
+
+/* 同じ話題として1枚にまとまった原文同士は、カードを分けずに区切って表示する */
+.insight-comment + .insight-comment {
+  border-top: 1px dashed var(--border);
+  padding-top: 6px;
 }
 
 .insight-status {
@@ -1257,6 +1286,71 @@ button.slide-thumb:hover {
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.6);
 }
 
+/*
+  スライドと映像を重ねない配置。映像枠に最も近い辺だけ余白を確保する。
+  映像を受信していない場合はこのクラスを付けず、スライドを全面表示する。
+*/
+.screen-stage-outside {
+  --outside-w: min(22vw, 400px);
+  --outside-h: calc(var(--outside-w) * 9 / 16);
+  --outside-gap-x: calc(var(--outside-w) + min(3vw, 48px));
+  --outside-gap-y: calc(var(--outside-h) + min(3vw, 48px));
+  display: block;
+}
+
+.screen-stage-outside .screen-main {
+  position: absolute;
+  display: flex;
+}
+
+.screen-stage-outside-left .screen-main {
+  inset: 0 0 0 var(--outside-gap-x);
+}
+
+.screen-stage-outside-right .screen-main {
+  inset: 0 var(--outside-gap-x) 0 0;
+}
+
+.screen-stage-outside-top .screen-main {
+  inset: var(--outside-gap-y) 0 0;
+}
+
+.screen-stage-outside-bottom .screen-main {
+  inset: 0 0 var(--outside-gap-y);
+}
+
+.screen-outside-video {
+  position: absolute;
+  width: var(--outside-w);
+  aspect-ratio: 16 / 9;
+  display: flex;
+  overflow: hidden;
+  border: 2px solid rgba(255, 255, 255, 0.65);
+  border-radius: 8px;
+  background: #000;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.55);
+}
+
+.screen-outside-video-left {
+  left: min(1.5vw, 24px);
+  top: calc(min(1.5vw, 24px) + (100% - var(--outside-h) - min(3vw, 48px)) * var(--pip-y, 0.5));
+}
+
+.screen-outside-video-right {
+  right: min(1.5vw, 24px);
+  top: calc(min(1.5vw, 24px) + (100% - var(--outside-h) - min(3vw, 48px)) * var(--pip-y, 0.5));
+}
+
+.screen-outside-video-top {
+  top: min(1.5vw, 24px);
+  left: calc(min(1.5vw, 24px) + (100% - var(--outside-w) - min(3vw, 48px)) * var(--pip-x, 0.5));
+}
+
+.screen-outside-video-bottom {
+  bottom: min(1.5vw, 24px);
+  left: calc(min(1.5vw, 24px) + (100% - var(--outside-w) - min(3vw, 48px)) * var(--pip-x, 0.5));
+}
+
 .screen-video {
   width: 100%;
   height: 100%;
@@ -1488,7 +1582,7 @@ button.slide-thumb:hover {
 }
 
 .class-main {
-  position: relative; /* 先生のカメラ映像を右下に重ねるため */
+  position: relative; /* 先生のカメラ映像をスライド上へ重ねるため */
   flex: 1;
   min-height: 0;
   min-width: 0;
@@ -1638,7 +1732,7 @@ button.slide-thumb:hover {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 1fr 420px;
+  grid-template-columns: minmax(0, 1fr) 420px;
   gap: 12px;
   padding: 12px;
 }
@@ -1853,8 +1947,12 @@ button.slide-thumb:hover {
 
 @media (max-width: 980px) {
   .review-main {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto 1fr;
+  }
+
+  .review-right {
+    min-width: 0;
   }
 }
 
@@ -2945,11 +3043,19 @@ button.slide-thumb:hover {
   text-align: left;
   height: auto;
   line-height: 1.4;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .check-role-hint {
+  display: block;
+  width: 100%;
   font-size: 11px;
+  line-height: 1.35;
   opacity: 0.75;
   font-weight: 400;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .check-row.check-skip .check-mark {
   color: #d1d5db;
@@ -3351,9 +3457,10 @@ button.slide-thumb:hover {
   border-radius: 6px;
 }
 
-/* 見せ方の見本。言葉だけでは伝わらないので、いま映っているカメラで縮図にする */
+/* 各配置を、現在のカメラ映像を使用した縮図で示す */
 .layout-choices {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
   margin: 8px 0 4px;
 }
@@ -3426,6 +3533,51 @@ button.slide-thumb:hover {
 
 .lp-sub-drag:active {
   cursor: grabbing;
+}
+
+/* 「スライド外に映像」の縮図。ドラッグ位置に最も近い外周へ映像枠を置く */
+.lp-outside-slide-left {
+  left: 27%;
+}
+
+.lp-outside-slide-right {
+  right: 27%;
+}
+
+.lp-outside-slide-top {
+  top: 29%;
+}
+
+.lp-outside-slide-bottom {
+  bottom: 29%;
+}
+
+.lp-outside-cam-left,
+.lp-outside-cam-right {
+  width: 20%;
+  top: calc(5% + 70% * var(--pip-y, 0.5));
+}
+
+.lp-outside-cam-left {
+  left: 3%;
+}
+
+.lp-outside-cam-right {
+  left: 77%;
+}
+
+.lp-outside-cam-top,
+.lp-outside-cam-bottom {
+  width: 28%;
+  left: calc(4% + 64% * var(--pip-x, 0.5));
+}
+
+.lp-outside-cam-top {
+  top: 3%;
+}
+
+.lp-outside-cam-bottom {
+  top: 81%;
 }
 
 .lp-slide {

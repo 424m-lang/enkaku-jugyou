@@ -136,7 +136,7 @@ export type LiveSession = {
 
   /**
    * コメント入力中の生徒（participantId → 入力対象スライド・入力開始時刻・最終合図時刻）。
-   * startTMs はコメント・振り返りのAI分析対象の音声範囲を決めるのに使う
+   * startTMsはコメント整理の対象となる音声範囲を決めるために使用する
    */
   composing: Map<string, { slideId: string; startTMs: number; atEpochMs: number }>;
 
@@ -173,7 +173,7 @@ export type LiveSession = {
    */
   avStreams: Map<VideoFormat, { init: Buffer; mime: string; seq: number }>;
   screenLayout: ScreenLayout;
-  /** 小窓（スライド主体ならカメラ、映像主体ならスライド）の置き場所 */
+  /** 小さい表示またはスライド外の映像枠の位置 */
   pipPos: PipPos;
   /** 遠方の生徒にも映像を届けるか（通信量が増えるため既定はOFF） */
   videoToStudents: boolean;
@@ -318,7 +318,7 @@ async function loadSession(lessonId: string): Promise<LiveSession | null> {
   }
 
   // サーバ再起動後の復元: タイムラインから描画状態・現在スライドを再構成する。
-  // 開始前（draft）も対象にするのは、授業前に板書を仕込んでおく使い方があるため。
+  // 開始前（draft）も対象にするのは、授業前にスライドへ書き込んでおく使い方があるため。
   // 終了した授業はライブ状態を持たない（振り返りはDBから直接読む）
   if (lesson.status !== 'ended') {
     const events = await db
@@ -844,7 +844,7 @@ export async function startLesson(s: LiveSession): Promise<void> {
   const startedAt = new Date();
   s.status = 'live';
   s.startedAtEpochMs = startedAt.getTime();
-  // 開始前に用意した板書はそのまま授業へ引き継ぐ。
+  // 開始前に用意した書き込みはそのまま授業へ引き継ぐ。
   // これらは tMs=0 で保存済みなので、途中参加者も同じ状態を再構成できる。
   s.counts = {};
   s.recentReactions = [];

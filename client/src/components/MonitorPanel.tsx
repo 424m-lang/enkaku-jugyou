@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 import type { PipPos, ScreenLayout, VideoFormat } from '@shared';
-import { SCREEN_LAYOUT_LABELS } from '@shared';
+import { outsideDockFor, SCREEN_LAYOUT_LABELS } from '@shared';
 import { api } from '../lib/api';
 import {
   listCameras,
@@ -29,13 +29,13 @@ type Props = {
   cameraOn: boolean;
   screenLayout: ScreenLayout;
   videoToStudents: boolean;
-  /** 小窓の置き場所（0〜1の割合） */
+  /** 小さい表示またはスライド外の映像枠の位置（0〜1の割合） */
   pipPos: PipPos;
   /** いま流す必要のある映像形式（受け手の顔ぶれからサーバが決める） */
   avFormats: VideoFormat[];
 };
 
-const LAYOUTS: ScreenLayout[] = ['slide', 'video', 'slide-only'];
+const LAYOUTS: ScreenLayout[] = ['slide', 'outside', 'video', 'slide-only'];
 
 export default function MonitorPanel({
   lessonId,
@@ -315,7 +315,9 @@ export default function MonitorPanel({
             <p className="muted small">
               授業中にも切り替えられます。
               {screenLayout !== 'slide-only' &&
-                ' 小さい方は、この見本の中でドラッグして動かせます。'}
+                (screenLayout === 'outside'
+                  ? ' 映像枠は、見本の外周へドラッグして位置を変更できます。'
+                  : ' 小さい表示は、この見本の中でドラッグして位置を変更できます。')}
             </p>
 
             <label className="classroom-check">
@@ -343,11 +345,10 @@ export default function MonitorPanel({
 
 /**
  * 見せ方の見本。いま映っているカメラをそのまま縮小して置く。
- * 「スライド主体」と「映像主体」は言葉だけではどちらがどちらか分かりにくいので、
- * 縮図で示して選ばせる。
+ * 各レイアウトのスライドと映像の大きさ・位置を縮図で示す。
  *
- * 選んでいる見本の中では、小窓をつまんで動かせる。教卓・板書・掲示物と重なる場所は
- * 教室ごとに違うので、隅に固定だと現地で直せないため。
+ * 選択中の見本では、小さい表示またはスライド外の映像枠をドラッグして位置を変更できる。
+ * スライド外の映像枠は、ドラッグ先に最も近い外周へ配置する。
  */
 function LayoutChoice({
   layout,
@@ -376,6 +377,7 @@ function LayoutChoice({
   }, [stream]);
 
   const draggable = selected && layout !== 'slide-only';
+  const outsideDock = outsideDockFor(pipPos);
 
   const onPointerDown = (e: React.PointerEvent) => {
     if (!draggable || !subRef.current) return;
@@ -425,7 +427,7 @@ function LayoutChoice({
       onPointerMove={onPointerMove}
       onPointerUp={endDrag}
       onPointerCancel={endDrag}
-      title={draggable ? 'ドラッグで位置を変えられます' : undefined}
+      title={draggable ? 'ドラッグして位置を変更できます' : undefined}
     >
       {content}
     </span>
@@ -448,6 +450,13 @@ function LayoutChoice({
           <>
             <span className="lp-main lp-main-cam">{cam}</span>
             {subBox('スライド', 'lp-slide')}
+          </>
+        ) : layout === 'outside' ? (
+          <>
+            <span className={`lp-main lp-slide lp-outside-slide lp-outside-slide-${outsideDock}`}>
+              スライド
+            </span>
+            {subBox(cam, `lp-outside-cam lp-outside-cam-${outsideDock}`)}
           </>
         ) : (
           <>

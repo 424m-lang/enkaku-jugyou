@@ -89,7 +89,7 @@ function enqueue(lessonId: string, job: () => Promise<void>): void {
  * 1. コメント原文だけのカード（status=pending）を保存・配信する
  * 2. 分析範囲が近接する既存カードがあれば「同じ事柄への言及か」をAIで判定し、
  *    同じなら既存カードへ統合する（新カードは削除通知を配信）
- * 3. 入力開始時刻付近の音声とコメントを5項目に整理し、
+ * 3. カードの種類を判定し、質問には入力開始時刻付近の説明を補い、
  *    周辺のボタン反応数とあわせてカードを更新する
  */
 export function handleCommentForInsight(
@@ -216,7 +216,7 @@ async function tryMerge(
   return null;
 }
 
-/** 音声の文字起こし→関連する説明の要約と、周辺のボタン反応数でカードを完成させる */
+/** カードの分類・質問に関係する説明・周辺のボタン反応数でカードを完成させる */
 async function analyze(io: AnyServer, s: LiveSession, insight: CommentInsight): Promise<void> {
   try {
     // 分析範囲の終了後30秒までに届いた、生徒のボタン反応数
@@ -237,7 +237,7 @@ async function analyze(io: AnyServer, s: LiveSession, insight: CommentInsight): 
 
     const details = await analyzeForComment(s, insight);
     // summary は旧クライアントとの互換用。新しい画面は details を表示する。
-    const summary = details.relatedExplanation;
+    const summary = details.explainedContent ?? details.relatedExplanation ?? null;
 
     const ready: CommentInsight = { ...insight, kinds, summary, details, status: 'ready' };
     await db
@@ -260,7 +260,7 @@ async function analyze(io: AnyServer, s: LiveSession, insight: CommentInsight): 
 }
 
 /**
- * 2段階でコメントに関係する情報を5項目へ整理する。
+ * 2段階でカードを分類し、質問に関係する情報を整理する。
  * 1段階目: コメント送信時刻までの文字起こしから、コメントに関係する発言を特定する
  *        （授業後の「コメント」タブと同じ locateCommentTarget を共通利用）
  * 2段階目: 特定した発言の前後とコメント原文から該当項目だけを作る
@@ -298,7 +298,7 @@ async function analyzeForComment(
   );
 }
 
-/** 保存済みのコメント・振り返りを取得（先生画面の初期表示・再接続時用） */
+/** 保存済みのコメント整理結果を取得（先生画面の初期表示・再接続時用） */
 export async function listCommentInsights(lessonId: string): Promise<CommentInsight[]> {
   const rows = await db
     .select()

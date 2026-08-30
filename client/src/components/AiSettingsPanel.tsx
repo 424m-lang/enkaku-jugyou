@@ -15,7 +15,7 @@ const ITEMS: {
   {
     key: 'commentAnalysis',
     label: '生徒コメントの整理',
-    description: 'コメントを5項目に整理し、関係する説明を表示します。',
+    description: 'カードに種類を付け、質問に関係する説明を表示します。',
     timing: 'コメントが届いたときに使用',
   },
   {

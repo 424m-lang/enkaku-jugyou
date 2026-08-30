@@ -283,7 +283,7 @@ export type LessonStatus = 'draft' | 'live' | 'ended';
  * 変更できるのは開始前だけとする。
  */
 export type LessonAiSettings = {
-  /** 生徒コメントを関連する説明などに整理する */
+  /** 生徒コメントを分類し、質問に関係する説明を補う */
   commentAnalysis: boolean;
   /** 字幕履歴をWhisperの文字起こしで補正する */
   whisperCaptionHistory: boolean;
@@ -447,9 +447,9 @@ export type ReactionCluster = {
 };
 
 // ---- 生徒コメントの整理 ----
-// 生徒コメントと入力開始時刻付近の先生の音声をAIで分析し、5項目に整理して表示する。
+// 生徒コメントと入力開始時刻付近の先生の音声をAIで分析する。
 // 受信直後はコメント原文のみ（status=pending）を配信し、分析完了後に同じidのカードを
-// 項目別の内容と周辺反応数で更新する。同じ内容へのコメントは1枚のカードに統合する。
+// カードの分類・質問への補足・周辺反応数で更新する。同じ内容へのコメントは1枚のカードに統合する。
 export type InsightComment = {
   reactionId: string;
   text: string;
@@ -477,17 +477,27 @@ export type CommentInsight = {
   resolved: boolean;
 };
 
+export type CommentInsightCommentType = 'question' | 'trouble' | 'unexpected' | 'feedback';
+
 export type CommentInsightDetails = {
-  /** 先生がすでに説明している、コメントに関係する内容 */
-  relatedExplanation: string | null;
-  /** コメントで尋ねられたうち、授業内で確認できない内容 */
-  unconfirmedPoint: string | null;
-  /** 授業で扱っている内容との関係を確認できない質問 */
-  outsideLesson: string | null;
-  /** 音が聞こえない、画面が見えないなど、受講上の支障 */
-  trouble: string | null;
-  /** 質問ではない意見または感想 */
-  feedback: string | null;
+  /** カード全体の分類 */
+  commentType?: CommentInsightCommentType;
+  /** @deprecated 原文ごとに分類していた移行前の形式 */
+  commentTypes?: CommentInsightCommentType[];
+  /** 質問に関係し、先生がすでに説明した内容 */
+  explainedContent?: string | null;
+  /** 質問された内容のうち、先生がまだ説明していない内容 */
+  notYetExplainedContent?: string | null;
+  /** @deprecated 旧形式との互換用 */
+  relatedExplanation?: string | null;
+  /** @deprecated 旧形式との互換用 */
+  unconfirmedPoint?: string | null;
+  /** @deprecated 旧形式との互換用 */
+  outsideLesson?: string | null;
+  /** @deprecated 旧形式との互換用 */
+  trouble?: string | null;
+  /** @deprecated 旧形式との互換用 */
+  feedback?: string | null;
 };
 
 // ---- 教室モニター（教室モニターへの投影） ----
@@ -502,19 +512,31 @@ export type AudioMode = 'on' | 'off';
 /** 教室モニターのレイアウト（先生が切り替える） */
 export type ScreenLayout =
   | 'slide' // スライド主体・カメラ映像は小窓
+  | 'outside' // スライドの外側にカメラ映像を配置
   | 'video' // カメラ映像主体・スライドは小窓（実演を見せるとき）
   | 'slide-only'; // スライドのみ
 
 /**
- * 教室モニターで小窓（スライド主体ならカメラ、映像主体ならスライド）を置く位置。
+ * 教室モニターで小さい表示や、スライド外の映像枠を置く位置。
  *
  * 0〜1の割合で、0=左上いっぱい / 1=右下いっぱい。ピクセルではなく割合にしてあるのは、
  * 先生が見ている縮図と教室モニターの解像度・縦横比が違うため。
- * 教卓や板書と重なる場所は教室ごとに違うので、その場で動かせるようにしてある。
+ * 表示内容と重なる位置は教室や資料によって異なるため、その場で変更できるようにしてある。
  */
 export type PipPos = { x: number; y: number };
 
-/** 既定は右下。多くの教室で、板書やスライドの本文とぶつかりにくい */
+/** 「スライド外に映像」で使用する配置辺 */
+export type OutsideDock = 'left' | 'right' | 'top' | 'bottom';
+
+/** 指定位置から最も近い辺を返す。同距離の場合は左右を優先する */
+export function outsideDockFor(p: PipPos): OutsideDock {
+  const horizontalDistance = Math.min(p.x, 1 - p.x);
+  const verticalDistance = Math.min(p.y, 1 - p.y);
+  if (horizontalDistance <= verticalDistance) return p.x < 0.5 ? 'left' : 'right';
+  return p.y < 0.5 ? 'top' : 'bottom';
+}
+
+/** 既定は右下。必要に応じて画面上で変更できる */
 export const DEFAULT_PIP_POS: PipPos = { x: 1, y: 1 };
 
 export function clampPipPos(p: unknown): PipPos | null {
@@ -625,6 +647,7 @@ export type TelemetryEvent =
 
 export const SCREEN_LAYOUT_LABELS: Record<ScreenLayout, string> = {
   slide: 'スライド主体',
+  outside: 'スライド外に映像',
   video: '映像主体',
   'slide-only': 'スライドのみ',
 };
@@ -675,7 +698,7 @@ export interface ServerToClientEvents {
     videoToStudents: boolean;
     /** カメラ映像に音声が入っているか（マイクが使えないと映像だけになる） */
     avHasAudio: boolean;
-    /** 小窓の置き場所（教室モニター用） */
+    /** 小さい表示またはスライド外の映像枠の位置（教室モニター用） */
     pipPos: PipPos;
   }) => void;
 
@@ -718,7 +741,7 @@ export interface ServerToClientEvents {
   // リアクション（先生向け）
   reaction_feed: (item: ReactionFeedItem, counts: ReactionCounts) => void;
 
-  // コメント・振り返り（先生向け。コメント到着時とAI分析完成時に同じidで届く → 上書き）
+  // コメント（先生向け。コメント到着時とAI整理完了時に同じidで届くため、同じカードを更新する）
   comment_insight: (insight: CommentInsight) => void;
   // コメントが既存カードへ統合されて不要になったカードの削除通知
   comment_insight_removed: (insightId: string) => void;
@@ -850,7 +873,7 @@ export interface ClientToServerEvents {
     p: { tasks: { id?: string; label: string }[] },
     cb: (res: { ok: boolean; tasks?: LessonTask[]; error?: string }) => void
   ) => void;
-  /** コメント・振り返りカードに「対応済み」の印を付ける・外す */
+  /** コメントカードに「対応済み」の印を付ける・外す */
   set_insight_resolved: (
     p: { insightId: string; resolved: boolean },
     cb: (res: { ok: boolean }) => void
@@ -924,7 +947,7 @@ export interface ClientToServerEvents {
   /**
    * コメント入力中の合図（入力中は数秒おきに active:true、送信/クリアで active:false）。
    * サーバは最初の合図の時刻を「入力開始時刻」として記録し、
-   * コメント・振り返りのAI分析対象の音声範囲を決めるのに使う
+   * コメント整理の対象となる音声範囲を決めるために使用する
    */
   comment_composing: (p: { slideId: string; active: boolean }) => void;
 }

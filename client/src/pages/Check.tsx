@@ -114,7 +114,7 @@ const ROLES: Record<Role, RoleSpec> = {
   },
   teacher: {
     label: '先生の端末',
-    hint: 'マイクで配信し、必要に応じてカメラも使う',
+    hint: 'マイクで音声を配信する',
     needsPlayback: false,
     needsMic: true,
     watchesVideo: false,

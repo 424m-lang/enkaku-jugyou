@@ -400,7 +400,7 @@ export async function lessonRoutes(app: FastifyInstance): Promise<void> {
     return { ok: true };
   });
 
-  // ---- コメント・振り返り一覧（先生画面の初期表示・再接続時の復元用） ----
+  // ---- コメント一覧（先生画面の初期表示・再接続時の復元用） ----
   app.get('/api/lessons/:id/comment-insights', { preHandler: requireTeacher }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const [lesson] = await db

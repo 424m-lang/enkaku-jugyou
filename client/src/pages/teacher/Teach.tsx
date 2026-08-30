@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import type {
   AudioFormat,
   CommentInsight,
+  CommentInsightCommentType,
   LessonAiSettings,
   LessonStatus,
   ParticipantInfo,
@@ -63,7 +64,7 @@ function commandSlideId(cmd: DrawCommand): string {
 // 「直近のリアクション」の集計対象期間
 const RECENT_WINDOW_MS = 5 * 60_000;
 
-// コメント・振り返りカードの並び順キー（最後に動きがあったカードを上に）
+// コメントカードの並び順キー（最後に更新されたカードを上にする）
 function insightSortKey(p: CommentInsight): number {
   return p.comments[p.comments.length - 1]?.tMs ?? p.windowStartMs;
 }
@@ -77,24 +78,56 @@ function compareInsights(a: CommentInsight, b: CommentInsight): number {
   return insightSortKey(b) - insightSortKey(a);
 }
 
-const INSIGHT_DETAIL_LABELS: {
-  key: keyof NonNullable<CommentInsight['details']>;
-  label: string;
-}[] = [
-  { key: 'relatedExplanation', label: '関連する説明' },
-  { key: 'unconfirmedPoint', label: '確認できない点' },
-  { key: 'outsideLesson', label: '授業外' },
-  { key: 'trouble', label: '困りごと' },
-  { key: 'feedback', label: '意見・感想' },
-];
+const COMMENT_TYPE_LABELS: Record<CommentInsightCommentType, string> = {
+  question: '質問',
+  trouble: '困りごと',
+  unexpected: '授業外',
+  feedback: '意見・感想',
+};
 
-function insightDetailRows(insight: CommentInsight): { label: string; text: string }[] {
-  return INSIGHT_DETAIL_LABELS.flatMap(({ key, label }) => {
-    const value = insight.details?.[key];
-    // 移行前のカードは summary だけを持つため、「関連する説明」として引き継ぐ。
-    const text = value ?? (key === 'relatedExplanation' ? insight.summary : null);
-    return text ? [{ label, text }] : [];
-  });
+/** 新形式に分類が無い保存済みカードは、移行前の分類からカード用のチップへ移す。 */
+function legacyCommentType(insight: CommentInsight): CommentInsightCommentType | null {
+  const details = insight.details;
+  if (details?.trouble) return 'trouble';
+  if (details?.outsideLesson) return 'unexpected';
+  if (details?.feedback) return 'feedback';
+  if (
+    details?.relatedExplanation ||
+    details?.unconfirmedPoint ||
+    details?.explainedContent ||
+    details?.notYetExplainedContent ||
+    insight.summary
+  ) {
+    return 'question';
+  }
+  return null;
+}
+
+function insightCardType(insight: CommentInsight): CommentInsightCommentType | null {
+  const details = insight.details;
+  if (details?.commentType) return details.commentType;
+  const oldTypes = details?.commentTypes ?? [];
+  if (oldTypes.includes('trouble')) return 'trouble';
+  if (oldTypes.includes('question')) return 'question';
+  if (oldTypes.includes('unexpected')) return 'unexpected';
+  if (oldTypes.includes('feedback')) return 'feedback';
+  return legacyCommentType(insight);
+}
+
+function insightCardLabel(insight: CommentInsight): string | null {
+  const type = insightCardType(insight);
+  return type ? COMMENT_TYPE_LABELS[type] : null;
+}
+
+function insightQuestionRows(insight: CommentInsight): { label: string; text: string }[] {
+  if (insightCardType(insight) !== 'question') return [];
+  const details = insight.details;
+  const explained = details?.explainedContent ?? details?.relatedExplanation ?? insight.summary;
+  const notYetExplained = details?.notYetExplainedContent ?? details?.unconfirmedPoint;
+  return [
+    explained ? { label: '説明した内容', text: explained } : null,
+    notYetExplained ? { label: '説明前の内容', text: notYetExplained } : null,
+  ].filter((row): row is { label: string; text: string } => row !== null);
 }
 
 export default function Teach() {
@@ -220,7 +253,7 @@ export default function Teach() {
           prev.some((r) => r.id === item.id) ? prev : [item, ...prev]
         );
       });
-      // コメント・振り返り（コメント到着時とAI分析完成時に同じidで届く → 上書き）
+      // コメント到着時とAI整理完了時に同じidで届くため、同じカードを更新する
       socket.on('comment_insight', (p) => {
         setInsights((prev) => [p, ...prev.filter((x) => x.id !== p.id)].sort(compareInsights));
       });
@@ -265,7 +298,7 @@ export default function Teach() {
         setButtons(detail.reactionButtons);
         setStatus(detail.status);
 
-        // コメント・振り返りとリアクションを復元（リロード・再接続対応）
+        // コメントとリアクションを復元する（再読み込み・再接続対応）
         const [ins, rec] = await Promise.all([
           api<CommentInsight[]>(`/api/lessons/${lessonId}/comment-insights`),
           api<{ items: ReactionFeedItem[] }>(`/api/lessons/${lessonId}/reactions`),
@@ -1006,12 +1039,11 @@ export default function Teach() {
           </div>
         </div>
 
-        {/* サイドバーはコメント・振り返り専用。授業中に一番読みたいものが
-            他のパネルに押し下げられて見えなくなっていたため、他は窓へ出した */}
+        {/* コメントは授業中に確認できるよう、他のツールとは分けて常に表示する */}
         <aside className="sidebar">
           <div className="card feed-card">
             <h3>
-              生徒コメント
+              コメント
               {openInsightCount > 0 && <span className="feed-count">{openInsightCount}</span>}
               {insights.length > 0 && openInsightCount === 0 && (
                 <span className="feed-count feed-count-done">すべて対応済み</span>
@@ -1027,25 +1059,34 @@ export default function Teach() {
               )}
               {insights.map((p) => (
                 <div key={p.id} className={p.resolved ? 'insight-card resolved' : 'insight-card'}>
-                  {slideNoOf(p.slideId) && (
-                    <span className="insight-slide">
-                      スライド {slideNoOf(p.slideId)}
-                      {slideNoOf(p.slideId) !== currentIndex + 1 && (
-                        <button
-                          className="btn-link"
-                          onClick={() => p.slideId && changeSlideTo(p.slideId)}
-                          title="そのスライドへ戻ります（生徒の画面も動きます）"
-                        >
-                          そこへ戻る
-                        </button>
+                  {(slideNoOf(p.slideId) || (p.status === 'ready' && insightCardLabel(p))) && (
+                    <div className="insight-card-header">
+                      {slideNoOf(p.slideId) && (
+                        <span className="insight-slide">
+                          スライド {slideNoOf(p.slideId)}
+                          {slideNoOf(p.slideId) !== currentIndex + 1 && (
+                            <button
+                              className="btn-link"
+                              onClick={() => p.slideId && changeSlideTo(p.slideId)}
+                              title="そのスライドへ戻ります（生徒の画面も動きます）"
+                            >
+                              そこへ戻る
+                            </button>
+                          )}
+                        </span>
                       )}
-                    </span>
+                      {p.status === 'ready' && insightCardLabel(p) && (
+                        <span className="point-label insight-card-type">{insightCardLabel(p)}</span>
+                      )}
+                    </div>
                   )}
                   {p.comments.map((c) => (
                     <div key={c.reactionId} className="insight-comment">
                       <span className="feed-time">{fmtClock(c.tMs)}</span>
                       <span className="feed-name">{c.participantName}</span>
-                      <span className="feed-body">{c.text}</span>
+                      <div className="insight-comment-body">
+                        <span className="feed-body">{c.text}</span>
+                      </div>
                     </div>
                   ))}
                   {p.status === 'pending' && (
@@ -1056,15 +1097,12 @@ export default function Teach() {
                   )}
                   {p.status === 'ready' && (
                     <>
-                      {insightDetailRows(p).map((row) => (
+                      {insightQuestionRows(p).map((row) => (
                         <div key={row.label} className="insight-detail-row">
                           <span className="point-label">{row.label}</span>
                           <p className="point-text">{row.text}</p>
                         </div>
                       ))}
-                      {aiSettings.commentAnalysis && insightDetailRows(p).length === 0 && (
-                        <p className="muted small insight-status">整理して表示する項目はありません</p>
-                      )}
                       {/* 周辺の反応は詳細内に置き、コメントを読むときの情報量を抑える */}
                       {Object.keys(p.kinds).length > 0 && (
                         <details className="insight-more">

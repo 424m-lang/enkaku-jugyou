@@ -21,7 +21,7 @@ export const config = {
   // インターネットに公開する場合は、勝手に登録されてAI利用料が出るのを防ぐために設定する
   registerCode: process.env.REGISTER_CODE || '',
 
-  // AIプロバイダ
+  // AIプロバイダー
   transcribeProvider: (process.env.TRANSCRIBE_PROVIDER || 'mock') as 'mock' | 'openai',
   summaryProvider: (process.env.SUMMARY_PROVIDER || 'mock') as 'mock' | 'anthropic' | 'openai',
   anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
@@ -29,7 +29,7 @@ export const config = {
   openaiApiKey: process.env.OPENAI_API_KEY || '',
   openaiModel: process.env.OPENAI_MODEL || 'gpt-5.6-luna',
 
-  // コメント・振り返り: 分析対象は「入力開始時刻のこの時間前」〜「コメント送信時刻」
+  // コメント整理: 対象は「入力開始時刻のこの時間前」〜「コメント送信時刻」
   insightWindowBeforeMs: Number(process.env.INSIGHT_WINDOW_BEFORE_MS ?? 90_000),
   // 分析範囲がこの間隔以内で近接する既存カードを「同じ事柄か」の統合判定にかける
   insightMergeGapMs: Number(process.env.INSIGHT_MERGE_GAP_MS ?? 30_000),

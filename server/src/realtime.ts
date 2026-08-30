@@ -812,7 +812,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       });
 
       // 開始前の書き込みも記録する（tMsは0＝「授業が始まった時点で既に書いてあった」）。
-      // 板書を準備してから授業を始める使い方があり、開いたまま放置して
+      // スライドへの書き込みを準備してから授業を始める使い方があり、開いたまま放置して
       // 読み込み直したときに消えてしまうのを防ぐ
       socket.on('stroke', async (p) => {
         try {
@@ -1134,7 +1134,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       }));
 
       // コメント入力中の合図: 最初の合図の時刻を「入力開始時刻」として記録し、
-      // コメント・振り返りのAI分析対象の音声範囲を決めるのに使う
+      // コメント整理の対象となる音声範囲を決めるために使用する
       socket.on('comment_composing', (p) => {
         if (s.status !== 'live') return;
         const pid = socket.data.participantId;
@@ -1321,7 +1321,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
 }
 
 function isScreenLayout(v: string): v is ScreenLayout {
-  return v === 'slide' || v === 'video' || v === 'slide-only';
+  return v === 'slide' || v === 'outside' || v === 'video' || v === 'slide-only';
 }
 
 function isPollType(v: unknown): v is PollType {

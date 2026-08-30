@@ -230,7 +230,7 @@ export const reactions = pgTable(
   (t) => [index('reactions_lesson_t_idx').on(t.lessonId, t.tMs)]
 );
 
-// コメント・振り返り: 生徒コメントを起点に、入力開始時刻周辺の音声のAI分析結果を
+// コメント整理: 生徒コメントを起点に、入力開始時刻付近の音声のAI整理結果を
 // 1枚のカードとして保存する（授業中に生成し、再接続時はここから復元）
 export const commentInsights = pgTable(
   'comment_insights',
@@ -245,7 +245,7 @@ export const commentInsights = pgTable(
     comments: jsonb('comments').$type<InsightComment[]>().notNull(),
     kinds: jsonb('kinds').$type<ReactionCounts>().notNull(),
     summary: text('summary'), // コメントに関連する先生の話の重要ポイント
-    // 先生画面に表示する5項目。旧データは summary を「関連する説明」として表示する
+    // カードの分類と、質問に関係する説明。移行前の形式も互換表示する
     details: jsonb('details').$type<CommentInsightDetails>(),
     status: text('status', { enum: ['pending', 'ready', 'failed'] })
       .notNull()

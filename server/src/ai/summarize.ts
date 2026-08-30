@@ -1,5 +1,5 @@
 import { config } from '../config';
-import type { CommentInsightDetails } from '@shared';
+import type { CommentInsightCommentType, CommentInsightDetails } from '@shared';
 
 async function callClaude(system: string, user: string, maxTokens: number): Promise<string> {
   const { default: Anthropic } = await import('@anthropic-ai/sdk');
@@ -78,7 +78,7 @@ export function stripTrailingNoise(text: string): string {
     .join('\n');
 }
 
-/** 設定されたプロバイダで要約LLMを呼ぶ。戻り値の第2要素は表示用のプロバイダ名 */
+/** 設定されたプロバイダーで要約LLMを呼ぶ。戻り値の第2要素は表示用のプロバイダー名 */
 async function callSummaryLLM(
   system: string,
   user: string,
@@ -104,8 +104,8 @@ async function callSummaryLLM(
   return null; // mock にフォールバック
 }
 
-/** コメントに関連する説明を授業内から特定できない場合の定型文 */
-export const TOPIC_NOT_COVERED_MESSAGE = '関連する説明を確認できませんでした。';
+/** 質問に関係する説明を授業内から特定できない場合の定型文 */
+export const TOPIC_NOT_COVERED_MESSAGE = 'この質問に関係する内容は、まだ説明されていません。';
 
 function parseJsonObject(raw: string): Record<string, unknown> | null {
   const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
@@ -129,10 +129,39 @@ function detailValue(value: unknown): string | null {
   return text || null;
 }
 
+const COMMENT_TYPES = new Set<CommentInsightCommentType>([
+  'question',
+  'trouble',
+  'unexpected',
+  'feedback',
+]);
+
+function fallbackCommentType(text: string): CommentInsightCommentType {
+  if (/聞こえ|音が|見え|映ら|接続|つなが|止ま|固ま|操作でき|開けな|切れて/.test(text)) {
+    return 'trouble';
+  }
+  if (/テスト範囲|試験範囲|提出期限|休講|成績/.test(text)) return 'unexpected';
+  if (/分かりやす|わかりやす|よかった|良かった|難しかった|感想|理解でき/.test(text)) {
+    return 'feedback';
+  }
+  return 'question';
+}
+
+function commentType(value: unknown, comments: string[]): CommentInsightCommentType {
+  if (COMMENT_TYPES.has(value as CommentInsightCommentType)) {
+    return value as CommentInsightCommentType;
+  }
+  const types = comments.map(fallbackCommentType);
+  if (types.includes('trouble')) return 'trouble';
+  if (types.includes('question')) return 'question';
+  if (types.includes('unexpected')) return 'unexpected';
+  return 'feedback';
+}
+
 /**
- * 生徒コメントを、先生が短時間で確認できる5項目へ整理する。
- * 先生への助言は作らず、コメント原文と授業内の説明から
- * 確認できる情報だけを返す。該当しない項目は null とする。
+ * 生徒コメントをまとめたカードの種類を判定し、質問には授業内の説明を補う。
+ * 困りごと・授業外・意見や感想は原文だけを表示するため、言い換えは作らない。
+ * 先生への助言は作らず、コメント原文と授業内の説明から確認できる情報だけを返す。
  */
 export async function analyzeCommentForTeacher(
   transcriptText: string,
@@ -142,23 +171,28 @@ export async function analyzeCommentForTeacher(
   const result = await callSummaryLLM(
     [
       'あなたは、授業中に届いた生徒コメントを先生が短時間で確認できる形に整理します。',
-      '返す項目は次の5つです。該当しない項目には null を入れてください。',
-      '- relatedExplanation: コメントに関係し、先生がすでに説明した内容',
-      '- unconfirmedPoint: コメントで尋ねられたうち、先生の説明から確認できない内容',
-      '- outsideLesson: 授業の内容との関係を確認できない質問',
-      '- trouble: 音が聞こえない、画面が見えない、操作できないなどの受講上の支障',
-      '- feedback: 質問ではない意見または感想',
+      '返す項目は次の3つです。',
+      '- commentType: カード全体の種類を1つ返します',
+      '  - question: 授業内容について説明を求める、または理解を確かめる内容',
+      '  - trouble: 音・画面・接続・操作など、受講中の支障',
+      '  - unexpected: 授業内容との関係を確認できない質問や連絡',
+      '  - feedback: 質問ではない意見または感想',
+      '- explainedContent: question に関係し、先生がすでに説明した内容',
+      '- notYetExplainedContent: question で尋ねられたうち、先生がまだ説明していない内容',
       '',
       '書き方:',
-      '- 各値は60文字程度までの簡潔な内容にします。分類名は値に繰り返しません。',
+      '- commentType には4種類のうち1つだけを入れます。複数のコメントは同じ話題として1枚にまとまっています。',
+      '- explainedContent と notYetExplainedContent は、commentType が question でない場合は null にします。',
+      '- 複数のコメントがある場合も、explainedContent と notYetExplainedContent はカード全体をまとめた値を1つずつ返します。',
+      '- explainedContent と notYetExplainedContent は80文字程度までの簡潔な内容にします。',
+      '- 困りごと・授業外・意見や感想の言い換えや要約は作りません。',
       '- 先生への提案、指示、評価は書きません。「確認が必要です」「〜してください」などは使用しません。',
       '- コメント原文に無い困りごとや感情を推測しません。',
       '- 先生の説明に無い知識を補いません。',
-      '- relatedExplanationFound が false の場合、relatedExplanation は必ず null にします。',
-      '- outsideLesson は、コメント自体から授業外の話題だと明確に分かる場合だけ使用します。判断できない場合は unconfirmedPoint を使用します。',
-      '- 1つのコメントが複数項目に該当する場合は、複数の値を入れて構いません。',
+      '- relatedExplanationFound が false の場合、explainedContent は必ず null にします。',
+      '- unexpected は、コメント自体から授業内容との関係を確認できないと明確に分かる場合だけ使用します。',
       '',
-      'JSONオブジェクトだけを返してください。キーは relatedExplanation, unconfirmedPoint, outsideLesson, trouble, feedback の5つです。',
+      'JSONオブジェクトだけを返してください。キーは commentType, explainedContent, notYetExplainedContent の3つです。',
     ].join('\n'),
     `relatedExplanationFound: ${relatedExplanationFound}\n\n関連する説明:\n${transcriptText.slice(0, 30_000) || '(確認できませんでした)'}\n\n生徒のコメント:\n${comments.map((c, i) => `${i + 1}. ${c}`).join('\n')}`,
     900,
@@ -167,32 +201,25 @@ export async function analyzeCommentForTeacher(
   if (result) {
     const parsed = parseJsonObject(result.text);
     if (parsed) {
+      const type = commentType(parsed.commentType, comments);
       return {
-        relatedExplanation: relatedExplanationFound
-          ? detailValue(parsed.relatedExplanation)
+        commentType: type,
+        explainedContent: type === 'question' && relatedExplanationFound
+          ? detailValue(parsed.explainedContent)
           : null,
-        unconfirmedPoint: detailValue(parsed.unconfirmedPoint),
-        outsideLesson: detailValue(parsed.outsideLesson),
-        trouble: detailValue(parsed.trouble),
-        feedback: detailValue(parsed.feedback),
+        notYetExplainedContent: type === 'question'
+          ? detailValue(parsed.notYetExplainedContent)
+          : null,
       };
     }
   }
 
-  // モック環境では外部知識を補わず、原文から明確に確認できる項目だけを返す。
-  const joined = comments.join(' / ').slice(0, 180);
-  const trouble = /聞こえ|音が|見え|映ら|接続|つなが|止ま|固ま|操作でき|開けな/.test(joined)
-    ? joined
-    : null;
-  const feedback = /分かりやす|わかりやす|よかった|良かった|難しかった|感想/.test(joined)
-    ? joined
-    : null;
+  // モック環境ではカードの分類だけを行い、外部知識を使った言い換えは作らない。
+  const type = commentType(null, comments);
   return {
-    relatedExplanation: null,
-    unconfirmedPoint: !trouble && !feedback ? TOPIC_NOT_COVERED_MESSAGE : null,
-    outsideLesson: null,
-    trouble,
-    feedback,
+    commentType: type,
+    explainedContent: null,
+    notYetExplainedContent: type === 'question' ? TOPIC_NOT_COVERED_MESSAGE : null,
   };
 }
 

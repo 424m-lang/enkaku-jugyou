@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import QRCode from 'qrcode';
 import type { AudioFormat, CaptionLine, LessonSummary, PointerPayload } from '@shared';
+import { outsideDockFor } from '@shared';
 import { api } from '../../lib/api';
 import { LiveAudioPlayer } from '../../lib/audio';
 import { LiveVideoPlayer } from '../../lib/camera';
@@ -281,10 +282,15 @@ export default function Screen() {
 
   // 授業前は参加用QRを出し、授業が始まってからスライドを映す
   const inLesson = status === 'live' && !!currentSlide;
-  // 小窓の置き場所は先生が教室に合わせて決める（教卓や掲示物と重なるのを避けるため）
+  // 小さい表示とスライド外の映像枠は、先生がプレビューで指定した位置へ置く
   const pipStyle = { '--pip-x': pipPos.x, '--pip-y': pipPos.y } as React.CSSProperties;
   const showVideo = inLesson && cameraOn && videoLive && screenLayout !== 'slide-only';
   const videoMain = showVideo && screenLayout === 'video';
+  const videoOutside = showVideo && screenLayout === 'outside';
+  const outsideDock = outsideDockFor(pipPos);
+  const stageClassName = videoOutside
+    ? `screen-stage screen-stage-outside screen-stage-outside-${outsideDock}`
+    : 'screen-stage';
   const slideEl = currentSlide ? (
     <SlideCanvas
       pdf={pdf}
@@ -297,14 +303,22 @@ export default function Screen() {
 
   return (
     <div className="screen-page" onMouseMove={showControls} onClick={showControls}>
-      <div className="screen-stage">
+      <div className={stageClassName}>
         {inLesson && !videoMain && <div className="screen-main">{slideEl}</div>}
         {/*
           video要素は常に置いておく。作り直すとMediaSourceが張り直しになり
           映像と音が途切れるため、隠すときもDOMからは外さない
         */}
         <div
-          className={showVideo ? (videoMain ? 'screen-main' : 'screen-sub') : 'screen-hidden'}
+          className={
+            showVideo
+              ? videoMain
+                ? 'screen-main'
+                : videoOutside
+                  ? `screen-outside-video screen-outside-video-${outsideDock}`
+                  : 'screen-sub'
+              : 'screen-hidden'
+          }
           style={pipStyle}
         >
           <video ref={videoElRef} className="screen-video" playsInline autoPlay />
