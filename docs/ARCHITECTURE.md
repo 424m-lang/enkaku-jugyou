@@ -29,7 +29,7 @@ flowchart LR
   SRV["Node プロセス<br/>Fastify + Socket.IO"]
   DB[("PostgreSQL<br/>または PGlite")]
   FS[("DATA_DIR<br/>PDF・録音")]
-  AI["OpenAI / Anthropic"]
+  AI["外部AI API"]
 
   T -->|"音声・映像・操作"| SRV
   SRV -->|"配信"| S
@@ -156,6 +156,17 @@ flowchart TD
 `client/src/lib/liveMedia.ts`の`LiveMediaPlayer`が、MediaSourceへデータを渡します。
 遅延が増加した場合は`catchUp()`で再生速度を上げ、差が大きい場合はシークします。
 
+### 教室モニターの映像配置
+
+`ScreenLayout`には、`slide`、`outside`、`video`、`slide-only`の4種類があります。
+`outside`では、`PipPos`から最も近い上下左右の辺を`outsideDockFor()`で選び、
+スライドの表示範囲と重ならない位置へカメラ映像を配置します。
+
+教室モニターの画面で映像用の領域を確保するのは、`cameraOn`と`videoLive`がともに有効な場合だけです。
+カメラが停止している場合、映像データを受信できない場合、または`slide-only`の場合は、
+スライドを画面全体に表示します。生徒画面の映像はスライド上の小さい表示であり、
+映像を閉じた場合や受信対象外の場合もスライドの表示範囲は変わりません。
+
 ### 形式の振り分け
 
 配信形式は、受信端末が再生できる形式に応じて決定します。設計理由と実測値は、
@@ -188,8 +199,18 @@ Opusを生成できない場合はAACへ切り替わり、生徒側の通信量�
 
 ## AIのパイプライン
 
-文字起こしと要約のプロバイダーは切り替えられます。`TRANSCRIBE_PROVIDER` / `SUMMARY_PROVIDER`を`mock`にすると、
-APIキーを使用せずに一連の処理を確認できます。
+### AIプロバイダーの切り替え
+
+現在の本番構成では、文字起こしと要約の両方にOpenAIを使用します。
+文字起こしは`TRANSCRIBE_PROVIDER=openai`、要約は`SUMMARY_PROVIDER=openai`で設定します。
+
+要約処理にはAnthropicへ切り替える実装もあります。`SUMMARY_PROVIDER=anthropic`と
+`ANTHROPIC_API_KEY`を設定すると使用できます。文字起こしは区間情報が必要なため、OpenAI Whisperを使用します。
+
+開発時は、`TRANSCRIBE_PROVIDER`と`SUMMARY_PROVIDER`を`mock`にすると、
+APIキーを使用せずに一連の処理を確認できます。本番向けの案内では、現在使用しているOpenAIだけを記載しています。
+
+### 処理の流れ
 
 ```mermaid
 flowchart TD
@@ -200,7 +221,7 @@ flowchart TD
   S -->|"コメント整理を使用"| D["コメント到着"]
   D --> E["未処理の直近だけ追加で文字起こし"]
   E --> C
-  C --> F["commentInsights<br/>5項目に整理・統合"]
+  C --> F["commentInsights<br/>カードを分類・質問を補足・統合"]
   F --> G["先生画面のカード"]
   S -->|"授業後の機能を使用"| H["ensureFullTranscript<br/>不足する範囲だけ文字起こし"]
   C --> H
@@ -212,7 +233,7 @@ flowchart TD
 | `ai/audio.ts` | ffmpegで指定区間のWAVを切り出します。複数パートにまたがる場合はタイムラインに従って合成します |
 | `ai/transcribe.ts` | Whisperへ音声を送信します。無音区間は送信しません |
 | `ai/vocabPrompt.ts` | 授業タイトルとPDF本文から、140字以内の用語ヒントを作成します |
-| `ai/summarize.ts` | 要約・発言箇所の特定・同一話題の判定・コメントの5項目への整理を行い、文章出力末尾の無関係な文字を除去します |
+| `ai/summarize.ts` | 要約・発言箇所の特定・同一話題の判定・コメントカードの分類・質問への補足を行い、文章出力末尾の無関係な文字を除去します |
 | `ai/fullTranscript.ts` | 授業全体の文字起こしをまとめます |
 | `live/liveTranscript.ts` | コメント整理または字幕履歴の補正を使用する授業で、5分間隔、15秒の重なりで文字起こしを保存します |
 | `live/commentInsights.ts` | コメントを分析してカードを作成します |
@@ -220,11 +241,20 @@ flowchart TD
 
 ライブ字幕にはブラウザの音声認識を使用します。字幕履歴の補正を選択した授業では、履歴をWhisperの文字起こしと照合します。
 
-### コメントの5項目
+### コメントの分類と質問への補足
 
-`comment_insights.details`には、`relatedExplanation`、`unconfirmedPoint`、`outsideLesson`、
-`trouble`、`feedback`をJSONで保存します。先生画面では、それぞれ「関連する説明」「確認できない点」
-「授業外」「困りごと」「意見・感想」として、値がある項目だけを表示します。
+`comment_insights.details`には、カード全体の`commentType`と、質問用の
+`explainedContent`、`notYetExplainedContent`をJSONで保存します。
+`commentType`の値は`question`、`trouble`、`unexpected`、`feedback`です。
+先生画面では、それぞれ「質問」「困りごと」「授業外」「意見・感想」のチップとしてカードに1つ表示します。
+
+`explainedContent`と`notYetExplainedContent`は質問があるカードだけで使用し、
+「説明した内容」「説明前の内容」として、それぞれ最大1つ表示します。複数の原文をまとめたカードでは、
+カード全体に対する補足を保存します。困りごと・授業外・意見や感想は、
+AIによる言い換えを表示せず、チップと原文だけを表示します。
+
+移行前の保存データにある`commentTypes`、`relatedExplanation`、`unconfirmedPoint`、`outsideLesson`、
+`trouble`、`feedback`は削除せず、クライアントで新しい表示へ読み替えます。
 
 LLMへ渡すものは、コメント本文と関連する発話の文字起こしです。生徒の名前、参加者ID、端末情報、PDF本文は渡しません。
 プロンプトでは、先生への提案・指示・評価を出力せず、コメントに含まれない困りごとを推測しないよう指定しています。
@@ -283,7 +313,7 @@ LLMの出力では、文末に無関係なトークンが付く場合があり�
 | `participants` | 参加者。名前のみ（未入力なら `anonymousName.ts` が配る仮名） |
 | `timeline_events` | 授業の再現と振り返りに使用する操作（`t_ms`付き） |
 | `reactions` | ボタン反応とコメント |
-| `comment_insights` | コメント整理のカードと5項目の内容 |
+| `comment_insights` | コメント整理のカード、カードの分類、質問への補足 |
 | `reflection_points` | 旧「振り返りタイム」の通知。いまは読み書きしていない（過去データのために残置） |
 | `comment_clips` | 反応に対応する音声の参照（コピーではありません） |
 | `review_chapters` | 復習動画の章 |
@@ -506,7 +536,7 @@ mockは固定の応答を返し、外部サービスへ情報を送信しませ�
 
 | 利用できる機能 | 利用できない機能 |
 |---|---|
-| 配信・書き込み・反応・コメント・タスク・アンケート・録音・振り返りの再生・ライブ字幕・復習動画の手動編集 | コメントの5項目への整理・字幕履歴のWhisper補正・AI要約・復習動画の自動章分け |
+| 配信・書き込み・反応・コメント・タスク・アンケート・録音・振り返りの再生・ライブ字幕・復習動画の手動編集 | コメントカードの分類と質問への補足・字幕履歴のWhisper補正・AI要約・復習動画の自動章分け |
 
 この構成は、APIキーを使用しない画面確認と、外部サービスへ情報を送信できない環境で使用します。
 字幕はブラウザの音声認識を使用するため、この設定とは別に動作します。
