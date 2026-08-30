@@ -85,10 +85,11 @@ async function loadLiveLines(lessonId: string): Promise<{ tMs: number; text: str
  * 突き合わせる相手がいないため、Whisperをそのまま並べる。
  */
 export async function captionHistory(s: LiveSession): Promise<CaptionLine[]> {
-  const [segments, liveLines] = await Promise.all([
-    loadWhisperSegments(s.lessonId),
-    loadLiveLines(s.lessonId),
-  ]);
+  const liveLines = await loadLiveLines(s.lessonId);
+  if (!s.aiSettings.whisperCaptionHistory) {
+    return liveLines.map((line) => ({ ...line, source: 'live' as const }));
+  }
+  const segments = await loadWhisperSegments(s.lessonId);
 
   const notHallucination = (text: string) => !HALLUCINATION_PHRASES.has(text.trim());
 

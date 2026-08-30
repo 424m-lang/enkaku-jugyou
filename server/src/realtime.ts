@@ -51,6 +51,7 @@ import {
   setTasks,
   setTaskConfig,
   setTaskProgress,
+  setAiSettings,
   taskProgressOf,
   listTaskProgress,
   tMs,
@@ -75,6 +76,7 @@ import {
   restoreLiveTranscript,
   startLiveTranscription,
   stopLiveTranscription,
+  usesRollingTranscription,
 } from './live/liveTranscript';
 
 /** コメント入力中の合図がこの時間途絶えたら入力をやめたとみなす */
@@ -492,8 +494,8 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       io.to(teacherRoom).emit('caption_users', captionUserCount(s));
     };
 
-    // 受け手の顔ぶれが変わるたびに、いま必要な形式を先生へ伝え直す。
-    // 誰も受け取っていない形式は止めさせ、その分の符号化と通信量を使わせない。
+    // 受信端末の構成が変わるたびに、必要な形式を先生へ通知する。
+    // 受信端末がない形式を停止し、不要な符号化と通信を避ける。
     //
     // **ここでヘッダ（avStreams）を捨ててはいけない**。受け手が一瞬いなくなった
     // だけでもヘッダが消え、戻ってきた相手に何も渡せなくなる。ヘッダが作り直されるのは
@@ -518,7 +520,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
     // （形式未申告の相手には従来のWebMを既定にしておく）
     socket.emit('lesson_state', toLiveState(s));
     socket.emit('av_state', avState());
-    // 受け手が増えたので、先生に「いま必要な形式」を配り直す
+    // 受信端末の追加後に、必要な形式を先生へ再通知する
     sendAvFormats();
     sendAudioFormats();
     if (role === 'teacher') socket.emit('caption_users', captionUserCount(s));
@@ -565,7 +567,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
 
     // サーバ再起動後などで文字起こしがまだ動いていなければ復元して再開する。
     // タイマーを同期的に張ってから復元することで、複数接続でも二重起動しない
-    if (s.status === 'live' && s.transcribeTimer === null) {
+    if (s.status === 'live' && usesRollingTranscription(s) && s.transcribeTimer === null) {
       startLiveTranscription(s);
       void restoreLiveTranscript(s).catch((err) => app.log.error(err));
     }
@@ -634,7 +636,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
               receiver.data.telemetryAudioWaitingAt = Date.now();
             }
           }
-          startLiveTranscription(s); // 裏で文字起こしを貯め始める
+          startLiveTranscription(s); // 選択した機能で必要な場合だけ、文字起こしの定期保存を開始する
           io.to(room).emit('lesson_started');
           io.to(room).emit('lesson_state', toLiveState(s));
           cb({ ok: true });
@@ -659,8 +661,10 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           io.to(room).emit('lesson_ended');
           io.to(room).emit('lesson_state', toLiveState(s));
           cb({ ok: true });
-          // 最後まで文字起こしを追いつかせる（終了間際のコメント要約のため。失敗は無視）
-          void ensureTranscribedUntil(s, endMs).catch((err) => app.log.error(err));
+          // 終了間際のコメント分析・字幕履歴で必要な場合だけ、最後まで追いつかせる
+          if (usesRollingTranscription(s)) {
+            void ensureTranscribedUntil(s, endMs).catch((err) => app.log.error(err));
+          }
         } catch (err) {
           app.log.error(err);
           cb({ ok: false, error: '終了に失敗しました' });
@@ -910,6 +914,27 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         } catch (err) {
           app.log.error(err);
           cb({ ok: false });
+        }
+      }));
+
+      socket.on('set_ai_settings', withAck(async (p, cb) => {
+        try {
+          if (
+            !p ||
+            typeof p.commentAnalysis !== 'boolean' ||
+            typeof p.whisperCaptionHistory !== 'boolean' ||
+            typeof p.lessonSummary !== 'boolean' ||
+            typeof p.reviewChapters !== 'boolean'
+          ) {
+            return cb({ ok: false, error: '設定が不正です' });
+          }
+          const { error } = await setAiSettings(s, p);
+          if (error) return cb({ ok: false, error });
+          io.to(room).emit('lesson_state', toLiveState(s));
+          cb({ ok: true });
+        } catch (err) {
+          app.log.error(err);
+          cb({ ok: false, error: '設定を保存できませんでした' });
         }
       }));
 
@@ -1424,8 +1449,8 @@ function broadcastScreenCount(io: TypedServer, room: string, teacherRoom: string
  * 参加者1人分の変化だけを先生へ送る（入室・退室）。
  *
  * 全件を送る broadcastParticipants() と違い、**DBもソケット一覧も見ない**。
- * 名前も設定も、いま扱っているソケットとメモリ上の授業から分かるため。
- * 入退室のたびに全件を作り直すと人数の二乗で効くので、ここは1人分に絞る。
+ * 名前と設定は、処理中のソケットとメモリ上の授業から取得できる。
+ * 入退室のたびに全件を作り直す処理を避け、変更された1人分だけを送信する。
  */
 function sendParticipantChange(
   io: TypedServer,

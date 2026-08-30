@@ -154,6 +154,9 @@ export async function reviewVideoRoutes(app: FastifyInstance): Promise<void> {
       const { id } = req.params as { id: string };
       const lesson = await ownLesson(req, reply, id);
       if (!lesson) return;
+      if (!lesson.aiSettings.reviewChapters) {
+        return reply.code(409).send({ error: 'この授業では復習動画の自動章分けを使用しない設定です' });
+      }
       const durationMs = lesson.audioDurationMs ?? 0;
       if (durationMs <= 0) return reply.code(409).send({ error: '録音がありません' });
 
@@ -328,6 +331,9 @@ export async function reviewVideoRoutes(app: FastifyInstance): Promise<void> {
       const { id, chapterId } = req.params as { id: string; chapterId: string };
       const lesson = await ownLesson(req, reply, id);
       if (!lesson) return;
+      if (!lesson.aiSettings.reviewChapters) {
+        return reply.code(409).send({ error: 'この授業では復習動画の自動章分けを使用しない設定です' });
+      }
       const [cur] = await db
         .select()
         .from(schema.reviewChapters)

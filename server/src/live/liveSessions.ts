@@ -6,6 +6,7 @@ import type {
   AudioFormat,
   AudioMode,
   LessonTask,
+  LessonAiSettings,
   LessonTelemetry,
   LiveLessonState,
   LessonStatus,
@@ -25,7 +26,12 @@ import type {
   TranscriptSegment,
   VideoFormat,
 } from '@shared';
-import { DEFAULT_PIP_POS, MAX_TASKS, applyTaskChange } from '@shared';
+import {
+  DEFAULT_LESSON_AI_SETTINGS,
+  DEFAULT_PIP_POS,
+  MAX_TASKS,
+  applyTaskChange,
+} from '@shared';
 import { db, schema } from '../db';
 import { lessonDir } from '../storage';
 import { loadPolls, loadPollAnswers, toPublicPoll } from './polls';
@@ -81,6 +87,8 @@ export type LiveSession = {
   reactionButtons: ReactionButtonDef[];
   /** ボタンを使わない授業では false。定義（reactionButtons）は消さずに残す */
   reactionsEnabled: boolean;
+  /** 授業前に先生が選んだAI機能。開始後は変更しない */
+  aiSettings: LessonAiSettings;
   startedAtEpochMs: number | null;
   slides: SlideInfo[];
   currentSlideId: string | null;
@@ -255,6 +263,7 @@ async function loadSession(lessonId: string): Promise<LiveSession | null> {
     status: lesson.status,
     reactionButtons: lesson.reactionButtons,
     reactionsEnabled: lesson.reactionsEnabled,
+    aiSettings: lesson.aiSettings ?? DEFAULT_LESSON_AI_SETTINGS,
     startedAtEpochMs: lesson.startedAt ? lesson.startedAt.getTime() : null,
     slides,
     currentSlideId: slides[0]?.id ?? null,
@@ -445,6 +454,7 @@ export function toLiveState(s: LiveSession): LiveLessonState {
     title: s.title,
     reactionButtons: s.reactionButtons,
     reactionsEnabled: s.reactionsEnabled,
+    aiSettings: s.aiSettings,
     slides: s.slides,
     currentSlideId: s.currentSlideId,
     startedAtEpochMs: s.startedAtEpochMs,
@@ -465,6 +475,22 @@ export function toLiveState(s: LiveSession): LiveLessonState {
       return p ? toPublicPoll(p) : null;
     })(),
   };
+}
+
+/** 授業で使用するAI機能を保存する。処理条件が途中で変わらないよう、開始前だけ受け付ける */
+export async function setAiSettings(
+  s: LiveSession,
+  settings: LessonAiSettings
+): Promise<{ error?: string }> {
+  if (s.status !== 'draft') return { error: 'AI機能の設定は授業開始前に変更してください' };
+  const next = { ...settings };
+  await db
+    .update(schema.lessons)
+    .set({ aiSettings: next })
+    .where(eq(schema.lessons.id, s.lessonId));
+  // 保存に成功した設定だけを配信対象の状態へ反映する。
+  s.aiSettings = next;
+  return {};
 }
 
 /**

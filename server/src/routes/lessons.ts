@@ -55,8 +55,8 @@ function generateJoinCode(): string {
  * まだ使われていない授業コードを1つ選ぶ。空きが尽きていれば null を返す。
  *
  * 4文字・27種の文字から作るので、数字を1つ以上含む条件を満たす組み合わせは約40万通りある。
- * 一方 `lessons.join_code` は UNIQUE 制約付きで、授業が終わってもコードは解放されない
- * （授業を消す機能が無いため）。つまり作った授業の数だけ空きが減っていく方式になっている。
+ * 一方 `lessons.join_code` は UNIQUE 制約付きで、授業を削除するまではコードを再利用しない。
+ * つまり保存されている授業の数だけ空きが減っていく方式になっている。
  *
  * 学校で使う規模なら、この40万通りが埋まることは実際には起きない。
  * それでも空きを数え切れる形にしてあるのは、埋まりかけたときに
@@ -135,6 +135,7 @@ function lessonToSummary(l: typeof schema.lessons.$inferSelect) {
     endedAt: l.endedAt?.toISOString() ?? null,
     createdAt: l.createdAt.toISOString(),
     audioDurationMs: l.audioDurationMs,
+    aiSettings: l.aiSettings,
   };
 }
 

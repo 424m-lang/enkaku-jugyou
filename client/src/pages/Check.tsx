@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { LiveMediaPlayer, canPlayMime, getMediaSourceCtor } from '../lib/liveMedia';
 import { AUDIO_BITS_PER_SECOND, supportedAudioMime } from '../lib/audio';
 import { supportedVideoMime } from '../lib/camera';
+import CostEstimator from '../components/CostEstimator';
 
 /**
  * 端末チェックページ（/check）。ログインと授業コードは不要。
@@ -160,7 +161,7 @@ function speedDetail(measurement: SpeedMeasurement, requiredKbps: number): strin
   return `測定 ${formatSpeed(measurement.kbps ?? 0)}・必要な目安 ${formatSpeed(requiredKbps)}`;
 }
 
-export default function Check() {
+function DeviceCheck() {
   const navigate = useNavigate();
   const location = useLocation();
   // ショートカット（Ctrl+Alt+C）で来た場合だけ、元の画面に戻れるようにする
@@ -946,5 +947,54 @@ export default function Check() {
 
       <audio ref={audioElRef} style={{ display: 'none' }} />
     </div>
+  );
+}
+
+export default function Check() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const tab = new URLSearchParams(location.search).get('tab') === 'cost' ? 'cost' : 'device';
+  const from = (location.state as { from?: string } | null)?.from ?? null;
+
+  const changeTab = (next: 'device' | 'cost') => {
+    navigate(next === 'cost' ? '/check?tab=cost' : '/check', {
+      replace: true,
+      state: location.state,
+    });
+  };
+
+  return (
+    <>
+      <div className="check-tabs-wrap">
+        {tab === 'cost' && from && (
+          <div className="check-back">
+            <button className="btn" onClick={() => navigate(from)}>
+              ← 元の画面に戻る
+            </button>
+          </div>
+        )}
+        <div className="check-tabs" role="tablist" aria-label="端末チェックの内容">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === 'device'}
+            className={tab === 'device' ? 'btn tool-active' : 'btn'}
+            onClick={() => changeTab('device')}
+          >
+            端末チェック
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === 'cost'}
+            className={tab === 'cost' ? 'btn tool-active' : 'btn'}
+            onClick={() => changeTab('cost')}
+          >
+            料金の試算
+          </button>
+        </div>
+      </div>
+      {tab === 'cost' ? <CostEstimator /> : <DeviceCheck />}
+    </>
   );
 }

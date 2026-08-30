@@ -127,6 +127,13 @@
       "when": 1790000700000,
       "tag": "0017_lesson_telemetry",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1790000800000,
+      "tag": "0018_ai_feature_settings",
+      "breakpoints": true
     }
   ]
 }

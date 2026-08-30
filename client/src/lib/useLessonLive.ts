@@ -3,6 +3,7 @@ import type {
   AudioFormat,
   AudioMode,
   LessonStatus,
+  LessonAiSettings,
   LessonTask,
   LiveLessonState,
   PipPos,
@@ -14,7 +15,7 @@ import type {
   TaskMode,
   VideoFormat,
 } from '@shared';
-import { DEFAULT_PIP_POS } from '@shared';
+import { DEFAULT_LESSON_AI_SETTINGS, DEFAULT_PIP_POS } from '@shared';
 import { connectLessonSocket, type AppSocket } from './socket';
 import { loadLessonPdf, type PdfCache } from './pdf';
 import { rebuildStrokes, applyDrawingEvent, applyStrokeProgress, type StrokesBySlide } from './strokes';
@@ -44,6 +45,7 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
   const [buttons, setButtons] = useState<ReactionButtonDef[]>([]);
   // ボタンを使わない授業では false（定義は残るので、戻せば元のボタンが復活する）
   const [reactionsEnabled, setReactionsEnabled] = useState(true);
+  const [aiSettings, setAiSettings] = useState<LessonAiSettings>(DEFAULT_LESSON_AI_SETTINGS);
   const [slides, setSlides] = useState<SlideInfo[]>([]);
   const [currentSlideId, setCurrentSlideId] = useState<string | null>(null);
   const [strokes, setStrokes] = useState<StrokesBySlide>({});
@@ -95,6 +97,7 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
       setStatus(st.status);
       setButtons(st.reactionButtons);
       setReactionsEnabled(st.reactionsEnabled);
+      setAiSettings(st.aiSettings);
       setSlides(st.slides);
       setCurrentSlideId((cur) => st.currentSlideId ?? cur ?? st.slides[0]?.id ?? null);
       setStrokes(rebuildStrokes(st.drawingEvents));
@@ -178,6 +181,7 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
     buttons,
     setButtons,
     reactionsEnabled,
+    aiSettings,
     slides,
     setSlides,
     sortedSlides,

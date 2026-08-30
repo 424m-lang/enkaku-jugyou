@@ -413,6 +413,9 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
     const { id } = req.params as { id: string };
     const lesson = await ownLesson(req, reply, id);
     if (!lesson) return;
+    if (!lesson.aiSettings.commentAnalysis) {
+      return reply.code(409).send({ error: 'この授業ではコメントのAI整理を使用しない設定です' });
+    }
 
     const comments = await commentRows(id);
     const done = await db
@@ -605,6 +608,9 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
     const { id } = req.params as { id: string };
     const lesson = await ownLesson(req, reply, id);
     if (!lesson) return;
+    if (!lesson.aiSettings.lessonSummary) {
+      return reply.code(409).send({ error: 'この授業では授業全体のAI要約を使用しない設定です' });
+    }
     if (lesson.status !== 'ended') {
       return reply.code(409).send({ error: '授業終了後に実行できます' });
     }

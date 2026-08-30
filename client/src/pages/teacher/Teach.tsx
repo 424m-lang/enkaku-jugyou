@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import type {
   AudioFormat,
   CommentInsight,
+  LessonAiSettings,
   LessonStatus,
   ParticipantInfo,
   ReactionButtonDef,
@@ -32,6 +33,8 @@ import AudioCaptionPanel from '../../components/AudioCaptionPanel';
 import ReactionPanel from '../../components/ReactionPanel';
 import TaskPanel from '../../components/TaskPanel';
 import PollPanel from '../../components/PollPanel';
+import SlideThumb from '../../components/SlideThumb';
+import AiSettingsPanel from '../../components/AiSettingsPanel';
 
 // 黒 ＋ カラーユニバーサルデザイン（Okabe-Ito）の3色。色覚の違いがあっても見分けやすい
 const COLORS: { value: string; label: string }[] = [
@@ -66,13 +69,32 @@ function insightSortKey(p: CommentInsight): number {
 }
 
 /**
- * まだ拾っていないカードを上に、その中では新しい順に並べる。
- * 授業中に見るのは「これから答えるもの」なので、済んだものが上に残っていると
- * カードが増えるほど探す手間が増える（対応済みも消さずに下へ残す）
+ * 未対応のカードを上に、その中では新しい順に並べる。
+ * 対応済みのカードは削除せず、一覧の下部へ移動する。
  */
 function compareInsights(a: CommentInsight, b: CommentInsight): number {
   if (a.resolved !== b.resolved) return a.resolved ? 1 : -1;
   return insightSortKey(b) - insightSortKey(a);
+}
+
+const INSIGHT_DETAIL_LABELS: {
+  key: keyof NonNullable<CommentInsight['details']>;
+  label: string;
+}[] = [
+  { key: 'relatedExplanation', label: '関連する説明' },
+  { key: 'unconfirmedPoint', label: '確認できない点' },
+  { key: 'outsideLesson', label: '授業外' },
+  { key: 'trouble', label: '困りごと' },
+  { key: 'feedback', label: '意見・感想' },
+];
+
+function insightDetailRows(insight: CommentInsight): { label: string; text: string }[] {
+  return INSIGHT_DETAIL_LABELS.flatMap(({ key, label }) => {
+    const value = insight.details?.[key];
+    // 移行前のカードは summary だけを持つため、「関連する説明」として引き継ぐ。
+    const text = value ?? (key === 'relatedExplanation' ? insight.summary : null);
+    return text ? [{ label, text }] : [];
+  });
 }
 
 export default function Teach() {
@@ -85,7 +107,7 @@ export default function Teach() {
   const [taskProgress, setTaskProgress] = useState<TaskProgressEntry[]>([]);
   const [polls, setPolls] = useState<Poll[]>([]);
   const [pollResults, setPollResults] = useState<Record<string, PollResults>>({});
-  // いま生徒に見せている集計（締め切ったあとの操作なので、授業を跨いでは持たない）
+  // 現在、生徒に表示している集計（締め切り後の操作であり、別の授業へは引き継がない）
   const [revealedPollId, setRevealedPollId] = useState<string | null>(null);
   const [participantCount, setParticipantCount] = useState(0);
   const [participants, setParticipants] = useState<ParticipantInfo[]>([]);
@@ -108,6 +130,8 @@ export default function Teach() {
     reaction: false,
     task: false,
     poll: false,
+    slides: false,
+    ai: false,
   });
   const toggleWindow = useCallback((key: keyof typeof windows) => {
     setWindows((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -141,6 +165,7 @@ export default function Teach() {
     buttons,
     setButtons,
     reactionsEnabled,
+    aiSettings,
     setSlides,
     sortedSlides,
     currentSlideId,
@@ -339,9 +364,8 @@ export default function Teach() {
     audioStopRef.current?.setFormats(audioFormats);
   }, [audioFormats]);
 
-  // 授業中にこの画面を開き直した（再読み込み・端末チェックから戻った）ときは、
-  // マイクが止まったままにならないよう入れ直す。止まっていることに先生が
-  // 気づけないまま授業が進むのが一番まずいため、既定で復帰させる
+  // 授業中にこの画面を開き直した場合（再読み込み・端末チェックから戻った場合）は、
+  // 音声配信が停止したまま授業が進むことを防ぐため、マイクを自動的に再開する
   useEffect(() => {
     if (status !== 'live' || audioStopRef.current) return;
     void startAudio();
@@ -388,6 +412,33 @@ export default function Teach() {
     },
     [currentIndex, sortedSlides, changeSlideTo]
   );
+
+  // PowerPointでも使用されるキーでページを移動する。入力欄や設定項目の操作を優先する。
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('input, textarea, select, button, [contenteditable="true"]')) return;
+
+      let nextIndex: number | null = null;
+      if (['ArrowLeft', 'ArrowUp', 'PageUp'].includes(event.key)) {
+        nextIndex = currentIndex - 1;
+      } else if (['ArrowRight', 'ArrowDown', 'PageDown', 'Enter', ' '].includes(event.key)) {
+        nextIndex = currentIndex + 1;
+      } else if (event.key === 'Home') {
+        nextIndex = 0;
+      } else if (event.key === 'End') {
+        nextIndex = sortedSlides.length - 1;
+      }
+      if (nextIndex === null) return;
+      const next = sortedSlides[nextIndex];
+      if (!next) return;
+      event.preventDefault();
+      changeSlideTo(next.id);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [currentIndex, sortedSlides, changeSlideTo]);
 
   const insertBlank = useCallback(() => {
     if (!currentSlide) return;
@@ -499,8 +550,8 @@ export default function Teach() {
   // （テキスト入力欄にフォーカスがある間は入力欄自身の元に戻す機能を優先し、奪わない）
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement | null)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
       if (!(e.ctrlKey || e.metaKey)) return;
       if (e.key === 'z' || e.key === 'Z') {
         e.preventDefault();
@@ -558,7 +609,7 @@ export default function Teach() {
     return counts;
   }, [reactions, nowTick]);
 
-  // まだ拾っていないコメントの数。カードが増えても取りこぼしに気づけるようにする
+  // 未対応のコメント数。カードが増えた場合も未対応件数を確認できるようにする
   const openInsightCount = insights.filter((p) => !p.resolved).length;
 
   // ボタンを開かなくても反応があったことに気づけるよう、合計だけ外に出す
@@ -577,6 +628,15 @@ export default function Teach() {
   const setReactionsEnabledRemote = useCallback(
     (enabled: boolean) => {
       socketRef.current?.emit('set_reactions_enabled', { enabled }, () => {});
+    },
+    [socketRef]
+  );
+
+  const setAiSettingsRemote = useCallback(
+    (settings: LessonAiSettings) => {
+      socketRef.current?.emit('set_ai_settings', settings, (res) => {
+        if (!res.ok) window.alert(res.error ?? 'AI機能の設定を保存できませんでした');
+      });
     },
     [socketRef]
   );
@@ -732,6 +792,12 @@ export default function Teach() {
               onClick={() => toggleWindow('audio')}
             >
               音声・字幕設定
+            </button>
+            <button
+              className={`btn header-action ${windows.ai ? 'header-action-on' : ''}`}
+              onClick={() => toggleWindow('ai')}
+            >
+              AI機能設定
             </button>
           </div>
           <span className="muted nowrap">生徒 {participantCount}人</span>
@@ -904,6 +970,13 @@ export default function Teach() {
             <button className="btn" onClick={insertBlank} title="このスライドの直後に白紙ページを挿入">
               ＋ 白紙を挿入
             </button>
+            <button
+              className={`btn ${windows.slides ? 'tool-active' : ''}`}
+              onClick={() => toggleWindow('slides')}
+              title="スライドの一覧から移動"
+            >
+              スライド一覧
+            </button>
             {/* 授業中に出し入れする道具。窓は開いたままスライドを送れる */}
             <div className="tool-windows">
               <button
@@ -938,7 +1011,7 @@ export default function Teach() {
         <aside className="sidebar">
           <div className="card feed-card">
             <h3>
-              コメント・振り返り
+              生徒コメント
               {openInsightCount > 0 && <span className="feed-count">{openInsightCount}</span>}
               {insights.length > 0 && openInsightCount === 0 && (
                 <span className="feed-count feed-count-done">すべて対応済み</span>
@@ -947,7 +1020,9 @@ export default function Teach() {
             <div className="insight-list">
               {insights.length === 0 && (
                 <p className="muted">
-                  生徒からコメントが届くと、AIが関連する説明の要約とあわせてここに表示します
+                  {aiSettings.commentAnalysis
+                    ? '生徒からコメントが届くと、該当する項目に整理して表示します'
+                    : '生徒から届いたコメントをここに表示します'}
                 </p>
               )}
               {insights.map((p) => (
@@ -974,25 +1049,26 @@ export default function Teach() {
                     </div>
                   ))}
                   {p.status === 'pending' && (
-                    <p className="muted small insight-status">AIが関連する説明を分析中...</p>
+                    <p className="muted small insight-status">コメントを整理しています...</p>
                   )}
                   {p.status === 'failed' && (
-                    <p className="muted small insight-status">関連する説明の分析に失敗しました</p>
+                    <p className="muted small insight-status">コメントを整理できませんでした</p>
                   )}
                   {p.status === 'ready' && (
                     <>
-                      <div className="insight-sec">
-                        <span className="point-label">関連する説明</span>
-                        {p.summary ? (
-                          <p className="point-text">{p.summary}</p>
-                        ) : (
-                          <span className="muted small">録音がないため要約はありません</span>
-                        )}
-                      </div>
-                      {/* 周辺の反応は、あったときだけ出す（「なし」は読む手間だけ増やす） */}
+                      {insightDetailRows(p).map((row) => (
+                        <div key={row.label} className="insight-detail-row">
+                          <span className="point-label">{row.label}</span>
+                          <p className="point-text">{row.text}</p>
+                        </div>
+                      ))}
+                      {aiSettings.commentAnalysis && insightDetailRows(p).length === 0 && (
+                        <p className="muted small insight-status">整理して表示する項目はありません</p>
+                      )}
+                      {/* 周辺の反応は詳細内に置き、コメントを読むときの情報量を抑える */}
                       {Object.keys(p.kinds).length > 0 && (
-                        <div className="insight-sec">
-                          <span className="point-label">周辺の反応</span>
+                        <details className="insight-more">
+                          <summary>周辺の反応</summary>
                           <span className="clip-kinds">
                             {Object.entries(p.kinds).map(([k, n]) => (
                               <span
@@ -1004,7 +1080,7 @@ export default function Teach() {
                               </span>
                             ))}
                           </span>
-                        </div>
+                        </details>
                       )}
                     </>
                   )}
@@ -1014,8 +1090,8 @@ export default function Teach() {
                       onClick={() => setInsightResolved(p.id, !p.resolved)}
                       title={
                         p.resolved
-                          ? 'まだ拾えていない扱いに戻します'
-                          : 'このコメントは拾ったという印を付けます（記録は残ります）'
+                          ? '未対応に戻します'
+                          : '対応済みにします（記録は残ります）'
                       }
                     >
                       {p.resolved ? '✓ 対応済み（戻す）' : '対応済みにする'}
@@ -1075,6 +1151,46 @@ export default function Teach() {
           captionsForStudents={captionsForStudents}
           captionUsers={captionUsers}
         />
+      </FloatingWindow>
+
+      <FloatingWindow
+        title="AI機能設定"
+        open={windows.ai}
+        onClose={() => toggleWindow('ai')}
+        defaultPos={{ x: 140, y: 150 }}
+        width={440}
+      >
+        <AiSettingsPanel
+          settings={aiSettings}
+          status={status}
+          onChange={setAiSettingsRemote}
+        />
+      </FloatingWindow>
+
+      <FloatingWindow
+        title="スライド一覧"
+        open={windows.slides}
+        onClose={() => toggleWindow('slides')}
+        defaultPos={{ x: 180, y: 120 }}
+        width={620}
+      >
+        <p className="muted small slide-picker-help">
+          選択したスライドへ移動します。矢印キー、PageUp、PageDown、Space、Enter、Home、Endも使用できます。
+        </p>
+        <div className="slide-picker-grid">
+          {sortedSlides.map((slide, index) => (
+            <SlideThumb
+              key={slide.id}
+              pdf={pdf}
+              slide={slide}
+              slideNo={index + 1}
+              defer
+              selected={slide.id === currentSlideId}
+              onClick={() => changeSlideTo(slide.id)}
+              title={`スライド ${index + 1}へ移動`}
+            />
+          ))}
+        </div>
       </FloatingWindow>
 
       <FloatingWindow

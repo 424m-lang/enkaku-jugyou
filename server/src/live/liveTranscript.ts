@@ -7,18 +7,24 @@ import { transcribeRange } from '../ai/transcribe';
 import { tMs, type LiveSession } from './liveSessions';
 
 /**
- * 授業中に裏で文字起こしを貯める仕組み。
- * - 5分間隔で「前回からの新しい分」だけを文字起こしして継ぎ足す
- * - コメントが来たときは、まだ文字起こししていない直近だけを追加で文字起こしする
+ * 授業中にバックグラウンドで文字起こしを保存する仕組み。
+ * - 5分間隔で、前回以降の範囲を文字起こしして追加する
+ * - コメント受信時は、未処理の範囲だけを追加で文字起こしする
  * - 各区切りは直前を少し重ねて文字起こしし、つなぎ目の重複は取り除く
- * これにより、コメントが来た時点で授業全体の文字起こしがほぼ手元にある状態にする。
+ * コメントを受信した時点までの文字起こしを、分析に利用できる状態にする。
  */
 
-// 授業ごとに文字起こしを直列化する（定期実行とコメント時の追いつきがぶつからないように）
+// 授業ごとに文字起こしを直列化し、定期実行とコメント受信時の処理の競合を防ぐ
 const chains = new Map<string, Promise<void>>();
+
+/** 授業中に継続して文字起こしを貯める機能が選ばれているか */
+export function usesRollingTranscription(s: LiveSession): boolean {
+  return s.aiSettings.commentAnalysis || s.aiSettings.whisperCaptionHistory;
+}
 
 export function startLiveTranscription(s: LiveSession): void {
   stopLiveTranscription(s);
+  if (!usesRollingTranscription(s)) return;
   s.transcribeTimer = setInterval(() => {
     void ensureTranscribedUntil(s, tMs(s)).catch((err) =>
       console.error('[live-transcript] 定期文字起こしに失敗:', err)
@@ -33,7 +39,7 @@ export function stopLiveTranscription(s: LiveSession): void {
   }
 }
 
-/** targetMs まで文字起こしが貯まっていることを保証する（直列化・重複実行は無害） */
+/** targetMsまでの文字起こしを用意する。複数の要求は授業ごとに直列処理する */
 export async function ensureTranscribedUntil(s: LiveSession, targetMs: number): Promise<void> {
   if (targetMs <= s.transcribedUntilMs + 2000) return;
   const prev = chains.get(s.lessonId) ?? Promise.resolve();

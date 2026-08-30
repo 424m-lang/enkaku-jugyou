@@ -3,7 +3,9 @@ import { useNavigate, useParams } from 'react-router-dom';
 import type {
   ButtonClip,
   CommentClip,
+  FullTranscriptSummary,
   LessonStats,
+  LessonAiSettings,
   LessonTaskReview,
   PointerPayload,
   PollReview,
@@ -29,6 +31,7 @@ type LessonDetail = {
   reactionButtons: ReactionButtonDef[];
   slides: SlideInfo[];
   audioDurationMs: number | null;
+  aiSettings: LessonAiSettings;
 };
 
 type AudioPart = { file: string; startMs: number };
@@ -55,6 +58,20 @@ function fmtDur(ms: number): string {
   return m > 0 ? `${m}分${String(s % 60).padStart(2, '0')}秒` : `${s}秒`;
 }
 
+function LessonSummaryText({ text }: { text: string }) {
+  return (
+    <div className="lesson-summary-text">
+      {text.split('\n').map((line, index) => {
+        const heading = line.match(/^#{1,3}\s+(.+)$/);
+        if (heading) return <h5 key={index}>{heading[1]}</h5>;
+        const bullet = line.match(/^[-*]\s+(.+)$/);
+        if (bullet) return <p key={index} className="lesson-summary-bullet">• {bullet[1]}</p>;
+        return line.trim() ? <p key={index}>{line}</p> : null;
+      })}
+    </div>
+  );
+}
+
 export default function Review() {
   const { id: lessonId } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -73,6 +90,8 @@ export default function Review() {
   const [playhead, setPlayhead] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
+  const [lessonSummary, setLessonSummary] = useState<FullTranscriptSummary | null>(null);
+  const [summarizing, setSummarizing] = useState(false);
   const [video, setVideo] = useState<ReviewVideo | null>(null);
   const [generating, setGenerating] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -90,7 +109,7 @@ export default function Review() {
     if (!lessonId) return;
     (async () => {
       try {
-        const [detail, tl, bc, cc, ss, st, rv, pr, tr] = await Promise.all([
+        const [detail, tl, bc, cc, ss, st, rv, pr, tr, savedSummary] = await Promise.all([
           api<LessonDetail>(`/api/lessons/${lessonId}`),
           api<{ durationMs: number; events: TimelineEvent[] }>(`/api/lessons/${lessonId}/timeline`),
           api<ButtonClip[]>(`/api/lessons/${lessonId}/button-clips`),
@@ -100,6 +119,10 @@ export default function Review() {
           api<ReviewVideo>(`/api/lessons/${lessonId}/review-video`),
           api<{ polls: PollReview[] }>(`/api/lessons/${lessonId}/poll-review`),
           api<LessonTaskReview>(`/api/lessons/${lessonId}/task-review`),
+          api<FullTranscriptSummary>(`/api/lessons/${lessonId}/summary`).catch((err) => {
+            if (err instanceof ApiError && err.status === 404) return null;
+            throw err;
+          }),
         ]);
         setLesson(detail);
         setTimeline(tl.events);
@@ -111,6 +134,7 @@ export default function Review() {
         setVideo(rv);
         setPollReview(pr.polls);
         setTaskReview(tr);
+        setLessonSummary(savedSummary);
         const cache = await loadLessonPdf(lessonId);
         setPdf(cache);
         // ブロック分けのAIにスライドの内容も渡せるよう、本文を抽出して保存しておく
@@ -283,6 +307,24 @@ export default function Review() {
       setError(err instanceof Error ? err.message : '解析に失敗しました');
     } finally {
       setAnalyzing(false);
+    }
+  }, [lessonId]);
+
+  // ---- 授業全体の要約 ----
+  const summarizeLesson = useCallback(async () => {
+    if (!lessonId) return;
+    setSummarizing(true);
+    setError('');
+    try {
+      const result = await api<FullTranscriptSummary>(`/api/lessons/${lessonId}/summarize`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      setLessonSummary(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '授業の要約に失敗しました');
+    } finally {
+      setSummarizing(false);
     }
   }, [lessonId]);
 
@@ -661,19 +703,46 @@ export default function Review() {
                         </span>
                       ))}
                   </div>
-                  <button
-                    className="btn primary"
-                    onClick={() => void analyzeComments()}
-                    disabled={
-                      analyzing || commentClips.length === 0 || commentClips.every((c) => c.analyzed)
-                    }
-                  >
-                    {analyzing
-                      ? '解析中...（数分かかることがあります）'
-                      : commentClips.length > 0 && commentClips.every((c) => c.analyzed)
-                        ? 'コメントは解析済み'
-                        : 'AIでコメントの対象箇所を特定'}
-                  </button>
+                  {lesson?.aiSettings.commentAnalysis ? (
+                    <button
+                      className="btn primary"
+                      onClick={() => void analyzeComments()}
+                      disabled={
+                        analyzing || commentClips.length === 0 || commentClips.every((c) => c.analyzed)
+                      }
+                    >
+                      {analyzing
+                        ? '解析中...（数分かかることがあります）'
+                        : commentClips.length > 0 && commentClips.every((c) => c.analyzed)
+                          ? 'コメントは解析済み'
+                          : 'AIでコメントの対象箇所を特定'}
+                    </button>
+                  ) : (
+                    <p className="muted small">この授業ではコメントのAI整理を使用していません。</p>
+                  )}
+                  <div className="lesson-summary">
+                    <h4>授業全体の要約</h4>
+                    {lessonSummary?.summary ? (
+                      <LessonSummaryText text={lessonSummary.summary} />
+                    ) : lesson?.aiSettings.lessonSummary ? (
+                      <p className="muted small">要約はまだ作成されていません。</p>
+                    ) : (
+                      <p className="muted small">この授業では授業全体のAI要約を使用していません。</p>
+                    )}
+                    {lesson?.aiSettings.lessonSummary && (
+                      <button
+                        className="btn"
+                        onClick={() => void summarizeLesson()}
+                        disabled={summarizing || durationMs <= 0}
+                      >
+                        {summarizing
+                          ? '要約を作成しています...'
+                          : lessonSummary?.summary
+                            ? '要約を作り直す'
+                            : '授業全体を要約する'}
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -746,9 +815,7 @@ export default function Review() {
                           <p className="point-text">{f.clip.targetText}</p>
                         </div>
                       ) : (
-                        <p className="muted small">
-                          このコメントの内容について、先生は授業では話していません。
-                        </p>
+                        <p className="muted small">関連する説明を確認できませんでした。</p>
                       ))}
                   </div>
                 )
@@ -879,22 +946,29 @@ export default function Review() {
           {tab === 'video' && (
             <div className="panel-scroll">
               <div className="card">
-                <p className="muted">
-                  授業全体の文字起こしとPDFの文章をもとに、AIが話題のまとまりごとのブロックに分けます。
-                  それぞれのブロックだけを見ても内容が分かるように区切られるので、
-                  復習させたいブロックだけを選んで公開できます。
-                </p>
-                <button
-                  className="btn primary"
-                  onClick={() => void generateChapters()}
-                  disabled={generating}
-                >
-                  {generating
-                    ? '区分け中...（数分かかることがあります）'
-                    : video && video.chapters.length > 0
-                      ? 'ブロックを作り直す'
-                      : '授業をブロックに分ける'}
-                </button>
+                {lesson?.aiSettings.reviewChapters ? (
+                  <>
+                    <p className="muted">
+                      授業全体の文字起こしとPDFの文章から、話題のまとまりごとのブロックを作成します。
+                      公開するブロックは作成後に選択できます。
+                    </p>
+                    <button
+                      className="btn primary"
+                      onClick={() => void generateChapters()}
+                      disabled={generating}
+                    >
+                      {generating
+                        ? '区分け中...（数分かかることがあります）'
+                        : video && video.chapters.length > 0
+                          ? 'ブロックを作り直す'
+                          : '授業をブロックに分ける'}
+                    </button>
+                  </>
+                ) : (
+                  <p className="muted">
+                    この授業では復習動画の自動章分けを使用していません。ブロックは再生位置から手動で追加できます。
+                  </p>
+                )}
               </div>
 
               {video && video.chapters.length > 0 && (
@@ -942,7 +1016,9 @@ export default function Review() {
 
               {video?.chapters.length === 0 && (
                 <p className="muted">
-                  まだブロックがありません。「授業をブロックに分ける」を押してください
+                  {lesson?.aiSettings.reviewChapters
+                    ? 'まだブロックがありません。「授業をブロックに分ける」を押してください'
+                    : 'まだブロックがありません。再生位置を合わせて、上のボタンから追加してください'}
                 </p>
               )}
 
@@ -994,7 +1070,7 @@ export default function Review() {
                   )}
 
                   <label className="chapter-field">
-                    <span className="point-label">AIによる概要</span>
+                    <span className="point-label">概要</span>
                     <textarea
                       className="chapter-textarea"
                       rows={3}
@@ -1102,9 +1178,11 @@ export default function Review() {
                     >
                       ＋10秒
                     </button>
-                    <button className="btn" onClick={() => void redescribeChapter(c.id)}>
-                      概要を作り直す
-                    </button>
+                    {lesson?.aiSettings.reviewChapters && (
+                      <button className="btn" onClick={() => void redescribeChapter(c.id)}>
+                        AIで概要を作り直す
+                      </button>
+                    )}
                     <button className="btn danger" onClick={() => void deleteChapter(c.id)}>
                       削除
                     </button>

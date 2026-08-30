@@ -1,4 +1,5 @@
 import { config } from '../config';
+import type { CommentInsightDetails } from '@shared';
 
 async function callClaude(system: string, user: string, maxTokens: number): Promise<string> {
   const { default: Anthropic } = await import('@anthropic-ai/sdk');
@@ -48,8 +49,8 @@ const JAPANESE_CHAR = /[\u3040-\u30FF\u3400-\u9FFF\uFF66-\uFF9F]/;
  * 要約の文末にくっついた、意味のない断片を落とす。
  *
  * 実際に「…3か所で遅延が生じます。 tekreplawsalt」という出力が先生の画面に出た。
- * LLMはまれに無関係なトークンを吐くことがあり、そのまま見せると
- * 「AIが壊れている」と受け取られてしまう。
+ * LLMはまれに無関係なトークンを生成することがあり、そのまま表示すると
+ * 異常な出力と受け取られる可能性がある。
  *
  * 判定は**控えめ**にしてある。行ごとに見て、最後の「。」より後ろに
  * 日本語が1文字も無い断片が残っている場合だけ落とす。
@@ -60,8 +61,8 @@ const JAPANESE_CHAR = /[\u3040-\u30FF\u3400-\u9FFF\uFF66-\uFF9F]/;
  * - 「12」「はい」          → そのまま（「。」が無い。発言の特定や同一判定の答えを壊さない）
  * - 「表題\n説明です。」    → 行ごとなので、表題の行は触らない
  *
- * 文の途中に紛れ込んだ場合は拾えないが、**消しすぎて意味を変えるより残すほうがまし**
- * という判断でこの範囲にしている。落としたときはログに出すので、頻発するようなら気づける。
+ * 文の途中に含まれる断片は対象にしない。本文の意味を変える削除を避けるため、
+ * 対象をこの範囲に限定している。削除した場合はログへ記録し、発生状況を確認できるようにする。
  */
 export function stripTrailingNoise(text: string): string {
   return text
@@ -81,71 +82,117 @@ export function stripTrailingNoise(text: string): string {
 async function callSummaryLLM(
   system: string,
   user: string,
-  maxTokens: number
+  maxTokens: number,
+  rawJson = false
 ): Promise<{ text: string; provider: string } | null> {
   if (config.summaryProvider === 'anthropic' && config.anthropicApiKey) {
     return {
-      text: stripTrailingNoise(await callClaude(system, user, maxTokens)),
+      text: rawJson
+        ? await callClaude(system, user, maxTokens)
+        : stripTrailingNoise(await callClaude(system, user, maxTokens)),
       provider: 'anthropic',
     };
   }
   if (config.summaryProvider === 'openai' && config.openaiApiKey) {
     return {
-      text: stripTrailingNoise(await callOpenAI(system, user, maxTokens)),
+      text: rawJson
+        ? await callOpenAI(system, user, maxTokens)
+        : stripTrailingNoise(await callOpenAI(system, user, maxTokens)),
       provider: 'openai',
     };
   }
   return null; // mock にフォールバック
 }
 
-/** コメントの内容を先生が授業で話していなかったときに表示する定型文 */
-export const TOPIC_NOT_COVERED_MESSAGE = 'このコメントの内容について、先生は授業では話していません。';
+/** コメントに関連する説明を授業内から特定できない場合の定型文 */
+export const TOPIC_NOT_COVERED_MESSAGE = '関連する説明を確認できませんでした。';
+
+function parseJsonObject(raw: string): Record<string, unknown> | null {
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const body = fenced ? fenced[1] : raw;
+  const start = body.indexOf('{');
+  const end = body.lastIndexOf('}');
+  if (start < 0 || end <= start) return null;
+  try {
+    const parsed = JSON.parse(body.slice(start, end + 1));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function detailValue(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const text = value.replace(/\s+/g, ' ').trim().slice(0, 180);
+  return text || null;
+}
 
 /**
- * 要約の書き方の指示。
- *
- * 出来上がった文はそのまま先生の画面に出るので、**こちらの内部事情を書かせない**ところまで
- * 指示に含めている。指示が無いと、材料の側から見た文が出てくる。実際に出た例:
- *
- * > 文字起こしでは、どの遅延が最も大きいかについての説明は示されていません。
- *
- * 先生が知りたいのは自分が何を話したかであって、こちらが何を材料にしたかではない。
- * 同じことを先生の側から書けば「どの遅延が最も大きいかは、まだ触れていません。」になる。
+ * 生徒コメントを、先生が短時間で確認できる5項目へ整理する。
+ * 先生への助言は作らず、コメント原文と授業内の説明から
+ * 確認できる情報だけを返す。該当しない項目は null とする。
  */
-const COMMENT_CONTEXT_SYSTEM = [
-  'あなたは授業中の生徒コメントを分析するアシスタントです。',
-  '先生の説明音声の文字起こし（コメントが向けられた箇所の周辺）と生徒のコメントを読み、',
-  'コメントに関係する先生の説明の重要ポイントを日本語で1〜2文に端的に要約してください。',
-  '',
-  'この文章は、授業中の先生がそのまま読みます。次の書き方を守ってください。',
-  '- 渡された先生の発言だけを根拠にし、あなた自身の知識で話題を解説しないでください。',
-  '- 「文字起こし」「記録」「テキスト」「資料」など、渡された材料そのものを指す言葉は使わないでください。',
-  '  材料に何が書かれていたかではなく、先生が何を話したかとして書きます。',
-  '- 関係する説明が一部でもあるときは、まずその内容を書き、そのうえで触れていない点を書きます。',
-  '- コメントの疑問にあたる説明が見当たらないときは、材料の不足として書かず、',
-  '  「〜については、まだ触れていません。」のように先生の説明を主語にして書きます。',
-  '- 要約だけを書き、評価・提案・前置きは一切書かないでください。',
-].join('\n');
-
-/**
- * コメント・振り返り（二段構えの2段目）: コメントが向けられた先生の発言は既に特定済み。
- * その周辺の文字起こしを渡し、コメントに関係する部分の重要ポイントを端的に要約する。
- * 「先生が話したかどうか」の判定は1段目（発言の特定）で済んでいるので、
- * ここでは要約に専念する。AI自身の知識ではなく、文字起こしの内容だけに基づいて書く。
- */
-export async function summarizeCommentContext(
+export async function analyzeCommentForTeacher(
   transcriptText: string,
-  comments: string[]
-): Promise<{ text: string; provider: string }> {
+  comments: string[],
+  relatedExplanationFound: boolean
+): Promise<CommentInsightDetails> {
   const result = await callSummaryLLM(
-    COMMENT_CONTEXT_SYSTEM,
-    `先生の説明（文字起こし）:\n${transcriptText.slice(0, 30_000)}\n\n生徒のコメント:\n${comments.map((c, i) => `${i + 1}. ${c}`).join('\n')}`,
-    700
+    [
+      'あなたは、授業中に届いた生徒コメントを先生が短時間で確認できる形に整理します。',
+      '返す項目は次の5つです。該当しない項目には null を入れてください。',
+      '- relatedExplanation: コメントに関係し、先生がすでに説明した内容',
+      '- unconfirmedPoint: コメントで尋ねられたうち、先生の説明から確認できない内容',
+      '- outsideLesson: 授業の内容との関係を確認できない質問',
+      '- trouble: 音が聞こえない、画面が見えない、操作できないなどの受講上の支障',
+      '- feedback: 質問ではない意見または感想',
+      '',
+      '書き方:',
+      '- 各値は60文字程度までの簡潔な内容にします。分類名は値に繰り返しません。',
+      '- 先生への提案、指示、評価は書きません。「確認が必要です」「〜してください」などは使用しません。',
+      '- コメント原文に無い困りごとや感情を推測しません。',
+      '- 先生の説明に無い知識を補いません。',
+      '- relatedExplanationFound が false の場合、relatedExplanation は必ず null にします。',
+      '- outsideLesson は、コメント自体から授業外の話題だと明確に分かる場合だけ使用します。判断できない場合は unconfirmedPoint を使用します。',
+      '- 1つのコメントが複数項目に該当する場合は、複数の値を入れて構いません。',
+      '',
+      'JSONオブジェクトだけを返してください。キーは relatedExplanation, unconfirmedPoint, outsideLesson, trouble, feedback の5つです。',
+    ].join('\n'),
+    `relatedExplanationFound: ${relatedExplanationFound}\n\n関連する説明:\n${transcriptText.slice(0, 30_000) || '(確認できませんでした)'}\n\n生徒のコメント:\n${comments.map((c, i) => `${i + 1}. ${c}`).join('\n')}`,
+    900,
+    true
   );
-  if (result) return result;
+  if (result) {
+    const parsed = parseJsonObject(result.text);
+    if (parsed) {
+      return {
+        relatedExplanation: relatedExplanationFound
+          ? detailValue(parsed.relatedExplanation)
+          : null,
+        unconfirmedPoint: detailValue(parsed.unconfirmedPoint),
+        outsideLesson: detailValue(parsed.outsideLesson),
+        trouble: detailValue(parsed.trouble),
+        feedback: detailValue(parsed.feedback),
+      };
+    }
+  }
+
+  // モック環境では外部知識を補わず、原文から明確に確認できる項目だけを返す。
+  const joined = comments.join(' / ').slice(0, 180);
+  const trouble = /聞こえ|音が|見え|映ら|接続|つなが|止ま|固ま|操作でき|開けな/.test(joined)
+    ? joined
+    : null;
+  const feedback = /分かりやす|わかりやす|よかった|良かった|難しかった|感想/.test(joined)
+    ? joined
+    : null;
   return {
-    text: '（モック要約）コメントに関連する説明の要約です。SUMMARY_PROVIDER=anthropic または openai とAPIキーを設定すると実際のAI要約になります。',
-    provider: 'mock',
+    relatedExplanation: null,
+    unconfirmedPoint: !trouble && !feedback ? TOPIC_NOT_COVERED_MESSAGE : null,
+    outsideLesson: null,
+    trouble,
+    feedback,
   };
 }
 

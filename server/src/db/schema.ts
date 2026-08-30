@@ -10,7 +10,9 @@ import {
 } from 'drizzle-orm/pg-core';
 import { uniqueIndex } from 'drizzle-orm/pg-core';
 import type {
+  CommentInsightDetails,
   InsightComment,
+  LessonAiSettings,
   LessonTelemetry,
   LessonTask,
   PollOption,
@@ -41,6 +43,13 @@ export const lessons = pgTable('lessons', {
   // ボタンを使わない授業の設定。タスクとアンケートで生徒の状況が分かるようになったため、
   // 先生の好みで完全に無しにできる。定義そのものは消さないので、戻せば元のボタンが復活する
   reactionsEnabled: boolean('reactions_enabled').notNull().default(true),
+  // 授業ごとのAI機能。既存授業の動作を維持するため、移行時の既定値はすべてON
+  aiSettings: jsonb('ai_settings').$type<LessonAiSettings>().notNull().default({
+    commentAnalysis: true,
+    whisperCaptionHistory: true,
+    lessonSummary: true,
+    reviewChapters: true,
+  }),
   // Phase 2（同意管理・匿名化）用のプレースホルダ
   anonymizeMode: boolean('anonymize_mode').notNull().default(false),
   pdfPath: text('pdf_path'),
@@ -236,6 +245,8 @@ export const commentInsights = pgTable(
     comments: jsonb('comments').$type<InsightComment[]>().notNull(),
     kinds: jsonb('kinds').$type<ReactionCounts>().notNull(),
     summary: text('summary'), // コメントに関連する先生の話の重要ポイント
+    // 先生画面に表示する5項目。旧データは summary を「関連する説明」として表示する
+    details: jsonb('details').$type<CommentInsightDetails>(),
     status: text('status', { enum: ['pending', 'ready', 'failed'] })
       .notNull()
       .default('pending'),

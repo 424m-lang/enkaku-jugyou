@@ -1,14 +1,18 @@
 import crypto from 'node:crypto';
 import { and, desc, eq, gte, lte, ne } from 'drizzle-orm';
 import type { Server } from 'socket.io';
-import type { CommentInsight, InsightComment, ReactionCounts } from '@shared';
+import type {
+  CommentInsight,
+  CommentInsightDetails,
+  InsightComment,
+  ReactionCounts,
+} from '@shared';
 import { config } from '../config';
 import { db, schema } from '../db';
 import {
-  TOPIC_NOT_COVERED_MESSAGE,
+  analyzeCommentForTeacher,
   judgeSameTopic,
   locateCommentTarget,
-  summarizeCommentContext,
 } from '../ai/summarize';
 // transcribeRange は直接使わず、ローリング文字起こし(liveTranscript)経由で参照する
 import { tMs, type LiveSession } from './liveSessions';
@@ -16,9 +20,9 @@ import { ensureTranscribedUntil, segmentsUntil } from './liveTranscript';
 
 type AnyServer = Server<any, any>;
 
-/** 1枚のカードに統合するコメントの上限 */
+/** 1件のカードに統合するコメントの上限 */
 const MAX_COMMENTS_PER_INSIGHT = 10;
-/** ボタン反応の集計はコメント時刻の少し後まで含める（周辺に届いた反応を拾う） */
+/** ボタン反応の集計には、コメント時刻の少し後に届いた反応も含める */
 const REACTION_TAIL_MS = 30_000;
 
 function emitInsight(io: AnyServer, lessonId: string, insight: CommentInsight): void {
@@ -36,6 +40,7 @@ function rowToInsight(r: InsightRow): CommentInsight {
     comments: r.comments,
     kinds: r.kinds,
     summary: r.summary,
+    details: r.details,
     status: r.status,
     resolved: r.resolved,
   };
@@ -81,11 +86,11 @@ function enqueue(lessonId: string, job: () => Promise<void>): void {
 
 /**
  * コメント到着時に呼ぶ。
- * 1. まずコメント原文だけのカード（status=pending）を保存・配信する（①即時表示）
+ * 1. コメント原文だけのカード（status=pending）を保存・配信する
  * 2. 分析範囲が近接する既存カードがあれば「同じ事柄への言及か」をAIで判定し、
  *    同じなら既存カードへ統合する（新カードは削除通知を配信）
- * 3. 入力開始時刻周辺の音声を文字起こし→コメントに関連する説明の重要ポイントを要約し、
- *    周辺のボタン反応数とあわせてカードを更新する（②への成長）
+ * 3. 入力開始時刻付近の音声とコメントを5項目に整理し、
+ *    周辺のボタン反応数とあわせてカードを更新する
  */
 export function handleCommentForInsight(
   io: AnyServer,
@@ -117,7 +122,8 @@ export function handleCommentForInsight(
     comments: [ic],
     kinds: {},
     summary: null,
-    status: 'pending',
+    details: null,
+    status: s.aiSettings.commentAnalysis ? 'pending' : 'ready',
     resolved: false,
   };
 
@@ -131,9 +137,13 @@ export function handleCommentForInsight(
       comments: insight.comments,
       kinds: insight.kinds,
       summary: null,
-      status: 'pending',
+      details: null,
+      status: insight.status,
     });
     emitInsight(io, s.lessonId, insight);
+
+    // 分析を使わない授業でも、コメント原文と「対応済み」の操作はそのまま残す。
+    if (!s.aiSettings.commentAnalysis) return;
 
     const target = (await tryMerge(io, s, insight)) ?? insight;
     await analyze(io, s, target);
@@ -180,8 +190,10 @@ async function tryMerge(
       windowStartMs: Math.min(cand.windowStartMs, insight.windowStartMs),
       windowEndMs: Math.max(cand.windowEndMs, insight.windowEndMs),
       comments: [...cand.comments, newComment],
+      summary: null,
+      details: null,
       status: 'pending',
-      // 同じ話題でも新しい声が届いたので、拾い直す対象に戻す
+      // 同じ話題のコメントが追加されたため、未対応の状態に戻す
       resolved: false,
     };
     await db.delete(schema.commentInsights).where(eq(schema.commentInsights.id, insight.id));
@@ -192,6 +204,8 @@ async function tryMerge(
         windowStartMs: merged.windowStartMs,
         windowEndMs: merged.windowEndMs,
         comments: merged.comments,
+        summary: null,
+        details: null,
         status: 'pending',
         resolved: false,
       })
@@ -205,7 +219,7 @@ async function tryMerge(
 /** 音声の文字起こし→関連する説明の要約と、周辺のボタン反応数でカードを完成させる */
 async function analyze(io: AnyServer, s: LiveSession, insight: CommentInsight): Promise<void> {
   try {
-    // コメント周辺（分析範囲＋少し後ろ、現在時刻まで）に届いた全生徒のボタン反応数
+    // 分析範囲の終了後30秒までに届いた、生徒のボタン反応数
     const countEnd = Math.min(insight.windowEndMs + REACTION_TAIL_MS, Math.max(tMs(s), insight.windowEndMs));
     const rows = await db
       .select({ kind: schema.reactions.kind })
@@ -221,12 +235,14 @@ async function analyze(io: AnyServer, s: LiveSession, insight: CommentInsight): 
     const kinds: ReactionCounts = {};
     for (const r of rows) kinds[r.kind] = (kinds[r.kind] ?? 0) + 1;
 
-    const summary = await summarizeForComment(s, insight);
+    const details = await analyzeForComment(s, insight);
+    // summary は旧クライアントとの互換用。新しい画面は details を表示する。
+    const summary = details.relatedExplanation;
 
-    const ready: CommentInsight = { ...insight, kinds, summary, status: 'ready' };
+    const ready: CommentInsight = { ...insight, kinds, summary, details, status: 'ready' };
     await db
       .update(schema.commentInsights)
-      .set({ kinds, summary, status: 'ready' })
+      .set({ kinds, summary, details, status: 'ready' })
       .where(eq(schema.commentInsights.id, insight.id));
     emitInsight(io, s.lessonId, ready);
   } catch (err) {
@@ -244,23 +260,30 @@ async function analyze(io: AnyServer, s: LiveSession, insight: CommentInsight): 
 }
 
 /**
- * 二段構えでコメントに対する説明を要約する。
- * 1段目: 授業のここまでの文字起こし全体から、コメントが向けられた発言を特定する
+ * 2段階でコメントに関係する情報を5項目へ整理する。
+ * 1段階目: コメント送信時刻までの文字起こしから、コメントに関係する発言を特定する
  *        （授業後の「コメント」タブと同じ locateCommentTarget を共通利用）
- * 2段目: 特定した発言の前後だけを要約する（先生が話していなければ定型文のみ）
- * 録音がまだ無い（文字起こしできない）場合は null を返す。
+ * 2段階目: 特定した発言の前後とコメント原文から該当項目だけを作る
  */
-async function summarizeForComment(s: LiveSession, insight: CommentInsight): Promise<string | null> {
-  // コメント送信時刻まで文字起こしが貯まっているようにする（直近だけ追いつく）
+async function analyzeForComment(
+  s: LiveSession,
+  insight: CommentInsight
+): Promise<CommentInsightDetails> {
+  // コメント送信時刻までの不足範囲を文字起こしする
   await ensureTranscribedUntil(s, insight.windowEndMs);
   const segments = segmentsUntil(s, insight.windowEndMs);
-  if (segments.length === 0) return null; // 録音なし
+  const comments = insight.comments.map((c) => c.text);
+  if (segments.length === 0) {
+    return analyzeCommentForTeacher('', comments, false);
+  }
 
-  // 1段目: 授業全体から対象の発言を特定
+  // 1段階目: コメント送信時刻までの発言から対象を特定する
   const idx = await locateCommentTarget(segments, insight.comments[0].text);
-  if (idx === null) return TOPIC_NOT_COVERED_MESSAGE; // 先生が話していない
+  if (idx === null) {
+    return analyzeCommentForTeacher('', comments, false);
+  }
 
-  // 2段目: 特定した発言の前後だけを要約対象にする
+  // 2段階目: 特定した発言の前後を整理対象にする
   const target = segments[idx];
   const from = target.startMs - config.insightFocusBeforeMs;
   const to = target.endMs + config.insightFocusAfterMs;
@@ -268,11 +291,11 @@ async function summarizeForComment(s: LiveSession, insight: CommentInsight): Pro
     .filter((seg) => seg.endMs > from && seg.startMs < to)
     .map((seg) => seg.text)
     .join('');
-  const result = await summarizeCommentContext(
+  return analyzeCommentForTeacher(
     focusText,
-    insight.comments.map((c) => c.text)
+    comments,
+    true
   );
-  return result.text;
 }
 
 /** 保存済みのコメント・振り返りを取得（先生画面の初期表示・再接続時用） */

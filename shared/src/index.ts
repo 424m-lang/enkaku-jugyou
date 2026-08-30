@@ -275,6 +275,31 @@ export type TimelineEvent = {
 // ---- レッスン ----
 export type LessonStatus = 'draft' | 'live' | 'ended';
 
+/**
+ * 授業ごとに使用するAI機能。
+ *
+ * 既存の授業と同じ動作を初期値にするため、4項目とも既定値は true。
+ * 授業開始後に設定を変えると、同じ授業の途中で処理条件が変わるため、
+ * 変更できるのは開始前だけとする。
+ */
+export type LessonAiSettings = {
+  /** 生徒コメントを関連する説明などに整理する */
+  commentAnalysis: boolean;
+  /** 字幕履歴をWhisperの文字起こしで補正する */
+  whisperCaptionHistory: boolean;
+  /** 授業後に授業全体のAI要約を作成できるようにする */
+  lessonSummary: boolean;
+  /** 復習動画をAIで自動的に章分けできるようにする */
+  reviewChapters: boolean;
+};
+
+export const DEFAULT_LESSON_AI_SETTINGS: LessonAiSettings = {
+  commentAnalysis: true,
+  whisperCaptionHistory: true,
+  lessonSummary: true,
+  reviewChapters: true,
+};
+
 export type LessonSummary = {
   id: string;
   title: string;
@@ -286,6 +311,7 @@ export type LessonSummary = {
   endedAt: string | null;
   createdAt: string;
   audioDurationMs: number | null;
+  aiSettings: LessonAiSettings;
 };
 
 // ---- リアクション ----
@@ -420,12 +446,10 @@ export type ReactionCluster = {
   summaryText?: string | null;
 };
 
-// ---- コメント・振り返り ----
-// 生徒のコメントを起点に、入力開始時刻の周辺の先生の音声をAIで分析し、
-// 「生徒が何についてコメントしようとしたのか（関連する説明の重要ポイント）」を
-// 要約して表示するカード。届いた直後はコメント原文のみ（status=pending）で配信し、
-// 分析が終わると同じidで要約・周辺反応数つきのカードに更新される。
-// 同じ事柄への言及と判定されたコメントは1枚のカードに統合される。
+// ---- 生徒コメントの整理 ----
+// 生徒コメントと入力開始時刻付近の先生の音声をAIで分析し、5項目に整理して表示する。
+// 受信直後はコメント原文のみ（status=pending）を配信し、分析完了後に同じidのカードを
+// 項目別の内容と周辺反応数で更新する。同じ内容へのコメントは1枚のカードに統合する。
 export type InsightComment = {
   reactionId: string;
   text: string;
@@ -442,6 +466,8 @@ export type CommentInsight = {
   comments: InsightComment[]; // 統合された場合は複数（原文はすべて表示する）
   kinds: ReactionCounts; // コメント周辺に届いた全生徒のボタン反応数
   summary: string | null; // コメントに関連する先生の話の重要ポイント（録音なしはnull）
+  /** 該当する項目だけを表示する整理結果。1つの分類に絞らず、複数項目を使用できる */
+  details: CommentInsightDetails | null;
   status: 'pending' | 'ready' | 'failed';
   /**
    * 先生が拾い終えた印。
@@ -449,6 +475,19 @@ export type CommentInsight = {
    * 答え漏れたりする。消さずに印を付けるだけにして、後から読み返せるようにしてある
    */
   resolved: boolean;
+};
+
+export type CommentInsightDetails = {
+  /** 先生がすでに説明している、コメントに関係する内容 */
+  relatedExplanation: string | null;
+  /** コメントで尋ねられたうち、授業内で確認できない内容 */
+  unconfirmedPoint: string | null;
+  /** 授業で扱っている内容との関係を確認できない質問 */
+  outsideLesson: string | null;
+  /** 音が聞こえない、画面が見えないなど、受講上の支障 */
+  trouble: string | null;
+  /** 質問ではない意見または感想 */
+  feedback: string | null;
 };
 
 // ---- 教室モニター（教室モニターへの投影） ----
@@ -816,6 +855,11 @@ export interface ClientToServerEvents {
     p: { insightId: string; resolved: boolean },
     cb: (res: { ok: boolean }) => void
   ) => void;
+  /** 授業で使用するAI機能の切替。授業開始前だけ変更できる */
+  set_ai_settings: (
+    p: LessonAiSettings,
+    cb: (res: { ok: boolean; error?: string }) => void
+  ) => void;
   /** リアクションボタンを使うかどうかの切替（授業前でも授業中でも変えられる） */
   set_reactions_enabled: (
     p: { enabled: boolean },
@@ -897,6 +941,7 @@ export type LiveLessonState = {
    * （授業後の集計で過去の反応のラベル・色を引けるようにするためでもある）
    */
   reactionsEnabled: boolean;
+  aiSettings: LessonAiSettings;
   slides: SlideInfo[];
   currentSlideId: string | null;
   startedAtEpochMs: number | null; // 授業開始時刻

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { SlideInfo } from '@shared';
 import type { PdfCache } from '../lib/pdf';
 
@@ -9,6 +9,9 @@ type Props = {
   slideNo?: number | null;
   onClick?: () => void;
   title?: string;
+  /** 画面に近づくまでPDFページを描画しない。ページ数の多い一覧で使用する */
+  defer?: boolean;
+  selected?: boolean;
 };
 
 /**
@@ -16,10 +19,45 @@ type Props = {
  * 復習動画のブロック概要（説明していたスライド）とスライド一覧タブで使う。
  * 書き込みは描かず、PDFのページ画像だけを表示する。
  */
-export default function SlideThumb({ pdf, slide, slideNo, onClick, title }: Props) {
+export default function SlideThumb({
+  pdf,
+  slide,
+  slideNo,
+  onClick,
+  title,
+  defer = false,
+  selected = false,
+}: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const hostRef = useRef<HTMLButtonElement | HTMLDivElement>(null);
+  const [visible, setVisible] = useState(!defer);
 
   useEffect(() => {
+    if (!defer) {
+      setVisible(true);
+      return;
+    }
+    const host = hostRef.current;
+    if (!host || visible) return;
+    if (!('IntersectionObserver' in window)) {
+      setVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setVisible(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: '240px' }
+    );
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, [defer, visible]);
+
+  useEffect(() => {
+    if (!visible) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -49,21 +87,36 @@ export default function SlideThumb({ pdf, slide, slideNo, onClick, title }: Prop
     return () => {
       cancelled = true;
     };
-  }, [pdf, slide]);
+  }, [pdf, slide, visible]);
 
   const content = (
     <>
-      <canvas ref={canvasRef} className="slide-thumb-canvas" />
+      {visible ? (
+        <canvas ref={canvasRef} className="slide-thumb-canvas" />
+      ) : (
+        <span className="slide-thumb-placeholder" aria-hidden="true" />
+      )}
       {slideNo != null && <span className="slide-thumb-no">{slideNo}</span>}
     </>
   );
 
   return onClick ? (
-    <button type="button" className="slide-thumb" onClick={onClick} title={title}>
+    <button
+      ref={hostRef as React.Ref<HTMLButtonElement>}
+      type="button"
+      className={`slide-thumb${selected ? ' slide-thumb-selected' : ''}`}
+      onClick={onClick}
+      title={title}
+      aria-current={selected ? 'page' : undefined}
+    >
       {content}
     </button>
   ) : (
-    <div className="slide-thumb" title={title}>
+    <div
+      ref={hostRef as React.Ref<HTMLDivElement>}
+      className={`slide-thumb${selected ? ' slide-thumb-selected' : ''}`}
+      title={title}
+    >
       {content}
     </div>
   );
