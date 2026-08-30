@@ -1796,9 +1796,9 @@ button.slide-thumb:hover {
   display: flex;
   gap: 6px;
   margin-bottom: 10px;
-  /* タブが増えると等分では文字が折り返すため、収まらない分は横へ流す */
-  overflow-x: auto;
-  scrollbar-width: thin;
+  /* タブが増えると等分では文字が折り返すため、収まらない分は次の行へ送る。
+     右側の幅は固定なので、横へ流すと最後のタブが画面幅によらず隠れてしまう */
+  flex-wrap: wrap;
 }
 
 .btn.tab {
