@@ -22,7 +22,16 @@ export async function initDb(): Promise<void> {
     const { drizzle } = await import('drizzle-orm/postgres-js');
     const { migrate } = await import('drizzle-orm/postgres-js/migrator');
     const postgres = (await import('postgres')).default;
-    const client = postgres(config.databaseUrl, { max: 10 });
+    // Neon（本番DB）は接続や問い合わせがある間は眠れない。
+    // 使っていない接続を自分から閉じておかないと、常時起動のサーバが
+    // 接続を握り続けてDBが24時間動きっぱなしになり、無料枠を使い切る。
+    // 眠った後の最初の操作は再起動の分だけ1秒弱遅くなるが、授業中は
+    // 問い合わせが続くので眠らない。
+    const client = postgres(config.databaseUrl, {
+      max: 10,
+      idle_timeout: 20, // 秒。使っていない接続はこの時間で閉じる
+      max_lifetime: 60 * 30, // 秒。長く生きすぎた接続も入れ替える
+    });
     const d = drizzle(client, { schema });
     await migrate(d, { migrationsFolder });
     db = d;
