@@ -140,10 +140,29 @@ export type LiveSession = {
    */
   composing: Map<string, { slideId: string; startTMs: number; atEpochMs: number }>;
 
+  /**
+   * いま繋がっている生徒（participantId → その生徒の接続数）。
+   *
+   * 接続の数ではなく**人数**を数えるために持つ。同じ生徒がタブを2つ開いても1人で、
+   * 回線が切れて繋ぎ直した直後は新旧2本が重なるが、それも1人。
+   * ここを見ずに接続単位で判断すると、繋ぎ直した生徒に「退出」の印が付いてしまう
+   * （古い接続の切断は、新しい接続ができたあとに届く）
+   */
+  onlineStudents: Map<string, number>;
+
   // 音声（中継は受け手に合わせて2形式、授業後の録音は原則Opusの1形式だけ）
   currentAudioPart: AudioPart | null;
   /** 形式ごとの中継用ヘッダ・連番。途中参加者は自分の形式だけを受け取る */
   audioStreams: Map<AudioFormat, { init: Buffer; mime: string; seq: number }>;
+  /**
+   * いま音声を送っている先生の接続。
+   *
+   * 先生が2つ目のタブや2台目の端末で同じ授業を開くと、そちらでも録音器が動き出す。
+   * 別々の録音の欠片が1本のストリームへ混ざると、生徒側のデコーダが壊れて音が出ず、
+   * 保存した録音も再生・文字起こしができなくなる。カメラ映像の cameraSocketId と
+   * 同じ理由で、**最後に録り始めた1つだけ**を送信元として扱う
+   */
+  audioSocketId: string | null;
 
   // 生徒端末の音声（教室モニターから音を出す授業は既定 'off'）
   audioDefault: AudioMode;
@@ -285,8 +304,10 @@ async function loadSession(lessonId: string): Promise<LiveSession | null> {
     openPollId: polls.find((p) => p.status === 'open')?.id ?? null,
     pollAnswers: await loadPollAnswers(lessonId),
     composing: new Map(),
+    onlineStudents: new Map(),
     currentAudioPart: null,
     audioStreams: new Map(),
+    audioSocketId: null,
     audioDefault: lesson.audioDefault,
     audioOverrides: new Map(),
     cameraOn: false,
@@ -730,11 +751,44 @@ export async function setParticipantAudio(
     );
 }
 
-/** 先生画面の参加者一覧（onlineIds は現在接続中のparticipantId） */
-export async function listParticipants(
-  s: LiveSession,
-  onlineIds: Set<string>
-): Promise<ParticipantInfo[]> {
+// ---- 生徒の在室 ----
+
+/**
+ * 生徒の接続を1本数える。**その生徒が新しく繋がったときだけ true。**
+ *
+ * 同じ生徒の2本目（タブが2つ、または再接続の重なり）では false を返すので、
+ * 呼び出し側は「入室しました」を二重に出さずに済む
+ */
+export function addOnlineStudent(s: LiveSession, participantId: string): boolean {
+  const n = (s.onlineStudents.get(participantId) ?? 0) + 1;
+  s.onlineStudents.set(participantId, n);
+  return n === 1;
+}
+
+/**
+ * 生徒の接続を1本減らす。**その生徒の最後の1本が切れたときだけ true。**
+ *
+ * 回線が切れて繋ぎ直した生徒は、古い接続の切断が新しい接続より後に届く
+ * （切断に気づくまで最大で40秒ほどかかる）。ここで残りを数えずに退出を配ると、
+ * **繋がっている生徒が先生の画面でオフラインのまま残る**
+ */
+export function removeOnlineStudent(s: LiveSession, participantId: string): boolean {
+  const n = (s.onlineStudents.get(participantId) ?? 1) - 1;
+  if (n > 0) {
+    s.onlineStudents.set(participantId, n);
+    return false;
+  }
+  s.onlineStudents.delete(participantId);
+  return true;
+}
+
+/** いま繋がっている生徒の人数（接続の本数ではなく人数） */
+export function onlineStudentCount(s: LiveSession): number {
+  return s.onlineStudents.size;
+}
+
+/** 先生画面の参加者一覧（在室は onlineStudents から決まる） */
+export async function listParticipants(s: LiveSession): Promise<ParticipantInfo[]> {
   const rows = await db
     .select({
       id: schema.participants.id,
@@ -749,7 +803,7 @@ export async function listParticipants(
     displayName: r.displayName,
     audio: effectiveAudio(s, r.id),
     overridden: s.audioOverrides.has(r.id),
-    online: onlineIds.has(r.id),
+    online: s.onlineStudents.has(r.id),
   }));
 }
 
@@ -793,6 +847,43 @@ export function handleAvChunk(
 }
 
 // ---- 音声 ----
+
+/**
+ * この接続から届いた音声を受け取ってよいか。**受け取る前に必ず通すこと。**
+ *
+ * 先生が授業中に2つ目のタブ・2台目の端末で同じ授業を開くと、そちらでも
+ * 録音器が自動で動き出す（先生画面は「開き直しても配信が止まらない」ように
+ * 作ってあるため）。2本の録音の欠片が同じストリームへ混ざると、
+ * - 生徒の端末: デコーダが壊れ、授業のあいだ音が出ない
+ * - 保存した録音: 再生も文字起こしもできないファイルになる
+ * という形で、**授業が終わるまで気づけない壊れ方**をする。
+ *
+ * そこでカメラ映像（cameraSocketId）と同じく、送信元は1つに絞る。
+ * 録音の先頭（ヘッダ）が届いた接続を送信元とし、以後その接続の分だけを通す。
+ * 送信元が居なくなったら forgetAudioSender() で空けて、次の先頭を待つ。
+ */
+export function claimAudioSender(s: LiveSession, socketId: string, buf: Buffer): boolean {
+  if (isInitSegment(buf)) {
+    s.audioSocketId = socketId;
+    return true;
+  }
+  if (s.audioSocketId !== null) return s.audioSocketId === socketId;
+  // 送信元が決まっていない。中継のヘッダも無いなら、サーバを立ち上げ直した直後で、
+  // 切断中に溜まっていた欠片が届いているところ。**ここは通す。**
+  // 止めると、立ち上げ直しのあいだの声が録音から丸ごと抜けてしまう
+  // （通した先で録音への追記と、先生への録り直しの要求が行われる）
+  return s.audioStreams.size === 0;
+}
+
+/**
+ * 音声の送信元だった接続が切れたときに空ける。
+ * 空けたときだけ true（呼び出し側は残っている先生へ録音の張り直しを促す）
+ */
+export function forgetAudioSender(s: LiveSession, socketId: string): boolean {
+  if (s.audioSocketId !== socketId) return false;
+  s.audioSocketId = null;
+  return true;
+}
 
 /**
  * 先生からの音声チャンクを処理する。
@@ -850,6 +941,7 @@ export async function startLesson(s: LiveSession): Promise<void> {
   s.recentReactions = [];
   s.composing.clear();
   s.audioStreams.clear();
+  s.audioSocketId = null;
   s.currentAudioPart = null;
   s.transcriptSegments = [];
   s.transcribedUntilMs = 0;

@@ -35,10 +35,15 @@ import {
   recordPointerSampled,
   handleAudioChunk,
   handleAvChunk,
+  claimAudioSender,
+  forgetAudioSender,
   effectiveAudio,
   setAudioDefault,
   setParticipantAudio,
   listParticipants,
+  addOnlineStudent,
+  removeOnlineStudent,
+  onlineStudentCount,
   startLesson,
   endLesson,
   insertBlankSlide,
@@ -452,6 +457,28 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
     if (role === 'student') {
       await socket.join(studentRoomOf(room));
     }
+    // その生徒が新しく繋がったのか、既に別の接続で繋がっているのか
+    // （タブが2つ、または回線が切れて繋ぎ直した直後の重なり）
+    let newlyOnline = false;
+    if (role === 'student' && socket.data.participantId) {
+      const pid = socket.data.participantId;
+      const name = socket.data.participantName ?? '';
+      newlyOnline = addOnlineStudent(s, pid);
+      // 減らす側はここで対にして登録する。この後の準備でつまずいて切れても
+      // 数が残らないよう、増やすのと減らすのを離さない
+      const onGone = () => {
+        const gone = removeOnlineStudent(s, pid);
+        // 人数は接続の本数ではなく人数なので、繋ぎ直しの重なりでは変わらない
+        broadcastParticipantCount(io, s, teacherRoom);
+        if (!gone) return; // まだ別の接続が残っている＝退出していない
+        s.composing.delete(pid);
+        sendParticipantChange(io, s, teacherRoom, { id: pid, displayName: name }, false);
+      };
+      socket.on('disconnect', onGone);
+      // 上の準備（await）のあいだに切れていた場合、disconnect はもう届かない。
+      // 数えたままにすると、その生徒が授業の終わりまで在室として残る
+      if (socket.disconnected) onGone();
+    }
     if (role === 'screen') {
       await socket.join(screenRoomOf(room));
       await socket.join(myAvRoom);
@@ -551,14 +578,15 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
       socket.emit('av_init', toArrayBuffer(myStream.init), myStream.seq, myStream.mime);
     }
 
-    broadcastParticipantCount(io, room, teacherRoom);
+    broadcastParticipantCount(io, s, teacherRoom);
     broadcastScreenCount(io, room, teacherRoom);
     noteConcurrency(io, s, room);
     // 先生がつないだときだけ全件をそろえる（再接続の復元もここ）。
-    // 生徒の入室は1人分だけ送る（全件だと一斉入室で人数の二乗になる）
+    // 生徒の入室は1人分だけ送る（全件だと一斉入室で人数の二乗になる）。
+    // 繋ぎ直しの2本目では送らない（既に入室として出ているため）
     if (role === 'teacher') {
-      await broadcastParticipants(io, s, room, teacherRoom);
-    } else if (role === 'student' && socket.data.participantId) {
+      await broadcastParticipants(io, s, teacherRoom);
+    } else if (role === 'student' && socket.data.participantId && newlyOnline) {
       sendParticipantChange(
         io,
         s,
@@ -707,6 +735,11 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         if (s.status !== 'live') return;
         try {
           const buf = Buffer.from(chunk as ArrayBuffer);
+          // 先生が2つ目のタブ・2台目の端末でも開いていると録音器が2つ動く。
+          // 混ざったものは生徒側でも保存側でも再生できないので、送信元は1つに絞る。
+          // 通らなかった側へは audio_restart を返さない（返すと2つのタブが
+          // 交互に録り直し続けて、どちらの音も届かなくなる）
+          if (!claimAudioSender(s, socket.id, buf)) return;
           const result = await handleAudioChunk(s, buf, mime, archive !== false);
           if (!result) {
             // サーバ再起動後にヘッダより後ろの欠片だけ届いた。録音器を張り直してinitを得る
@@ -804,7 +837,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           await setAudioDefault(s, p.mode);
           io.to(room).emit('lesson_state', toLiveState(s));
           await syncStudentAv(io, s, room);
-          await broadcastParticipants(io, s, room, teacherRoom);
+          await broadcastParticipants(io, s, teacherRoom);
           cb({ ok: true });
         } catch (err) {
           app.log.error(err);
@@ -820,7 +853,7 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           if (typeof p?.participantId !== 'string') return cb({ ok: false });
           await setParticipantAudio(s, p.participantId, mode);
           await syncStudentAv(io, s, room);
-          await broadcastParticipants(io, s, room, teacherRoom);
+          await broadcastParticipants(io, s, teacherRoom);
           cb({ ok: true });
         } catch (err) {
           app.log.error(err);
@@ -1325,22 +1358,19 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
           if (s.screenLayout === 'video') s.screenLayout = 'slide';
           io.to(room).emit('av_state', avState());
         }
-        broadcastParticipantCount(io, room, teacherRoom);
+        // 音声を送っていた先生が抜けたら送信元を空け、残っている先生の画面に
+        // 録音を張り直させる。空けないままだと、別のタブが録っていても
+        // 「送信元ではない」として捨て続け、授業の残りが無音になる
+        if (forgetAudioSender(s, socket.id)) {
+          io.to(teacherRoom).emit('audio_restart');
+        }
+        // 生徒の人数と入退室は、接続ごとに登録した上の disconnect で扱う
+        // （繋ぎ直しの重なりを人数に数えないため）
         broadcastScreenCount(io, room, teacherRoom);
         if (socket.data.participantId) {
-          s.composing.delete(socket.data.participantId);
           await touchParticipants([socket.data.participantId]).catch(() => {});
         }
         if (socket.data.role === 'student') {
-          if (socket.data.participantId) {
-            sendParticipantChange(
-              io,
-              s,
-              teacherRoom,
-              { id: socket.data.participantId, displayName: socket.data.participantName ?? '' },
-              false
-            );
-          }
           await broadcastDenominators(io, s, teacherRoom);
         }
       } catch (err) {
@@ -1465,9 +1495,12 @@ async function syncStudentAv(
  * 以前は授業のルーム全体へ送っていたが、この数を使うのは先生画面だけで、
  * 生徒側は受け取って捨てていた。1人入るたびに全員へ配ることになるので、
  * 一斉入室では人数の二乗のメッセージが飛んでいた。
+ *
+ * 数えるのは接続の本数ではなく**人数**。同じ生徒がタブを2つ開いても、
+ * 回線が切れて繋ぎ直した直後に新旧2本が重なっても、1人と数える
  */
-function broadcastParticipantCount(io: TypedServer, room: string, teacherRoom: string): void {
-  io.to(teacherRoom).emit('participant_count', roomSize(io, studentRoomOf(room)));
+function broadcastParticipantCount(io: TypedServer, s: LiveSession, teacherRoom: string): void {
+  io.to(teacherRoom).emit('participant_count', onlineStudentCount(s));
 }
 
 /** 教室モニターが何台つながっているか（0なら投影されていないと先生が気づける） */
@@ -1501,15 +1534,7 @@ function sendParticipantChange(
 async function broadcastParticipants(
   io: TypedServer,
   s: LiveSession,
-  room: string,
   teacherRoom: string
 ): Promise<void> {
-  const sockets = await io.in(room).fetchSockets();
-  const online = new Set<string>();
-  for (const sock of sockets) {
-    if (sock.data.role === 'student' && sock.data.participantId) {
-      online.add(sock.data.participantId);
-    }
-  }
-  io.to(teacherRoom).emit('participants', await listParticipants(s, online));
+  io.to(teacherRoom).emit('participants', await listParticipants(s));
 }
