@@ -641,6 +641,11 @@ PDF・録音・授業情報は`server/src/routes/lessons.ts`の`authorizeLessonA
 
 `ADMIN_LOGIN_IDS`に含まれ、まだアカウントの無いIDは、登録APIが拒否します。
 拒否しない場合、設定より先にそのIDを登録した人が管理者として扱われます。
+
+管理者が他の先生の授業を読むとき、生徒が入力した名前はサーバで`●●●`に置き換えます（`server/src/anonymousName.ts`の`studentNameForAdmin`）。
+仮名は名前の形（色＋動物、末尾に番号が付く場合あり）で見分け、そのまま返します。参加記録に仮名かどうかの印が無いためです。
+振り返りに生徒名を返すAPIを足すときは、`server/src/routes/review.ts`の`studentNamer`を通します。
+画面側で隠すだけでは、本名が管理者のブラウザへ届きます。
 <!-- ▲ここまで -->
 
 ### `/check`と`/telemetry`の役割

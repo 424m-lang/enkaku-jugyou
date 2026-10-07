@@ -32,8 +32,11 @@ type LessonDetail = {
   slides: SlideInfo[];
   audioDurationMs: number | null;
   aiSettings: LessonAiSettings;
-  /** 管理者が他の先生の授業を開いたときだけ入る。このときは閲覧専用で表示する */
-  adminView: { teacherName: string } | null;
+  /**
+   * 管理者が他の先生の授業を開いたときだけ入る。このときは閲覧専用で表示する。
+   * 名前を入力した生徒の名前は、サーバが hiddenNameMark に置き換えて返す
+   */
+  adminView: { teacherName: string; hiddenNameMark: string } | null;
 };
 
 type AudioPart = { file: string; startMs: number };
@@ -583,6 +586,7 @@ export default function Review() {
       {lesson.adminView && (
         <p className="review-admin-note">
           {lesson.adminView.teacherName} 先生の授業を、管理者として閲覧しています。変更はできません。
+          名前を入力して参加した生徒は「{lesson.adminView.hiddenNameMark}」と表示しています。
         </p>
       )}
 

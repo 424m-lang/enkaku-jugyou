@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { and, asc, desc, eq, ne } from 'drizzle-orm';
 import type {
   ButtonClip,
@@ -14,12 +14,25 @@ import type {
 import { config } from '../config';
 import { db, schema } from '../db';
 import { isAdminTeacher, ownLesson, requireTeacher, teacherIdOf, viewableLesson } from '../auth';
+import { studentNameForAdmin } from '../anonymousName';
 import { clusterReactions } from '../live/reactions';
 import { loadSlides } from '../live/liveSessions';
 import { loadSlideIntervals, slideAt } from '../slideTimeline';
 import { transcribeRange } from '../ai/transcribe';
 import { ensureFullTranscript } from '../ai/fullTranscript';
 import { locateCommentTarget, summarizeLesson } from '../ai/summarize';
+
+/**
+ * 生徒名の出し方。管理者が他の先生の授業を見ているときは、入力された名前を記号に伏せる
+ * （仮名はそのまま）。viewableLesson を通った授業で、作成した先生でなければ管理者。
+ * 名前はサーバで伏せる。画面で隠すだけだと、本名が管理者のブラウザへ届いてしまう
+ */
+function studentNamer(
+  req: FastifyRequest,
+  lesson: typeof schema.lessons.$inferSelect
+): (name: string) => string {
+  return lesson.teacherId === teacherIdOf(req) ? (name) => name : studentNameForAdmin;
+}
 
 async function reactionsWithNames(lessonId: string) {
   return db
@@ -64,7 +77,10 @@ function defaultCommentClipStart(composeStartMs: number): number {
   return Math.max(0, composeStartMs - config.buttonClipBeforeMs);
 }
 
-async function listCommentClips(lessonId: string): Promise<CommentClip[]> {
+async function listCommentClips(
+  lessonId: string,
+  nameOf: (name: string) => string = (name) => name
+): Promise<CommentClip[]> {
   const rows = await commentRows(lessonId);
   const analyzed = await db
     .select()
@@ -79,7 +95,7 @@ async function listCommentClips(lessonId: string): Promise<CommentClip[]> {
     return {
       id: r.id,
       text: r.comment ?? '',
-      participantName: r.participantName,
+      participantName: nameOf(r.participantName),
       tMs: r.tMs,
       composeStartMs,
       slideId: r.slideId,
@@ -210,6 +226,7 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
     ]);
 
     // 「もう一度聞く」は同じ質問で別の設問を作る。何回目かを出すために質問文でまとめる
+    const nameOf = studentNamer(req, lesson);
     const rounds = new Map<string, number>();
     for (const p of polls) rounds.set(p.question, (rounds.get(p.question) ?? 0) + 1);
     const seen = new Map<string, number>();
@@ -246,7 +263,7 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
         texts: mine
           .filter((a) => a.text)
           .map((a) => ({
-            participantName: a.participantName,
+            participantName: nameOf(a.participantName),
             text: a.text as string,
             answeredAtMs: a.answeredAtMs,
           }))
@@ -354,6 +371,7 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
       .where(and(eq(schema.reactions.lessonId, id), ne(schema.reactions.kind, 'comment')))
       .orderBy(asc(schema.reactions.tMs));
 
+    const nameOf = studentNamer(req, lesson);
     // 時間が近く、同じスライドへの反応は「同じ事柄への反応」とみなしてひとまとめにする
     const groups: (typeof rows)[] = [];
     for (const r of rows) {
@@ -381,7 +399,7 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
         endMs: g[g.length - 1].tMs + config.buttonClipAfterMs,
         kinds,
         participantCount: participantIds.size,
-        reactions: g.map((r) => ({ name: r.participantName, kind: r.kind, tMs: r.tMs })),
+        reactions: g.map((r) => ({ name: nameOf(r.participantName), kind: r.kind, tMs: r.tMs })),
         slideId: g[0].slideId,
       };
     });
@@ -393,7 +411,7 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
     const { id } = req.params as { id: string };
     const lesson = await viewableLesson(req, reply, id);
     if (!lesson) return;
-    return listCommentClips(id);
+    return listCommentClips(id, studentNamer(req, lesson));
   });
 
   // ---- 「コメント」タブ: コメントが向けられた発言をAIで特定してクリップ位置を決める ----
@@ -547,7 +565,11 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
     const lesson = await viewableLesson(req, reply, id);
     if (!lesson) return;
 
-    const rows = await reactionsWithNames(id);
+    const nameOf = studentNamer(req, lesson);
+    const rows = (await reactionsWithNames(id)).map((r) => ({
+      ...r,
+      participantName: nameOf(r.participantName),
+    }));
     const clusters = clusterReactions(rows);
 
     // 授業中に生成済みのクリップ文字起こし・提案を範囲の重なりで対応付け
@@ -703,8 +725,9 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
       { name: string; counts: ReactionCounts; reactions: { tMs: number; kind: string; comment: string | null }[] }
     >();
 
+    const nameOf = studentNamer(req, lesson);
     for (const p of parts) {
-      byParticipant.set(p.id, { name: p.displayName, counts: {}, reactions: [] });
+      byParticipant.set(p.id, { name: nameOf(p.displayName), counts: {}, reactions: [] });
     }
     for (const r of rows) {
       countsByKind[r.kind] = (countsByKind[r.kind] ?? 0) + 1;

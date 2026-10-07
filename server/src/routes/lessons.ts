@@ -16,7 +16,7 @@ import {
 } from '../auth';
 import { pdfPath, lessonDir, lessonDirPath } from '../storage';
 import { loadSlides, forgetSession } from '../live/liveSessions';
-import { forgetAnonymousNames } from '../anonymousName';
+import { forgetAnonymousNames, HIDDEN_STUDENT_NAME } from '../anonymousName';
 import { listCommentInsights } from '../live/commentInsights';
 
 // 授業コード（4文字）の文字セット。
@@ -262,15 +262,16 @@ export async function lessonRoutes(app: FastifyInstance): Promise<void> {
     if (!lesson) return;
     const slides = await loadSlides(id);
     // 管理者が他の先生の授業を開いたときは、振り返り画面を閲覧専用で出すために
-    // 授業を作った先生の名前を添える。本人・生徒・教室モニターには null
+    // 授業を作った先生の名前と、入力された生徒名の代わりに出す記号を添える。
+    // 本人・生徒・教室モニターには null
     const viewer = getTeacherId(req);
-    let adminView: { teacherName: string } | null = null;
+    let adminView: { teacherName: string; hiddenNameMark: string } | null = null;
     if (viewer && viewer !== lesson.teacherId && (await isAdminTeacher(viewer))) {
       const [owner] = await db
         .select({ name: schema.teachers.name })
         .from(schema.teachers)
         .where(eq(schema.teachers.id, lesson.teacherId));
-      adminView = { teacherName: owner?.name ?? '' };
+      adminView = { teacherName: owner?.name ?? '', hiddenNameMark: HIDDEN_STUDENT_NAME };
     }
     return { ...lessonToSummary(lesson), slides, adminView };
   });

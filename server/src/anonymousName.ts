@@ -141,3 +141,28 @@ export async function noteAnonymousName(lessonId: string, name: string): Promise
 export function forgetAnonymousNames(lessonId: string): void {
   usedNames.delete(lessonId);
 }
+
+// ---- 管理者の画面での生徒名 ----
+
+const ANONYMOUS_NAMES = new Set(COLORS.flatMap((color) => ANIMALS.map((animal) => color + animal)));
+
+/**
+ * 仮名の形（色＋動物。使い切ったあとは末尾に番号）かどうか。
+ *
+ * 参加記録には「仮名を配ったか」の印が無いので、名前の形で見分ける。
+ * 生徒が自分で「青いネコ」と入力した場合も本名ではないので、仮名として扱ってよい
+ */
+export function isAnonymousName(name: string): boolean {
+  return ANONYMOUS_NAMES.has(name.replace(/\d+$/, ''));
+}
+
+/**
+ * 名前を入力して参加した生徒を、管理者の画面で表す記号。
+ * 名前を伏せたうえで「名前を入力していた」ことだけが分かるよう、全員同じ記号にする
+ */
+export const HIDDEN_STUDENT_NAME = '●●●';
+
+/** 管理者に見せる生徒名。仮名はそのまま、入力された名前は記号に置き換える */
+export function studentNameForAdmin(name: string): string {
+  return isAnonymousName(name) ? name : HIDDEN_STUDENT_NAME;
+}
