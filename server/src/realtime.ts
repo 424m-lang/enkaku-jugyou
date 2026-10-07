@@ -550,8 +550,9 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
     };
 
     // 参加直後に現在のライブ状態のスナップショットを送る
-    // （形式未申告の相手には従来のWebMを既定にしておく）
-    socket.emit('lesson_state', toLiveState(s));
+    // （形式未申告の相手には従来のWebMを既定にしておく）。
+    // 書き込みを積んで送るのはこの1通だけ。以後の配り直しには入れない
+    socket.emit('lesson_state', toLiveState(s, true));
     socket.emit('av_state', avState());
     // 受信端末の追加後に、必要な形式を先生へ再通知する
     sendAvFormats();

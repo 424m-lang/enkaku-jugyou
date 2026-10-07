@@ -468,7 +468,16 @@ export async function recordPointerSampled(
   });
 }
 
-export function toLiveState(s: LiveSession): LiveLessonState {
+/**
+ * 配信用のライブ状態。
+ *
+ * `withDrawing` を付けてよいのは**接続直後の1人へ送るときだけ**。
+ * 全員への配り直しに書き込みを積むと、生徒が字幕ボタンを1回押しただけで
+ * 「書き込みの量 × 人数」が流れる（40人・書き込み300本で8MBを実測）。
+ * 繋がっている間の書き込みは stroke / clear_slide で1本ずつ届いているので、
+ * 配り直しには要らない
+ */
+export function toLiveState(s: LiveSession, withDrawing = false): LiveLessonState {
   return {
     lessonId: s.lessonId,
     status: s.status,
@@ -480,7 +489,7 @@ export function toLiveState(s: LiveSession): LiveLessonState {
     currentSlideId: s.currentSlideId,
     startedAtEpochMs: s.startedAtEpochMs,
     serverNowEpochMs: Date.now(),
-    drawingEvents: s.drawingEvents,
+    drawingEvents: withDrawing ? s.drawingEvents : undefined,
     audioDefault: s.audioDefault,
     cameraOn: s.cameraOn,
     screenLayout: s.screenLayout,

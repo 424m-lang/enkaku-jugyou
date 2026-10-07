@@ -997,8 +997,15 @@ export type LiveLessonState = {
   currentSlideId: string | null;
   startedAtEpochMs: number | null; // 授業開始時刻
   serverNowEpochMs: number;
-  // 現時点までの描画状態を再構成するためのイベント（stroke/clearのみ）
-  drawingEvents: TimelineEvent[];
+  /**
+   * 現時点までの描画状態を再構成するためのイベント（stroke/clearのみ）。
+   *
+   * **入っているのは接続直後の1通だけ。** 授業が進むと書き込みは数百本になるので、
+   * 状態を配り直すたびに積むと、1回の操作で「書き込みの量 × 人数」が流れる。
+   * 繋がっている間の書き込みは stroke / clear_slide が1本ずつ届いているため、
+   * 配り直しには要らない。**省略されているときは手元の描画をそのまま保つこと**
+   */
+  drawingEvents?: TimelineEvent[];
   /** 生徒端末の音声の既定（教室モニターから音を出す授業では 'off'） */
   audioDefault: AudioMode;
   cameraOn: boolean;

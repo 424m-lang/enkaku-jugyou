@@ -100,7 +100,10 @@ export function useLessonLive(lessonId: string | null | undefined, options: Opti
       setAiSettings(st.aiSettings);
       setSlides(st.slides);
       setCurrentSlideId((cur) => st.currentSlideId ?? cur ?? st.slides[0]?.id ?? null);
-      setStrokes(rebuildStrokes(st.drawingEvents));
+      // 書き込みが付いてくるのは接続直後の1通だけ。付いていないのは状態の配り直しなので、
+      // 手元の書き込みをそのまま使う（毎回入れ直すと、書いた直後に配り直しが来たときに
+      // まだサーバへ届いていない線が消える）
+      if (st.drawingEvents) setStrokes(rebuildStrokes(st.drawingEvents));
       setAudioDefault(st.audioDefault);
       setTasks(st.tasks);
       setTaskMode(st.taskMode);
