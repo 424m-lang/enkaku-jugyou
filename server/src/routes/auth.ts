@@ -10,6 +10,7 @@ import {
   setTeacherSession,
   clearTeacherSession,
   getTeacherId,
+  isAdminLoginId,
 } from '../auth';
 
 // 個人情報を集めない方針: メールアドレスではなく任意のログインIDで登録する
@@ -74,6 +75,11 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     if (existing) {
       return reply.code(409).send({ error: 'このログインIDは既に使われています' });
     }
+    // 管理者に指定済みでアカウントが無いIDは登録させない。
+    // 登録できてしまうと、IDを知っている人が管理者として全授業を閲覧できるようになる
+    if (isAdminLoginId(loginId)) {
+      return reply.code(403).send({ error: 'このログインIDは使えません' });
+    }
 
     const id = crypto.randomUUID();
     await db.insert(schema.teachers).values({
@@ -116,6 +122,11 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       clearTeacherSession(reply);
       return reply.code(401).send({ error: '未ログイン' });
     }
-    return { id: teacher.id, loginId: teacher.loginId, name: teacher.name };
+    return {
+      id: teacher.id,
+      loginId: teacher.loginId,
+      name: teacher.name,
+      isAdmin: isAdminLoginId(teacher.loginId),
+    };
   });
 }

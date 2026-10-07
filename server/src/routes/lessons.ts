@@ -7,7 +7,13 @@ import { and, asc, desc, eq } from 'drizzle-orm';
 import { PDFDocument } from 'pdf-lib';
 import { DEFAULT_REACTION_BUTTONS, type ReactionButtonDef } from '@shared';
 import { db, schema } from '../db';
-import { requireTeacher, teacherIdOf, verifyParticipantToken } from '../auth';
+import {
+  getTeacherId,
+  isAdminTeacher,
+  requireTeacher,
+  teacherIdOf,
+  verifyParticipantToken,
+} from '../auth';
 import { pdfPath, lessonDir, lessonDirPath } from '../storage';
 import { loadSlides, forgetSession } from '../live/liveSessions';
 import { forgetAnonymousNames } from '../anonymousName';
@@ -85,7 +91,7 @@ const buttonsSchema = z
   .min(1)
   .max(6);
 
-/** 先生本人 or その授業の参加者であることを確認して lesson を返す */
+/** 先生本人・教室モニター・その授業の参加者・管理者のいずれかであることを確認して lesson を返す */
 async function authorizeLessonAccess(
   req: FastifyRequest,
   reply: FastifyReply,
@@ -97,11 +103,8 @@ async function authorizeLessonAccess(
     return null;
   }
   // 先生
-  const teacherCookie = req.cookies['teacher_session'];
-  if (teacherCookie) {
-    const unsigned = req.unsignCookie(teacherCookie);
-    if (unsigned.valid && unsigned.value === lesson.teacherId) return lesson;
-  }
+  const teacherId = getTeacherId(req);
+  if (teacherId === lesson.teacherId) return lesson;
   // 教室モニター（表示専用。スライドを描くためにPDFと授業情報だけ読めればよい）
   const screenToken = req.headers['x-screen-token'];
   if (lesson.screenToken && typeof screenToken === 'string') {
@@ -118,6 +121,9 @@ async function authorizeLessonAccess(
     typeof token === 'string' ? token : undefined
   );
   if (participant && participant.lessonId === lessonId) return lesson;
+  // 管理者（閲覧だけ）。振り返り画面がPDF・録音・授業情報を読むために通す。
+  // DBを1回余分に引くので、生徒・教室モニターの判定より後に置く
+  if (teacherId && (await isAdminTeacher(teacherId))) return lesson;
 
   reply.code(403).send({ error: 'アクセス権がありません' });
   return null;
@@ -249,13 +255,24 @@ export async function lessonRoutes(app: FastifyInstance): Promise<void> {
     return rows.map(lessonToSummary);
   });
 
-  // ---- 授業詳細（先生 or 参加生徒） ----
+  // ---- 授業詳細（先生 or 参加生徒 or 管理者） ----
   app.get('/api/lessons/:id', async (req, reply) => {
     const { id } = req.params as { id: string };
     const lesson = await authorizeLessonAccess(req, reply, id);
     if (!lesson) return;
     const slides = await loadSlides(id);
-    return { ...lessonToSummary(lesson), slides };
+    // 管理者が他の先生の授業を開いたときは、振り返り画面を閲覧専用で出すために
+    // 授業を作った先生の名前を添える。本人・生徒・教室モニターには null
+    const viewer = getTeacherId(req);
+    let adminView: { teacherName: string } | null = null;
+    if (viewer && viewer !== lesson.teacherId && (await isAdminTeacher(viewer))) {
+      const [owner] = await db
+        .select({ name: schema.teachers.name })
+        .from(schema.teachers)
+        .where(eq(schema.teachers.id, lesson.teacherId));
+      adminView = { teacherName: owner?.name ?? '' };
+    }
+    return { ...lessonToSummary(lesson), slides, adminView };
   });
 
   /**

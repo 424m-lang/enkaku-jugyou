@@ -435,6 +435,74 @@ textarea:focus {
   margin: 0 0 10px;
 }
 
+/* 授業一覧の見出しに置く「すべての先生の授業」（管理者だけに出る） */
+.header-right a.btn {
+  text-decoration: none;
+}
+
+/* ---- 管理者: すべての先生の授業 ---- */
+.admin-main {
+  display: grid;
+  gap: 14px;
+}
+
+.admin-main > .card {
+  margin: 0;
+}
+
+.admin-teacher h2 {
+  margin: 8px 0 8px;
+  font-size: 1.1rem;
+}
+
+.admin-lesson-list {
+  display: grid;
+  gap: 6px;
+}
+
+.admin-lesson-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 10px 14px;
+}
+
+.admin-lesson-date {
+  flex: 0 0 auto;
+  min-width: 82px;
+}
+
+.admin-lesson-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-lesson-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.admin-lesson-actions .btn {
+  padding: 6px 12px;
+  text-decoration: none;
+}
+
+@media (max-width: 600px) {
+  .admin-lesson-row {
+    flex-wrap: wrap;
+  }
+
+  .admin-lesson-title {
+    flex-basis: 100%;
+    order: -1;
+    white-space: normal;
+  }
+}
+
 /* ---- 授業実施画面（先生） ---- */
 .teach {
   display: flex;
@@ -833,6 +901,21 @@ textarea:focus {
 /* ---- 復習動画（先生の編集UI） ---- */
 .chapter-excluded {
   opacity: 0.55;
+}
+
+/* 管理者が閲覧するときのブロック見出し（編集欄の代わりに文字で出す） */
+.chapter-title-text {
+  margin: 6px 0 4px;
+  font-size: 1rem;
+}
+
+/* 管理者が他の先生の振り返りを開いているときの帯 */
+.review-admin-note {
+  margin: 0;
+  padding: 8px 16px;
+  background: #fef3c7;
+  color: #78350f;
+  font-size: 0.9rem;
 }
 
 .chapter-title {

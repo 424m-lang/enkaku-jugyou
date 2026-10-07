@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import { and, asc, eq } from 'drizzle-orm';
 import type {
   ReviewChapter,
@@ -11,7 +11,7 @@ import type {
   WatchPage,
 } from '@shared';
 import { db, schema } from '../db';
-import { requireTeacher, teacherIdOf } from '../auth';
+import { ownLesson, requireTeacher, viewableLesson } from '../auth';
 import { loadSlides } from '../live/liveSessions';
 import { lessonDir, pdfPath } from '../storage';
 import { ensureFullTranscript } from '../ai/fullTranscript';
@@ -32,22 +32,6 @@ const FALLBACK_BLOCK_MS = 240_000;
 /** 公開URLのトークン（推測されないだけの長さを持たせる） */
 function newShareToken(): string {
   return crypto.randomBytes(16).toString('base64url');
-}
-
-async function ownLesson(
-  req: FastifyRequest,
-  reply: FastifyReply,
-  lessonId: string
-): Promise<typeof schema.lessons.$inferSelect | null> {
-  const [lesson] = await db
-    .select()
-    .from(schema.lessons)
-    .where(and(eq(schema.lessons.id, lessonId), eq(schema.lessons.teacherId, teacherIdOf(req))));
-  if (!lesson) {
-    reply.code(404).send({ error: '授業が見つかりません' });
-    return null;
-  }
-  return lesson;
 }
 
 function rowToChapter(r: typeof schema.reviewChapters.$inferSelect): ReviewChapter {
@@ -119,10 +103,10 @@ export function fallbackBlockStarts(intervals: SlideInterval[], durationMs: numb
 }
 
 export async function reviewVideoRoutes(app: FastifyInstance): Promise<void> {
-  // ---- 先生: 復習動画の状態を取得 ----
+  // ---- 先生・管理者: 復習動画の状態を取得 ----
   app.get('/api/lessons/:id/review-video', { preHandler: requireTeacher }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const lesson = await ownLesson(req, reply, id);
+    const lesson = await viewableLesson(req, reply, id);
     if (!lesson) return;
     return {
       chapters: await listChapters(id),

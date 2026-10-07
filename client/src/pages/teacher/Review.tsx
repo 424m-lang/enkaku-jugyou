@@ -32,6 +32,8 @@ type LessonDetail = {
   slides: SlideInfo[];
   audioDurationMs: number | null;
   aiSettings: LessonAiSettings;
+  /** 管理者が他の先生の授業を開いたときだけ入る。このときは閲覧専用で表示する */
+  adminView: { teacherName: string } | null;
 };
 
 type AudioPart = { file: string; startMs: number };
@@ -138,8 +140,9 @@ export default function Review() {
         const cache = await loadLessonPdf(lessonId);
         setPdf(cache);
         // ブロック分けのAIにスライドの内容も渡せるよう、本文を抽出して保存しておく
-        // （授業中に保存済みなら上書きするだけ。過去の授業のための取りこぼし対策）
-        if (cache) {
+        // （授業中に保存済みなら上書きするだけ。過去の授業のための取りこぼし対策）。
+        // 管理者の閲覧では授業を書き換えないので送らない
+        if (cache && !detail.adminView) {
           void savePdfTexts(lessonId, cache).catch(() => {
             /* テキストを持たないPDFもあるので失敗は無視 */
           });
@@ -557,6 +560,9 @@ export default function Review() {
               }
         );
 
+  // 管理者が他の先生の授業を見ているときは、AIの実行・復習動画の編集・公開の操作を出さない
+  // （サーバ側も、授業を作った先生本人以外からの変更を拒否する）
+  const readOnly = lesson.adminView !== null;
   const includedChapters = (video?.chapters ?? []).filter((c) => c.included);
   const includedMs = includedChapters.reduce((sum, c) => sum + (c.endMs - c.startMs), 0);
 
@@ -565,11 +571,20 @@ export default function Review() {
       <header className="app-header">
         <div className="header-left">
           <h1>{lesson.title} — 振り返り</h1>
-          <button className="btn header-action" onClick={() => navigate('/dashboard')}>
-            授業一覧へ
+          <button
+            className="btn header-action"
+            onClick={() => navigate(readOnly ? '/admin' : '/dashboard')}
+          >
+            {readOnly ? 'すべての先生の授業へ' : '授業一覧へ'}
           </button>
         </div>
       </header>
+
+      {lesson.adminView && (
+        <p className="review-admin-note">
+          {lesson.adminView.teacherName} 先生の授業を、管理者として閲覧しています。変更はできません。
+        </p>
+      )}
 
       {error && <p className="error" style={{ padding: '0 16px' }}>{error}</p>}
 
@@ -703,7 +718,7 @@ export default function Review() {
                         </span>
                       ))}
                   </div>
-                  {lesson?.aiSettings.commentAnalysis ? (
+                  {readOnly ? null : lesson?.aiSettings.commentAnalysis ? (
                     <button
                       className="btn primary"
                       onClick={() => void analyzeComments()}
@@ -729,7 +744,7 @@ export default function Review() {
                     ) : (
                       <p className="muted small">この授業では授業全体のAI要約を使用していません。</p>
                     )}
-                    {lesson?.aiSettings.lessonSummary && (
+                    {lesson?.aiSettings.lessonSummary && !readOnly && (
                       <button
                         className="btn"
                         onClick={() => void summarizeLesson()}
@@ -945,31 +960,33 @@ export default function Review() {
           {/* ================= 復習動画（ブロック） ================= */}
           {tab === 'video' && (
             <div className="panel-scroll">
-              <div className="card">
-                {lesson?.aiSettings.reviewChapters ? (
-                  <>
+              {!readOnly && (
+                <div className="card">
+                  {lesson?.aiSettings.reviewChapters ? (
+                    <>
+                      <p className="muted">
+                        授業全体の文字起こしとPDFの文章から、話題のまとまりごとのブロックを作成します。
+                        公開するブロックは作成後に選択できます。
+                      </p>
+                      <button
+                        className="btn primary"
+                        onClick={() => void generateChapters()}
+                        disabled={generating}
+                      >
+                        {generating
+                          ? '区分け中...（数分かかることがあります）'
+                          : video && video.chapters.length > 0
+                            ? 'ブロックを作り直す'
+                            : '授業をブロックに分ける'}
+                      </button>
+                    </>
+                  ) : (
                     <p className="muted">
-                      授業全体の文字起こしとPDFの文章から、話題のまとまりごとのブロックを作成します。
-                      公開するブロックは作成後に選択できます。
+                      この授業では復習動画の自動章分けを使用していません。ブロックは再生位置から手動で追加できます。
                     </p>
-                    <button
-                      className="btn primary"
-                      onClick={() => void generateChapters()}
-                      disabled={generating}
-                    >
-                      {generating
-                        ? '区分け中...（数分かかることがあります）'
-                        : video && video.chapters.length > 0
-                          ? 'ブロックを作り直す'
-                          : '授業をブロックに分ける'}
-                    </button>
-                  </>
-                ) : (
-                  <p className="muted">
-                    この授業では復習動画の自動章分けを使用していません。ブロックは再生位置から手動で追加できます。
-                  </p>
-                )}
-              </div>
+                  )}
+                </div>
+              )}
 
               {video && video.chapters.length > 0 && (
                 <div className="card">
@@ -991,10 +1008,14 @@ export default function Review() {
                         {video.publishedAt && new Date(video.publishedAt).toLocaleString('ja-JP')}）。
                         このページに生徒の名前やコメントは表示されません。
                       </p>
-                      <button className="btn" onClick={() => void setPublished(false)}>
-                        公開を停止する
-                      </button>
+                      {!readOnly && (
+                        <button className="btn" onClick={() => void setPublished(false)}>
+                          公開を停止する
+                        </button>
+                      )}
                     </>
+                  ) : readOnly ? (
+                    <p className="muted small">生徒には公開していません。</p>
                   ) : (
                     <>
                       <p className="muted small">
@@ -1008,187 +1029,204 @@ export default function Review() {
                 </div>
               )}
 
-              <div className="card">
-                <button className="btn" onClick={() => void addChapter()} disabled={durationMs <= 0}>
-                  ＋ 現在の再生位置（{fmtClock(playhead)}）からブロックを足す
-                </button>
-              </div>
+              {!readOnly && (
+                <div className="card">
+                  <button className="btn" onClick={() => void addChapter()} disabled={durationMs <= 0}>
+                    ＋ 現在の再生位置（{fmtClock(playhead)}）からブロックを足す
+                  </button>
+                </div>
+              )}
 
               {video?.chapters.length === 0 && (
                 <p className="muted">
-                  {lesson?.aiSettings.reviewChapters
-                    ? 'まだブロックがありません。「授業をブロックに分ける」を押してください'
-                    : 'まだブロックがありません。再生位置を合わせて、上のボタンから追加してください'}
+                  {readOnly
+                    ? 'ブロックは作成されていません'
+                    : lesson?.aiSettings.reviewChapters
+                      ? 'まだブロックがありません。「授業をブロックに分ける」を押してください'
+                      : 'まだブロックがありません。再生位置を合わせて、上のボタンから追加してください'}
                 </p>
               )}
 
-              {video?.chapters.map((c, i) => (
-                <div key={c.id} className={`card clip-card ${c.included ? '' : 'chapter-excluded'}`}>
-                  <div className="clip-head">
-                    <button className="btn primary" onClick={() => playRange(c.startMs, c.endMs)}>
-                      ▶ {fmtClock(c.startMs)}〜{fmtClock(c.endMs)}
-                    </button>
-                    <span className="muted small">
-                      {i + 1}番目 ・ {fmtDur(c.endMs - c.startMs)}
-                    </span>
-                  </div>
-
-                  <input
-                    className="chapter-title"
-                    value={c.title}
-                    onChange={(e) =>
-                      setVideo((prev) =>
-                        prev
-                          ? {
-                              ...prev,
-                              chapters: prev.chapters.map((x) =>
-                                x.id === c.id ? { ...x, title: e.target.value } : x
-                              ),
-                            }
-                          : prev
-                      )
-                    }
-                    onBlur={(e) => void patchChapter(c.id, { title: e.target.value })}
+              {readOnly &&
+                video?.chapters.map((c, i) => (
+                  <ReadOnlyChapter
+                    key={c.id}
+                    chapter={c}
+                    index={i}
+                    pdf={pdf}
+                    slideById={slideById}
+                    onPlay={() => playRange(c.startMs, c.endMs)}
                   />
+                ))}
 
-                  {/* ブロックの間に説明していたスライド（複数枚なら複数表示） */}
-                  {c.slideIds.length > 0 && (
-                    <div className="chapter-slides">
-                      {c.slideIds.map((sid) => {
-                        const entry = slideById.get(sid);
-                        return (
-                          <SlideThumb
-                            key={sid}
-                            pdf={pdf}
-                            slide={entry?.slide ?? null}
-                            slideNo={entry?.no ?? null}
-                            title={`スライド ${entry?.no ?? '?'}`}
-                          />
-                        );
-                      })}
-                    </div>
-                  )}
-
-                  <label className="chapter-field">
-                    <span className="point-label">概要</span>
-                    <textarea
-                      className="chapter-textarea"
-                      rows={3}
-                      value={c.description ?? ''}
-                      placeholder="このブロックで何を説明しているか"
-                      onChange={(e) =>
-                        setVideo((prev) =>
-                          prev
-                            ? {
-                                ...prev,
-                                chapters: prev.chapters.map((x) =>
-                                  x.id === c.id ? { ...x, description: e.target.value } : x
-                                ),
-                              }
-                            : prev
-                        )
-                      }
-                      onBlur={(e) => void patchChapter(c.id, { description: e.target.value })}
-                    />
-                  </label>
-
-                  <label className="chapter-field">
-                    <span className="point-label">映像に足す補足（生徒に表示されます）</span>
-                    <textarea
-                      className="chapter-textarea"
-                      rows={2}
-                      value={c.note ?? ''}
-                      placeholder="例: ここは公式の使い方だけ押さえれば大丈夫です"
-                      onChange={(e) =>
-                        setVideo((prev) =>
-                          prev
-                            ? {
-                                ...prev,
-                                chapters: prev.chapters.map((x) =>
-                                  x.id === c.id ? { ...x, note: e.target.value } : x
-                                ),
-                              }
-                            : prev
-                        )
-                      }
-                      onBlur={(e) => void patchChapter(c.id, { note: e.target.value })}
-                    />
-                  </label>
-
-                  <div className="chapter-actions">
-                    <label className="chapter-include">
-                      <input
-                        type="checkbox"
-                        checked={c.included}
-                        onChange={(e) => void patchChapter(c.id, { included: e.target.checked })}
-                      />
-                      復習動画に入れる
-                    </label>
-                    <button className="btn" onClick={() => void moveChapter(i, -1)} disabled={i === 0}>
-                      ↑
-                    </button>
-                    <button
-                      className="btn"
-                      onClick={() => void moveChapter(i, 1)}
-                      disabled={i === video.chapters.length - 1}
-                    >
-                      ↓
-                    </button>
-                  </div>
-
-                  <div className="chapter-actions chapter-trim">
-                    <span className="muted small">頭</span>
-                    <button
-                      className="btn"
-                      title="10秒前から始める"
-                      onClick={() =>
-                        void patchChapter(c.id, { startMs: Math.max(0, c.startMs - TRIM_STEP_MS) })
-                      }
-                    >
-                      −10秒
-                    </button>
-                    <button
-                      className="btn"
-                      title="頭を10秒詰める"
-                      disabled={c.endMs - c.startMs <= TRIM_STEP_MS * 2}
-                      onClick={() => void patchChapter(c.id, { startMs: c.startMs + TRIM_STEP_MS })}
-                    >
-                      ＋10秒
-                    </button>
-                    <span className="muted small">終わり</span>
-                    <button
-                      className="btn"
-                      title="終わりを10秒詰める"
-                      disabled={c.endMs - c.startMs <= TRIM_STEP_MS * 2}
-                      onClick={() => void patchChapter(c.id, { endMs: c.endMs - TRIM_STEP_MS })}
-                    >
-                      −10秒
-                    </button>
-                    <button
-                      className="btn"
-                      title="終わりを10秒伸ばす"
-                      onClick={() =>
-                        void patchChapter(c.id, {
-                          endMs:
-                            durationMs > 0
-                              ? Math.min(durationMs, c.endMs + TRIM_STEP_MS)
-                              : c.endMs + TRIM_STEP_MS,
-                        })
-                      }
-                    >
-                      ＋10秒
-                    </button>
-                    {lesson?.aiSettings.reviewChapters && (
-                      <button className="btn" onClick={() => void redescribeChapter(c.id)}>
-                        AIで概要を作り直す
+              {!readOnly &&
+                video?.chapters.map((c, i) => (
+                  <div key={c.id} className={`card clip-card ${c.included ? '' : 'chapter-excluded'}`}>
+                    <div className="clip-head">
+                      <button className="btn primary" onClick={() => playRange(c.startMs, c.endMs)}>
+                        ▶ {fmtClock(c.startMs)}〜{fmtClock(c.endMs)}
                       </button>
+                      <span className="muted small">
+                        {i + 1}番目 ・ {fmtDur(c.endMs - c.startMs)}
+                      </span>
+                    </div>
+
+                    <input
+                      className="chapter-title"
+                      value={c.title}
+                      onChange={(e) =>
+                        setVideo((prev) =>
+                          prev
+                            ? {
+                                ...prev,
+                                chapters: prev.chapters.map((x) =>
+                                  x.id === c.id ? { ...x, title: e.target.value } : x
+                                ),
+                              }
+                            : prev
+                        )
+                      }
+                      onBlur={(e) => void patchChapter(c.id, { title: e.target.value })}
+                    />
+
+                    {/* ブロックの間に説明していたスライド（複数枚なら複数表示） */}
+                    {c.slideIds.length > 0 && (
+                      <div className="chapter-slides">
+                        {c.slideIds.map((sid) => {
+                          const entry = slideById.get(sid);
+                          return (
+                            <SlideThumb
+                              key={sid}
+                              pdf={pdf}
+                              slide={entry?.slide ?? null}
+                              slideNo={entry?.no ?? null}
+                              title={`スライド ${entry?.no ?? '?'}`}
+                            />
+                          );
+                        })}
+                      </div>
                     )}
-                    <button className="btn danger" onClick={() => void deleteChapter(c.id)}>
-                      削除
-                    </button>
+
+                    <label className="chapter-field">
+                      <span className="point-label">概要</span>
+                      <textarea
+                        className="chapter-textarea"
+                        rows={3}
+                        value={c.description ?? ''}
+                        placeholder="このブロックで何を説明しているか"
+                        onChange={(e) =>
+                          setVideo((prev) =>
+                            prev
+                              ? {
+                                  ...prev,
+                                  chapters: prev.chapters.map((x) =>
+                                    x.id === c.id ? { ...x, description: e.target.value } : x
+                                  ),
+                                }
+                              : prev
+                          )
+                        }
+                        onBlur={(e) => void patchChapter(c.id, { description: e.target.value })}
+                      />
+                    </label>
+
+                    <label className="chapter-field">
+                      <span className="point-label">映像に足す補足（生徒に表示されます）</span>
+                      <textarea
+                        className="chapter-textarea"
+                        rows={2}
+                        value={c.note ?? ''}
+                        placeholder="例: ここは公式の使い方だけ押さえれば大丈夫です"
+                        onChange={(e) =>
+                          setVideo((prev) =>
+                            prev
+                              ? {
+                                  ...prev,
+                                  chapters: prev.chapters.map((x) =>
+                                    x.id === c.id ? { ...x, note: e.target.value } : x
+                                  ),
+                                }
+                              : prev
+                          )
+                        }
+                        onBlur={(e) => void patchChapter(c.id, { note: e.target.value })}
+                      />
+                    </label>
+
+                    <div className="chapter-actions">
+                      <label className="chapter-include">
+                        <input
+                          type="checkbox"
+                          checked={c.included}
+                          onChange={(e) => void patchChapter(c.id, { included: e.target.checked })}
+                        />
+                        復習動画に入れる
+                      </label>
+                      <button className="btn" onClick={() => void moveChapter(i, -1)} disabled={i === 0}>
+                        ↑
+                      </button>
+                      <button
+                        className="btn"
+                        onClick={() => void moveChapter(i, 1)}
+                        disabled={i === video.chapters.length - 1}
+                      >
+                        ↓
+                      </button>
+                    </div>
+
+                    <div className="chapter-actions chapter-trim">
+                      <span className="muted small">頭</span>
+                      <button
+                        className="btn"
+                        title="10秒前から始める"
+                        onClick={() =>
+                          void patchChapter(c.id, { startMs: Math.max(0, c.startMs - TRIM_STEP_MS) })
+                        }
+                      >
+                        −10秒
+                      </button>
+                      <button
+                        className="btn"
+                        title="頭を10秒詰める"
+                        disabled={c.endMs - c.startMs <= TRIM_STEP_MS * 2}
+                        onClick={() => void patchChapter(c.id, { startMs: c.startMs + TRIM_STEP_MS })}
+                      >
+                        ＋10秒
+                      </button>
+                      <span className="muted small">終わり</span>
+                      <button
+                        className="btn"
+                        title="終わりを10秒詰める"
+                        disabled={c.endMs - c.startMs <= TRIM_STEP_MS * 2}
+                        onClick={() => void patchChapter(c.id, { endMs: c.endMs - TRIM_STEP_MS })}
+                      >
+                        −10秒
+                      </button>
+                      <button
+                        className="btn"
+                        title="終わりを10秒伸ばす"
+                        onClick={() =>
+                          void patchChapter(c.id, {
+                            endMs:
+                              durationMs > 0
+                                ? Math.min(durationMs, c.endMs + TRIM_STEP_MS)
+                                : c.endMs + TRIM_STEP_MS,
+                          })
+                        }
+                      >
+                        ＋10秒
+                      </button>
+                      {lesson?.aiSettings.reviewChapters && (
+                        <button className="btn" onClick={() => void redescribeChapter(c.id)}>
+                          AIで概要を作り直す
+                        </button>
+                      )}
+                      <button className="btn danger" onClick={() => void deleteChapter(c.id)}>
+                        削除
+                      </button>
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))}
             </div>
           )}
 
@@ -1288,6 +1326,64 @@ export default function Review() {
       </div>
 
       <audio ref={audioRef} style={{ display: 'none' }} />
+    </div>
+  );
+}
+
+/** 管理者が閲覧するときのブロック。編集欄の代わりに、保存されている内容を文字で出す */
+function ReadOnlyChapter({
+  chapter: c,
+  index,
+  pdf,
+  slideById,
+  onPlay,
+}: {
+  chapter: ReviewChapter;
+  index: number;
+  pdf: PdfCache | null;
+  slideById: Map<string, { slide: SlideInfo; no: number }>;
+  onPlay: () => void;
+}) {
+  return (
+    <div className={`card clip-card ${c.included ? '' : 'chapter-excluded'}`}>
+      <div className="clip-head">
+        <button className="btn primary" onClick={onPlay}>
+          ▶ {fmtClock(c.startMs)}〜{fmtClock(c.endMs)}
+        </button>
+        <span className="muted small">
+          {index + 1}番目 ・ {fmtDur(c.endMs - c.startMs)} ・{' '}
+          {c.included ? '復習動画に入れる' : '復習動画に入れない'}
+        </span>
+      </div>
+      <h4 className="chapter-title-text">{c.title}</h4>
+      {c.slideIds.length > 0 && (
+        <div className="chapter-slides">
+          {c.slideIds.map((sid) => {
+            const entry = slideById.get(sid);
+            return (
+              <SlideThumb
+                key={sid}
+                pdf={pdf}
+                slide={entry?.slide ?? null}
+                slideNo={entry?.no ?? null}
+                title={`スライド ${entry?.no ?? '?'}`}
+              />
+            );
+          })}
+        </div>
+      )}
+      {c.description && (
+        <div className="chapter-field">
+          <span className="point-label">概要</span>
+          <p className="point-text">{c.description}</p>
+        </div>
+      )}
+      {c.note && (
+        <div className="chapter-field">
+          <span className="point-label">映像に足す補足（生徒に表示されます）</span>
+          <p className="point-text">{c.note}</p>
+        </div>
+      )}
     </div>
   );
 }

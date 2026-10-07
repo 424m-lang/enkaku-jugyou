@@ -17,6 +17,7 @@ const Class = lazy(() => import('./pages/student/Class'));
 const Watch = lazy(() => import('./pages/Watch'));
 const Check = lazy(() => import('./pages/Check'));
 const Telemetry = lazy(() => import('./pages/teacher/Telemetry'));
+const Admin = lazy(() => import('./pages/teacher/Admin'));
 
 export default function App() {
   // Ctrl+Alt+C でどの画面からでも端末チェックへ（戻るボタン付きで開く）
@@ -38,6 +39,8 @@ export default function App() {
           <Route path="/review/:id" element={<Review />} />
           {/* 開発・検証用の匿名通信集計。通常の先生向け導線には表示しない */}
           <Route path="/telemetry" element={<Telemetry />} />
+          {/* 管理者向け: すべての先生の授業から振り返り・通信記録を開く（閲覧のみ） */}
+          <Route path="/admin" element={<Admin />} />
           <Route path="/join" element={<Join />} />
           <Route path="/class" element={<Class />} />
           {/* 生徒向けの復習ページ（ログイン不要・公開トークン） */}

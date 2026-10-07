@@ -56,6 +56,11 @@ export default function Dashboard() {
         <h1>遠隔授業フィードバック</h1>
         <div className="header-right">
           {teacher && <span className="muted">{teacher.name} 先生</span>}
+          {teacher?.isAdmin && (
+            <Link className="btn" to="/admin">
+              すべての先生の授業
+            </Link>
+          )}
           <button className="btn" onClick={logout}>
             ログアウト
           </button>

@@ -8,6 +8,8 @@ type TelemetryLesson = {
   title: string;
   status: 'draft' | 'live' | 'ended';
   createdAt: string;
+  teacherId: string;
+  teacherName: string;
   updatedAt: string | null;
   metrics: LessonTelemetry | null;
 };
@@ -120,18 +122,28 @@ function TelemetryDetail({ metrics }: { metrics: LessonTelemetry }) {
   );
 }
 
+/** 最初に開く授業。記録のある授業を優先する */
+function firstLessonId(rows: TelemetryLesson[]): string {
+  return rows.find((row) => row.metrics)?.lessonId ?? rows[0]?.lessonId ?? '';
+}
+
 export default function Telemetry() {
   const navigate = useNavigate();
   const location = useLocation();
   const [lessons, setLessons] = useState<TelemetryLesson[]>([]);
   const [selectedId, setSelectedId] = useState<string>('');
+  const [teacherFilter, setTeacherFilter] = useState('all');
   const [error, setError] = useState('');
 
   useEffect(() => {
     void api<TelemetryLesson[]>('/api/telemetry')
       .then((rows) => {
         setLessons(rows);
-        setSelectedId(rows.find((row) => row.metrics)?.lessonId ?? rows[0]?.lessonId ?? '');
+        // 管理者の授業一覧から来たときは、その授業を選んだ状態で開く
+        const wanted = new URLSearchParams(window.location.search).get('lesson');
+        setSelectedId(
+          rows.find((row) => row.lessonId === wanted)?.lessonId ?? firstLessonId(rows)
+        );
       })
       .catch((err) => {
         if (err instanceof ApiError && err.status === 401) navigate('/login');
@@ -143,6 +155,23 @@ export default function Telemetry() {
     () => lessons.find((lesson) => lesson.lessonId === selectedId) ?? null,
     [lessons, selectedId]
   );
+  // 管理者にはすべての先生の授業が返る。先生が2人以上いるときだけ、先生での絞り込みと名前を出す
+  const teachers = useMemo(() => {
+    const byId = new Map<string, string>();
+    for (const lesson of lessons) {
+      if (!byId.has(lesson.teacherId)) byId.set(lesson.teacherId, lesson.teacherName);
+    }
+    return [...byId].map(([id, name]) => ({ id, name }));
+  }, [lessons]);
+  const multiTeacher = teachers.length > 1;
+  const lessonsOf = (teacherId: string) =>
+    teacherId === 'all' ? lessons : lessons.filter((lesson) => lesson.teacherId === teacherId);
+  const listed = lessonsOf(teacherFilter);
+
+  function changeTeacher(teacherId: string) {
+    setTeacherFilter(teacherId);
+    setSelectedId(firstLessonId(lessonsOf(teacherId)));
+  }
   const from = (location.state as { from?: unknown } | null)?.from;
   const backTo = typeof from === 'string' && from.startsWith('/') ? from : '/dashboard';
 
@@ -167,19 +196,43 @@ export default function Telemetry() {
             この画面は通常の先生向け導線には表示されません。Ctrl（Macは⌘）+ Alt + T
             で開けます。
           </p>
+          {multiTeacher && (
+            <p className="muted small">
+              管理者として、すべての先生の授業を表示しています（閲覧のみ）。
+            </p>
+          )}
         </div>
 
         {error && <p className="error">{error}</p>}
         {lessons.length === 0 && !error && <p className="muted">授業がありません。</p>}
 
-        {lessons.length > 0 && (
+        {multiTeacher && (
+          <label className="telemetry-lesson-select card">
+            <span>先生</span>
+            <select value={teacherFilter} onChange={(e) => changeTeacher(e.target.value)}>
+              <option value="all">すべての先生</option>
+              {teachers.map((teacher) => (
+                <option key={teacher.id} value={teacher.id}>
+                  {teacher.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+
+        {listed.length > 0 && (
           <label className="telemetry-lesson-select card">
             <span>確認する授業</span>
             <select value={selectedId} onChange={(e) => setSelectedId(e.target.value)}>
-              {lessons.map((lesson) => (
+              {listed.map((lesson) => (
                 <option key={lesson.lessonId} value={lesson.lessonId}>
-                  {new Date(lesson.createdAt).toLocaleDateString('ja-JP')}　{lesson.title}（
-                  {STATUS_LABEL[lesson.status]}）
+                  {[
+                    new Date(lesson.createdAt).toLocaleDateString('ja-JP'),
+                    multiTeacher ? lesson.teacherName : null,
+                    `${lesson.title}（${STATUS_LABEL[lesson.status]}）`,
+                  ]
+                    .filter(Boolean)
+                    .join('　')}
                 </option>
               ))}
             </select>
@@ -189,6 +242,7 @@ export default function Telemetry() {
         {selected && (
           <section className="telemetry-result">
             <h2>{selected.title}</h2>
+            {multiTeacher && <p className="muted">{selected.teacherName} 先生の授業</p>}
             {selected.metrics ? (
               <TelemetryDetail metrics={selected.metrics} />
             ) : (

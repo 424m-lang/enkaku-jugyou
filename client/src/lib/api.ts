@@ -31,4 +31,10 @@ export async function api<T>(path: string, opts: RequestInit = {}): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export type Teacher = { id: string; loginId: string; name: string };
+export type Teacher = {
+  id: string;
+  loginId: string;
+  name: string;
+  /** 管理者（すべての先生の振り返りと通信記録を閲覧だけできる）。/api/auth/me だけが返す */
+  isAdmin?: boolean;
+};

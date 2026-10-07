@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import { and, asc, desc, eq, ne } from 'drizzle-orm';
 import type {
   ButtonClip,
@@ -13,30 +13,13 @@ import type {
 } from '@shared';
 import { config } from '../config';
 import { db, schema } from '../db';
-import { requireTeacher, teacherIdOf } from '../auth';
+import { isAdminTeacher, ownLesson, requireTeacher, teacherIdOf, viewableLesson } from '../auth';
 import { clusterReactions } from '../live/reactions';
 import { loadSlides } from '../live/liveSessions';
 import { loadSlideIntervals, slideAt } from '../slideTimeline';
 import { transcribeRange } from '../ai/transcribe';
 import { ensureFullTranscript } from '../ai/fullTranscript';
 import { locateCommentTarget, summarizeLesson } from '../ai/summarize';
-
-/** 自分の授業であることを確認して返す（振り返り系は先生専用） */
-async function ownLesson(
-  req: FastifyRequest,
-  reply: FastifyReply,
-  lessonId: string
-): Promise<typeof schema.lessons.$inferSelect | null> {
-  const [lesson] = await db
-    .select()
-    .from(schema.lessons)
-    .where(and(eq(schema.lessons.id, lessonId), eq(schema.lessons.teacherId, teacherIdOf(req))));
-  if (!lesson) {
-    reply.code(404).send({ error: '授業が見つかりません' });
-    return null;
-  }
-  return lesson;
-}
 
 async function reactionsWithNames(lessonId: string) {
   return db
@@ -167,20 +150,25 @@ function completionMilestone(sorted: number[], required: number): number | null 
 }
 
 export async function reviewRoutes(app: FastifyInstance): Promise<void> {
-  // ---- 開発・検証用: 自分が担当した授業の匿名通信集計 ----
+  // ---- 開発・検証用: 自分が担当した授業の匿名通信集計（管理者にはすべての先生の授業） ----
   app.get('/api/telemetry', { preHandler: requireTeacher }, async (req) => {
+    const teacherId = teacherIdOf(req);
+    const admin = await isAdminTeacher(teacherId);
     const rows = await db
       .select({
         lessonId: schema.lessons.id,
         title: schema.lessons.title,
         status: schema.lessons.status,
         createdAt: schema.lessons.createdAt,
+        teacherId: schema.lessons.teacherId,
+        teacherName: schema.teachers.name,
         metrics: schema.lessonTelemetry.metrics,
         updatedAt: schema.lessonTelemetry.updatedAt,
       })
       .from(schema.lessons)
+      .innerJoin(schema.teachers, eq(schema.teachers.id, schema.lessons.teacherId))
       .leftJoin(schema.lessonTelemetry, eq(schema.lessonTelemetry.lessonId, schema.lessons.id))
-      .where(eq(schema.lessons.teacherId, teacherIdOf(req)))
+      .where(admin ? undefined : eq(schema.lessons.teacherId, teacherId))
       .orderBy(desc(schema.lessons.createdAt));
     return rows.map((row) => ({
       ...row,
@@ -192,7 +180,7 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
   // ---- 「アンケート」タブ: 締め切り後の確定した集計 ----
   app.get('/api/lessons/:id/poll-review', { preHandler: requireTeacher }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const lesson = await ownLesson(req, reply, id);
+    const lesson = await viewableLesson(req, reply, id);
     if (!lesson) return;
 
     const [polls, answers, parts] = await Promise.all([
@@ -273,7 +261,7 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
   // ---- 「タスク」タブ: どのタスクまで、いつ、何人が進んだか ----
   app.get('/api/lessons/:id/task-review', { preHandler: requireTeacher }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const lesson = await ownLesson(req, reply, id);
+    const lesson = await viewableLesson(req, reply, id);
     if (!lesson) return;
 
     const [events, parts] = await Promise.all([
@@ -331,7 +319,7 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
   // ---- タイムライン全イベント（同期再生用） ----
   app.get('/api/lessons/:id/timeline', { preHandler: requireTeacher }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const lesson = await ownLesson(req, reply, id);
+    const lesson = await viewableLesson(req, reply, id);
     if (!lesson) return;
     const events = await db
       .select({
@@ -349,7 +337,7 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
   // ---- 「ボタン」タブ: ボタン反応のクリップ（反応の30秒前〜15秒後、同じ事柄はまとめる） ----
   app.get('/api/lessons/:id/button-clips', { preHandler: requireTeacher }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const lesson = await ownLesson(req, reply, id);
+    const lesson = await viewableLesson(req, reply, id);
     if (!lesson) return;
 
     const rows = await db
@@ -403,7 +391,7 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
   // ---- 「コメント」タブ: コメントごとのクリップ（AI解析済みならその位置、未解析は暫定範囲） ----
   app.get('/api/lessons/:id/comment-clips', { preHandler: requireTeacher }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const lesson = await ownLesson(req, reply, id);
+    const lesson = await viewableLesson(req, reply, id);
     if (!lesson) return;
     return listCommentClips(id);
   });
@@ -471,7 +459,7 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
   // コメントはAIが対象の発言を特定済みならその時刻のスライド、未解析なら入力開始時のスライド。
   app.get('/api/lessons/:id/slide-stats', { preHandler: requireTeacher }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const lesson = await ownLesson(req, reply, id);
+    const lesson = await viewableLesson(req, reply, id);
     if (!lesson) return;
 
     const durationMs = lesson.audioDurationMs ?? 0;
@@ -556,7 +544,7 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
   // ---- クリップ一覧（反応クラスタ + 既存の文字起こし/提案） ----
   app.get('/api/lessons/:id/clips', { preHandler: requireTeacher }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const lesson = await ownLesson(req, reply, id);
+    const lesson = await viewableLesson(req, reply, id);
     if (!lesson) return;
 
     const rows = await reactionsWithNames(id);
@@ -677,7 +665,7 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
   // ---- 保存済みの全体要約を取得 ----
   app.get('/api/lessons/:id/summary', { preHandler: requireTeacher }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const lesson = await ownLesson(req, reply, id);
+    const lesson = await viewableLesson(req, reply, id);
     if (!lesson) return;
     const [row] = await db
       .select()
@@ -699,7 +687,7 @@ export async function reviewRoutes(app: FastifyInstance): Promise<void> {
   // ---- 統計ダッシュボード ----
   app.get('/api/lessons/:id/stats', { preHandler: requireTeacher }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const lesson = await ownLesson(req, reply, id);
+    const lesson = await viewableLesson(req, reply, id);
     if (!lesson) return;
 
     const parts = await db

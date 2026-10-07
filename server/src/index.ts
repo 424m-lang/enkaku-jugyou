@@ -7,8 +7,10 @@ import fastifyStatic from '@fastify/static';
 import { Server } from 'socket.io';
 import type { ClientToServerEvents, ServerToClientEvents } from '@shared';
 import { config } from './config';
-import { initDb, closeDb } from './db';
+import { inArray } from 'drizzle-orm';
+import { initDb, closeDb, db, schema } from './db';
 import { flushAllSessions } from './live/liveSessions';
+import { adminRoutes } from './routes/admin';
 import { authRoutes } from './routes/auth';
 import { checkRoutes } from './routes/check';
 import { joinRoutes } from './routes/join';
@@ -51,6 +53,7 @@ async function main() {
   await app.register(lessonRoutes);
   await app.register(reviewRoutes);
   await app.register(reviewVideoRoutes);
+  await app.register(adminRoutes);
 
   // 本番: ビルド済みクライアントを配信（SPAフォールバック付き）
   const clientDist = path.join(import.meta.dirname, '..', '..', 'client', 'dist');
@@ -100,6 +103,29 @@ async function main() {
         '[server] REGISTER_CODE が未設定です。URLを知っていれば誰でも先生アカウントを' +
           '作れる状態です（AIの利用料が発生します）。公開して使う場合は設定してください'
       );
+    }
+  }
+
+  // 管理者に指定したIDのうち、まだアカウントが無いものを知らせる。
+  // そのIDでの新規登録は受け付けない（あとから誰かが登録して管理者になるのを防ぐため）ので、
+  // アカウントを作ってから ADMIN_LOGIN_IDS に書く必要がある
+  if (config.adminLoginIds.length > 0) {
+    try {
+      const rows = await db
+        .select({ loginId: schema.teachers.loginId })
+        .from(schema.teachers)
+        .where(inArray(schema.teachers.loginId, config.adminLoginIds));
+      const found = new Set(rows.map((r) => r.loginId));
+      const missing = config.adminLoginIds.filter((id) => !found.has(id));
+      console.log(`[server] 管理者に指定された先生: ${found.size}人`);
+      if (missing.length > 0) {
+        console.warn(
+          `[server] ADMIN_LOGIN_IDS の ${missing.join(', ')} は、まだアカウントがありません。` +
+            'このIDでの新規登録は受け付けないため、アカウントを作ってから指定してください'
+        );
+      }
+    } catch (err) {
+      console.warn('[server] 管理者の確認に失敗しました', err);
     }
   }
 

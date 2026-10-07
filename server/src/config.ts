@@ -21,6 +21,14 @@ export const config = {
   // インターネットに公開する場合は、勝手に登録されてAI利用料が出るのを防ぐために設定する
   registerCode: process.env.REGISTER_CODE || '',
 
+  // 管理者として扱う先生のログインID（カンマ区切りで複数可）。
+  // 指定した先生は、すべての先生の授業の振り返りと通信記録を閲覧できる。変更はできない。
+  // 未設定なら管理者はいない（各先生は自分の授業だけを見られる）
+  adminLoginIds: (process.env.ADMIN_LOGIN_IDS || '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean),
+
   // AIプロバイダー
   transcribeProvider: (process.env.TRANSCRIBE_PROVIDER || 'mock') as 'mock' | 'openai',
   summaryProvider: (process.env.SUMMARY_PROVIDER || 'mock') as 'mock' | 'anthropic' | 'openai',

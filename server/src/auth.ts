@@ -53,6 +53,69 @@ export function teacherIdOf(req: FastifyRequest): string {
   return (req as FastifyRequest & { teacherId: string }).teacherId;
 }
 
+// ---- 管理者: 他の先生の授業を閲覧だけできる先生 ----
+// ADMIN_LOGIN_IDS に書かれたログインIDの先生を管理者とする。
+// 管理者に許すのは読むことだけ。授業を変える経路（AIの実行・復習動画の編集・公開・削除）は、
+// これまでどおり ownLesson で授業を作った先生本人に限る
+export function isAdminLoginId(loginId: string): boolean {
+  return config.adminLoginIds.includes(loginId.toLowerCase());
+}
+
+export async function isAdminTeacher(teacherId: string): Promise<boolean> {
+  if (config.adminLoginIds.length === 0) return false;
+  const [teacher] = await db
+    .select({ loginId: schema.teachers.loginId })
+    .from(schema.teachers)
+    .where(eq(schema.teachers.id, teacherId));
+  return !!teacher && isAdminLoginId(teacher.loginId);
+}
+
+/** 管理者だけが使うルートの preHandler */
+export async function requireAdmin(req: FastifyRequest, reply: FastifyReply): Promise<void> {
+  const id = getTeacherId(req);
+  if (!id) {
+    reply.code(401).send({ error: 'ログインが必要です' });
+    return;
+  }
+  if (!(await isAdminTeacher(id))) {
+    reply.code(403).send({ error: '管理者だけが閲覧できます' });
+    return;
+  }
+  (req as FastifyRequest & { teacherId: string }).teacherId = id;
+}
+
+type Lesson = typeof schema.lessons.$inferSelect;
+
+/** 授業を作った先生本人であることを確認して返す（変更を伴う操作用） */
+export async function ownLesson(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  lessonId: string
+): Promise<Lesson | null> {
+  const [lesson] = await db.select().from(schema.lessons).where(eq(schema.lessons.id, lessonId));
+  if (!lesson || lesson.teacherId !== teacherIdOf(req)) {
+    reply.code(404).send({ error: '授業が見つかりません' });
+    return null;
+  }
+  return lesson;
+}
+
+/**
+ * 授業を作った先生本人か管理者であることを確認して返す（読むだけの操作用）。
+ * どちらでもない場合は、授業が存在するかどうかも分からないよう 404 を返す
+ */
+export async function viewableLesson(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  lessonId: string
+): Promise<Lesson | null> {
+  const [lesson] = await db.select().from(schema.lessons).where(eq(schema.lessons.id, lessonId));
+  const viewer = teacherIdOf(req);
+  if (lesson && (lesson.teacherId === viewer || (await isAdminTeacher(viewer)))) return lesson;
+  reply.code(404).send({ error: '授業が見つかりません' });
+  return null;
+}
+
 // ---- 生徒: 参加トークン ----
 // 形式: "<participantId>.<secret>"。DBには secret のSHA-256のみ保存
 export function generateParticipantToken(participantId: string): {
