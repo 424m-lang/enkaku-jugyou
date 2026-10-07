@@ -314,6 +314,26 @@ export type LessonSummary = {
   aiSettings: LessonAiSettings;
 };
 
+/**
+ * 「授業を終了」を押したときの確認（終了の押し忘れの判定）。時刻は授業開始からのms。
+ *
+ * 手前の終了時刻を選ぶと、授業の長さ（audioDurationMs）がその時刻になり、それより後の録音と
+ * その文字起こしは消える。録音以外の記録は残り、振り返りと復習動画は長さまでを使う
+ */
+export type EndLessonCheck = {
+  startedAtEpochMs: number;
+  nowMs: number;
+  /**
+   * 途切れる前の最後の授業の動き（スライドの操作・書き込み・生徒の反応・アンケート・字幕）。
+   * 終了を押す直前の動き（戻ってきた先生の操作）は含めない
+   */
+  lastActivityMs: number;
+  /** lastActivityMs のあと、授業の動きが記録されなかった長さ */
+  quietMs: number;
+  /** 終了時刻の候補。授業の動きが長く途切れていなければ null（今の時刻で終える） */
+  suggestedEndMs: number | null;
+};
+
 // ---- リアクション ----
 export type ReactionInput = {
   kind: string; // ボタンのkey、コメントは 'comment'
@@ -782,7 +802,15 @@ export interface ServerToClientEvents {
 export interface ClientToServerEvents {
   // 先生
   start_lesson: (cb: (res: { ok: boolean; error?: string }) => void) => void;
-  end_lesson: (cb: (res: { ok: boolean; error?: string }) => void) => void;
+  /** 終了の押し忘れの確認。最後の動きから間が空いていれば、終了時刻の候補が返る */
+  end_lesson_check: (
+    cb: (res: { ok: true; check: EndLessonCheck } | { ok: false; error: string }) => void
+  ) => void;
+  /** endMs（授業開始からのms）を渡すと、その時刻で終わったことにする。null なら今の時刻 */
+  end_lesson: (
+    p: { endMs: number | null },
+    cb: (res: { ok: boolean; error?: string }) => void
+  ) => void;
   /** mime は実物の形式。archive=true の1本だけを授業後の録音として保存する */
   audio_chunk: (chunk: ArrayBuffer, mime?: string, archive?: boolean) => void;
   /** カメラ映像（音声込み）。文字起こしには使わず、保存もしない */

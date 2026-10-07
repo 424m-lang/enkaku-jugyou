@@ -177,11 +177,12 @@ export async function openPoll(s: LiveSession, pollId: string): Promise<Poll | n
   return s.polls.find((p) => p.id === pollId) ?? null;
 }
 
-export async function closePoll(s: LiveSession, pollId: string): Promise<void> {
+/** atMs は締め切った時刻（授業開始からのms）。授業の終了時刻を手前にしたときはその時刻で締める */
+export async function closePoll(s: LiveSession, pollId: string, atMs = tMs(s)): Promise<void> {
   if (!s.polls.some((p) => p.id === pollId)) return;
   await db
     .update(schema.polls)
-    .set({ status: 'closed', closedAtMs: tMs(s) })
+    .set({ status: 'closed', closedAtMs: atMs })
     .where(and(eq(schema.polls.id, pollId), eq(schema.polls.lessonId, s.lessonId)));
   s.polls = await loadPolls(s.lessonId);
   if (s.openPollId === pollId) s.openPollId = null;

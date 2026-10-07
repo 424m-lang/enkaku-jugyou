@@ -157,12 +157,14 @@ export default function Review() {
     })();
   }, [lessonId, navigate]);
 
+  // 授業の長さより後に始まった録音は再生しない（終了の押し忘れで、先生が手前の
+  // 終了時刻を選んだとき。その後の録音は終了時に消しているが、消せなかった場合に備える）
   const audioParts = useMemo<AudioPart[]>(
     () =>
       timeline
-        .filter((e) => e.type === 'audio_part')
+        .filter((e) => e.type === 'audio_part' && (durationMs <= 0 || e.tMs < durationMs))
         .map((e) => ({ file: (e.payload as { file: string }).file, startMs: e.tMs })),
-    [timeline]
+    [timeline, durationMs]
   );
 
   // ---- 再生位置から表示状態（スライド・書き込み・ポインター）を再構成 ----
@@ -246,6 +248,12 @@ export default function Review() {
       const part = currentPartRef.current;
       if (!part) return;
       const t = part.startMs + audio.currentTime * 1000;
+      // 録音が授業の長さより先まで続いていても、授業の終わりで止める
+      if (durationMs > 0 && t >= durationMs) {
+        audio.pause();
+        setPlayhead(durationMs);
+        return;
+      }
       setPlayhead(t);
       if (clipEndRef.current !== null && t >= clipEndRef.current) {
         clipEndRef.current = null;
@@ -274,7 +282,7 @@ export default function Review() {
       audio.removeEventListener('play', onPlay);
       audio.removeEventListener('pause', onPause);
     };
-  }, [audioParts, seek]);
+  }, [audioParts, seek, durationMs]);
 
   const togglePlay = useCallback(() => {
     const audio = audioRef.current;

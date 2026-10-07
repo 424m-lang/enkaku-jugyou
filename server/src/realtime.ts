@@ -27,6 +27,7 @@ import {
 import { db, schema } from './db';
 import { verifyParticipantToken } from './auth';
 import { captionHistory } from './live/captions';
+import { checkLessonEnd, discardRecordingAfter, discardTranscriptsAfter } from './live/lessonEnd';
 import {
   getSession,
   toLiveState,
@@ -74,6 +75,7 @@ import { handleCommentForInsight, setInsightResolved } from './live/commentInsig
 import {
   ensureTranscribedUntil,
   restoreLiveTranscript,
+  runAfterTranscription,
   startLiveTranscription,
   stopLiveTranscription,
   usesRollingTranscription,
@@ -280,11 +282,15 @@ function withAck<A extends unknown[]>(
 ): (...args: A) => void | Promise<void> {
   const ackIndex = handler.length - 1;
   return (...args: unknown[]) => {
-    const passed = args.slice(0, ackIndex);
+    // ack は関数で、中身に関数が来ることは無いので、最後の引数が関数かどうかで見分ける。
+    // 中身を足したイベントへ古い画面が中身なしで送ってきても（開いたままの先生画面からの
+    // `emit('end_lesson', cb)` など）、ack を中身の位置に取り違えないようにするため
+    const last = args[args.length - 1];
+    const ack = typeof last === 'function' ? last : undefined;
+    const passed = (ack ? args.slice(0, -1) : args).slice(0, ackIndex);
     // 引数ごと省かれていることもある（例: 中身なしの `emit('reaction')`）
     while (passed.length < ackIndex) passed.push(undefined);
-    const ack = args.length > ackIndex ? args[args.length - 1] : undefined;
-    passed.push(typeof ack === 'function' ? ack : NO_ACK);
+    passed.push(ack ?? NO_ACK);
     return handler(...(passed as A));
   };
 }
@@ -646,24 +652,48 @@ export function setupRealtime(app: FastifyInstance, io: TypedServer): void {
         }
       }));
 
-      socket.on('end_lesson', withAck(async (cb) => {
+      // 終了の押し忘れの確認。録音を調べるので数秒かかることがある
+      socket.on('end_lesson_check', withAck(async (cb) => {
         try {
           if (s.status !== 'live') return cb({ ok: false, error: '授業中ではありません' });
-          const endMs = tMs(s);
+          cb({ ok: true, check: await checkLessonEnd(s) });
+        } catch (err) {
+          app.log.error(err);
+          cb({ ok: false, error: '確認に失敗しました' });
+        }
+      }));
+
+      socket.on('end_lesson', withAck(async (p, cb) => {
+        try {
+          if (s.status !== 'live') return cb({ ok: false, error: '授業中ではありません' });
+          const nowMs = tMs(s);
+          // 先生が選んだ終了時刻（終了の押し忘れ）。今より後や0以下は受け付けず、今で終える
+          const requested = p?.endMs;
+          const endMs =
+            typeof requested === 'number' && Number.isFinite(requested) && requested > 0 && requested < nowMs
+              ? Math.round(requested)
+              : nowMs;
           stopLiveTranscription(s);
           // 開いたままの設問は授業終了時刻で締め切り、授業後の集計を確定させる。
           if (s.openPollId) {
             const pollId = s.openPollId;
-            await closePoll(s, pollId);
+            await closePoll(s, pollId, endMs);
             io.to(room).emit('poll_closed', { pollId, results: null });
           }
-          await endLesson(s);
+          await endLesson(s, endMs);
+          // 手前の終了時刻を選んだときは、その後の録音を消す。振り返りを開く前に済ませるため、応答より先に行う
+          const trimmed = endMs < nowMs;
+          if (trimmed) await discardRecordingAfter(s.lessonId, endMs);
           io.to(room).emit('lesson_ended');
           io.to(room).emit('lesson_state', toLiveState(s));
           cb({ ok: true });
           // 終了間際のコメント分析・字幕履歴で必要な場合だけ、最後まで追いつかせる
           if (usesRollingTranscription(s)) {
             void ensureTranscribedUntil(s, endMs).catch((err) => app.log.error(err));
+          }
+          // 消した録音の文字起こしも消す。途中の文字起こしが書き足す分まで含めるため、その後ろに並べる
+          if (trimmed) {
+            void runAfterTranscription(s.lessonId, () => discardTranscriptsAfter(s.lessonId, endMs));
           }
         } catch (err) {
           app.log.error(err);

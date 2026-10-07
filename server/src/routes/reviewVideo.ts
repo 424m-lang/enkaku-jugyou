@@ -451,15 +451,18 @@ export async function reviewVideoRoutes(app: FastifyInstance): Promise<void> {
     const events = rows.filter((e) =>
       publicEventTypes.has(e.type as TimelineEventType)
     ) as unknown as TimelineEvent[];
+    const durationMs = lesson.audioDurationMs ?? 0;
     const page: WatchPage = {
       title: lesson.title,
       chapters,
       slides,
       events,
+      // 授業の長さより後に始まった録音は含めない（終了の押し忘れで、先生が手前の
+      // 終了時刻を選んだとき。その後の録音は終了時に消しているが、消せなかった場合に備える）
       audioParts: rows
-        .filter((e) => e.type === 'audio_part')
+        .filter((e) => e.type === 'audio_part' && (durationMs <= 0 || e.tMs < durationMs))
         .map((e) => ({ file: (e.payload as { file: string }).file, startMs: e.tMs })),
-      durationMs: lesson.audioDurationMs ?? 0,
+      durationMs,
     };
     return page;
   });
@@ -481,8 +484,15 @@ export async function reviewVideoRoutes(app: FastifyInstance): Promise<void> {
     if (!lesson) return;
     // パストラバーサル防止: レッスンディレクトリ直下の audio_*.webm / audio_*.mp4 のみ許可
     // （録音の形式は先生の環境によってWebMにもMP4にもなる）
-    if (!/^audio_\d+\.(webm|mp4)$/.test(file)) {
+    const named = /^audio_(\d+)\.(webm|mp4)$/.exec(file);
+    if (!named) {
       return reply.code(400).send({ error: '不正なファイル名です' });
+    }
+    // ファイル名の数字は録音を始めた時刻（授業開始からのms）。授業の長さより後に
+    // 始まった録音は、公開ページの一覧と同じく配らない
+    const durationMs = lesson.audioDurationMs ?? 0;
+    if (durationMs > 0 && Number(named[1]) >= durationMs) {
+      return reply.code(404).send({ error: '音声がありません' });
     }
     const filePath = path.join(lessonDir(lesson.id), file);
     if (!fs.existsSync(filePath)) return reply.code(404).send({ error: '音声がありません' });

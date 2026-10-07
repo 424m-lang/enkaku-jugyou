@@ -1774,6 +1774,33 @@ button.slide-thumb:hover {
   font-size: 1.2rem;
 }
 
+/* ---- 授業の終了時刻の確認（終了の押し忘れ） ---- */
+.end-lesson-modal {
+  width: min(520px, 94vw);
+}
+
+.end-lesson-modal h2 {
+  margin: 0 0 12px;
+  font-size: 1.2rem;
+}
+
+.end-lesson-modal p {
+  margin: 0 0 10px;
+  line-height: 1.7;
+}
+
+.end-lesson-note {
+  font-size: 0.9rem;
+}
+
+.end-lesson-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
 .qr-step {
   margin: 4px 0 0;
   font-size: 0.9rem;

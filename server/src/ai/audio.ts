@@ -237,3 +237,111 @@ export function silenceRatio(
   }
   return Math.min(1, covered / span);
 }
+
+// ---- 終了の押し忘れ ----
+
+/**
+ * 録音ファイルを先頭から durationMs までに切り詰める。中身は再エンコードせずに写す。
+ *
+ * 一時ファイルへ書き出してから元のファイルと置き換えるので、途中で失敗しても元のファイルは壊れない。
+ * 失敗したときは元のファイルを残して false を返す（呼び出し側で記録を残す）
+ */
+export async function truncateAudioFile(filePath: string, durationMs: number): Promise<boolean> {
+  if (!ffmpegPath || durationMs <= 0) return false;
+  const tmpPath = `${filePath}.trim`;
+  const container = filePath.endsWith('.mp4')
+    ? ['-movflags', '+faststart', '-f', 'mp4']
+    : ['-f', 'webm'];
+  const failed = await new Promise<string | null>((resolve) => {
+    execFile(
+      ffmpegPath as string,
+      [
+        '-y', '-v', 'error',
+        '-i', filePath,
+        '-t', (durationMs / 1000).toFixed(3),
+        '-map', '0:a', '-c', 'copy',
+        ...container,
+        tmpPath,
+      ],
+      { timeout: 300_000 },
+      (err, _stdout, stderr) => resolve(err ? (stderr?.slice(-500) || String(err)) : null)
+    );
+  });
+  if (failed) {
+    fs.rmSync(tmpPath, { force: true });
+    console.error('[audio] 録音を切り詰められませんでした:', filePath, failed);
+    return false;
+  }
+  await fs.promises.rename(tmpPath, filePath);
+  return true;
+}
+
+/** 声の大きさの基準をとる範囲。調べ始める時刻より前の、授業中の録音を使う */
+const TALK_REFERENCE_MS = 10 * 60_000;
+/** 話の途中の間として扱う長さの上限。これより長く静かなら、話はそこで終わったとみなす */
+const TALK_MAX_PAUSE_MS = 2 * 60_000;
+
+/**
+ * fromMs のあとも先生の話が続いていたかを録音で調べ、話の終わりの時刻を返す。
+ * 授業の終了を押し忘れたときに、終了時刻の候補を決めるために使う。
+ *
+ * 声かどうかの基準は、**fromMs より前の授業中の録音**の最大音量から決める。
+ * 調べる範囲そのものを基準にすると（analyzeAudio の相対の見方）、
+ * 誰もいない部屋の暗騒音だけの録音で「全部が声」と出てしまうため。
+ * 基準の範囲に声が入っていなかったときは、絶対の閾値（QUIET_ABSOLUTE_DB）より下げない。
+ *
+ * 音が途切れても TALK_MAX_PAUSE_MS 以内に再び鳴れば話の続きとみなし、
+ * それより長く静かならそこで打ち切る。だいぶ後に一度だけ鳴った物音で終わりを延ばさないため。
+ *
+ * 録音が無い・調べられないときは fromMs をそのまま返す（候補を延ばさない）。
+ */
+export async function findTalkEnd(lessonId: string, fromMs: number, toMs: number): Promise<number> {
+  if (!ffmpegPath || toMs <= fromMs) return fromMs;
+  const temps: string[] = [];
+  try {
+    const tailPath = await extractRangeToWav(lessonId, fromMs, toMs);
+    if (!tailPath) return fromMs;
+    temps.push(tailPath);
+
+    let thresholdDb = QUIET_ABSOLUTE_DB;
+    if (fromMs > 0) {
+      const refPath = await extractRangeToWav(
+        lessonId,
+        Math.max(0, fromMs - TALK_REFERENCE_MS),
+        fromMs
+      );
+      if (refPath) {
+        temps.push(refPath);
+        const peak = /max_volume:\s*(-?[\d.]+) dB/.exec(await runFilter(refPath, 'volumedetect'));
+        if (peak) {
+          thresholdDb = Math.max(QUIET_ABSOLUTE_DB, Number(peak[1]) - SILENCE_BELOW_PEAK_DB);
+        }
+      }
+    }
+
+    const spanMs = toMs - fromMs;
+    const silent = parseSilence(
+      await runFilter(tailPath, `silencedetect=noise=${thresholdDb.toFixed(1)}dB:d=${SILENCE_MIN_SEC}`)
+    );
+    // 静かな区間の隙間が、音が鳴っていた区間
+    const sounds: { startMs: number; endMs: number }[] = [];
+    let cursor = 0;
+    for (const q of silent) {
+      if (q.startMs > cursor) sounds.push({ startMs: cursor, endMs: Math.min(q.startMs, spanMs) });
+      cursor = Math.max(cursor, q.endMs);
+    }
+    if (cursor < spanMs) sounds.push({ startMs: cursor, endMs: spanMs });
+
+    let talkEnd = 0;
+    for (const r of sounds) {
+      if (r.startMs - talkEnd > TALK_MAX_PAUSE_MS) break;
+      talkEnd = Math.max(talkEnd, r.endMs);
+    }
+    return fromMs + Math.min(talkEnd, spanMs);
+  } catch (err) {
+    console.error('[audio] 話の終わりを調べられませんでした', err);
+    return fromMs;
+  } finally {
+    for (const p of temps) fs.rmSync(p, { force: true });
+  }
+}

@@ -50,6 +50,19 @@ export async function ensureTranscribedUntil(s: LiveSession, targetMs: number): 
   await next;
 }
 
+/**
+ * その授業の文字起こしが一段落してから fn を走らせる（文字起こしと同じ列に並べて直列にする）。
+ * 途中の文字起こしが後から書き足す行まで、まとめて扱いたいときに使う
+ */
+export function runAfterTranscription(lessonId: string, fn: () => Promise<void>): Promise<void> {
+  const prev = chains.get(lessonId) ?? Promise.resolve();
+  const next = prev
+    .then(fn)
+    .catch((err) => console.error('[live-transcript] 文字起こしの後の処理に失敗:', err));
+  chains.set(lessonId, next);
+  return next;
+}
+
 async function catchUp(s: LiveSession, targetMs: number): Promise<void> {
   // 大きな空きがあってもWhisperの上限を超えないよう、最大チャンク長ずつ進める
   while (s.transcribedUntilMs + 2000 < targetMs) {

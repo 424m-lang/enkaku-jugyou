@@ -4,6 +4,7 @@ import type {
   AudioFormat,
   CommentInsight,
   CommentInsightCommentType,
+  EndLessonCheck,
   LessonAiSettings,
   LessonStatus,
   ParticipantInfo,
@@ -36,6 +37,7 @@ import TaskPanel from '../../components/TaskPanel';
 import PollPanel from '../../components/PollPanel';
 import SlideThumb from '../../components/SlideThumb';
 import AiSettingsPanel from '../../components/AiSettingsPanel';
+import EndLessonDialog from '../../components/EndLessonDialog';
 
 // 黒 ＋ カラーユニバーサルデザイン（Okabe-Ito）の3色。色覚の違いがあっても見分けやすい
 const COLORS: { value: string; label: string }[] = [
@@ -146,6 +148,10 @@ export default function Teach() {
   const [participants, setParticipants] = useState<ParticipantInfo[]>([]);
   const [screenCount, setScreenCount] = useState(0);
   const [audioState, setAudioState] = useState<'off' | 'on' | 'error'>('off');
+  // 終了の確認・終了の処理の途中か（録音を調べるので数秒かかることがある）
+  const [ending, setEnding] = useState(false);
+  // 終了の押し忘れが疑われるときに出す、終了時刻の候補
+  const [endCheck, setEndCheck] = useState<(EndLessonCheck & { suggestedEndMs: number }) | null>(null);
 
   // 操作の合間に暗転すると配信の状態が見えなくなる
   useWakeLock();
@@ -415,19 +421,44 @@ export default function Teach() {
     });
   }, [socketRef, setStatus, startAudio]);
 
+  /** endMs は授業開始からのms。null なら今の時刻で終える */
+  const finishLesson = useCallback(
+    (endMs: number | null) => {
+      const socket = socketRef.current;
+      if (!socket) return;
+      setEnding(true);
+      socket.emit('end_lesson', { endMs }, (res) => {
+        setEnding(false);
+        if (res.ok) {
+          setEndCheck(null);
+          audioStopRef.current?.stop();
+          audioStopRef.current = null;
+          setAudioState('off');
+          navigate(`/review/${lessonId}`);
+        } else {
+          alert(res.error ?? '終了できませんでした');
+        }
+      });
+    },
+    [socketRef, lessonId, navigate]
+  );
+
+  // 最後の授業の動きから間が空いていれば（終了の押し忘れ）、終了時刻を選ぶ画面を出す
   const endLesson = useCallback(() => {
-    if (!window.confirm('授業を終了しますか？（録音も停止します）')) return;
-    socketRef.current?.emit('end_lesson', (res) => {
-      if (res.ok) {
-        audioStopRef.current?.stop();
-        audioStopRef.current = null;
-        setAudioState('off');
-        navigate(`/review/${lessonId}`);
-      } else {
-        alert(res.error ?? '終了できませんでした');
+    const socket = socketRef.current;
+    if (!socket || ending) return;
+    setEnding(true);
+    socket.timeout(30_000).emit('end_lesson_check', (err, res) => {
+      setEnding(false);
+      if (!err && res.ok && res.check.suggestedEndMs !== null) {
+        setEndCheck({ ...res.check, suggestedEndMs: res.check.suggestedEndMs });
+        return;
       }
+      // 間が空いていない・確認できなかったときは、今の時刻で終える
+      if (!window.confirm('授業を終了しますか？（録音も停止します）')) return;
+      finishLesson(null);
     });
-  }, [socketRef, lessonId, navigate]);
+  }, [socketRef, ending, finishLesson]);
 
   const changeSlideTo = useCallback(
     (slideId: string) => {
@@ -854,8 +885,8 @@ export default function Teach() {
                   マイクを開始
                 </button>
               )}
-              <button className="btn danger header-action" onClick={endLesson}>
-                授業を終了
+              <button className="btn danger header-action" onClick={endLesson} disabled={ending}>
+                {ending ? '確認中…' : '授業を終了'}
               </button>
             </>
           )}
@@ -1285,6 +1316,15 @@ export default function Teach() {
           onReveal={revealPollRemote}
         />
       </FloatingWindow>
+
+      {endCheck && (
+        <EndLessonDialog
+          check={endCheck}
+          busy={ending}
+          onEnd={finishLesson}
+          onCancel={() => setEndCheck(null)}
+        />
+      )}
     </div>
   );
 }

@@ -15,7 +15,11 @@ export function buildSlideIntervals(
   const out: SlideInterval[] = [];
   for (let i = 0; i < slideChanges.length; i++) {
     const cur = slideChanges[i];
-    const end = i + 1 < slideChanges.length ? slideChanges[i + 1].tMs : durationMs;
+    const next = i + 1 < slideChanges.length ? slideChanges[i + 1].tMs : durationMs;
+    // 授業の長さで切る。終了の押し忘れで手前の終了時刻を選んだ授業には、長さより後の切り替え
+    // （翌日に戻ってきた先生がめくった分など）が残っており、切らないと最後のスライドが
+    // その時刻まで映っていたことになる
+    const end = durationMs > 0 ? Math.min(next, durationMs) : next;
     if (end > cur.tMs) out.push({ slideId: cur.slideId, startMs: cur.tMs, endMs: end });
   }
   return out;

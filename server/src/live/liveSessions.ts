@@ -862,9 +862,15 @@ export async function startLesson(s: LiveSession): Promise<void> {
   }
 }
 
-export async function endLesson(s: LiveSession): Promise<void> {
+/**
+ * 授業を終える。durationMs は授業の長さ（開始からのms）で、省略すると今の時刻まで。
+ *
+ * 終了の押し忘れで先生が手前の時刻を選んだときは、その時刻で長さと終了時刻を確定する。
+ * それより後の録音は、呼び出し側が discardRecordingAfter（lessonEnd.ts）で消す。
+ * 録音以外の記録は残り、振り返りと復習動画は長さまでを使う
+ */
+export async function endLesson(s: LiveSession, durationMs = tMs(s)): Promise<void> {
   s.status = 'ended';
-  const durationMs = tMs(s);
   if (s.telemetryCameraStartedAt !== null) {
     s.telemetry.video.activeMs += Math.max(0, Date.now() - s.telemetryCameraStartedAt);
     s.telemetryCameraStartedAt = null;
@@ -880,7 +886,11 @@ export async function endLesson(s: LiveSession): Promise<void> {
   }
   await db
     .update(schema.lessons)
-    .set({ status: 'ended', endedAt: new Date(), audioDurationMs: durationMs })
+    .set({
+      status: 'ended',
+      endedAt: s.startedAtEpochMs ? new Date(s.startedAtEpochMs + durationMs) : new Date(),
+      audioDurationMs: durationMs,
+    })
     .where(eq(schema.lessons.id, s.lessonId));
   await flushLessonTelemetry(s.lessonId, s.telemetry);
 }

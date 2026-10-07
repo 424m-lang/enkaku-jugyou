@@ -96,7 +96,9 @@ export async function ensureFullTranscript(
     }
   }
 
-  const result = dedupe(segments);
+  // 授業中の文字起こしは、授業の長さより後の分も残っていることがある
+  // （終了の押し忘れで、先生が手前の終了時刻を選んだとき）。その分は授業に含めない
+  const result = dedupe(segments).filter((seg) => seg.startMs < durationMs);
   if (result.length === 0) return [];
 
   // 次回以降のためにまとめて保存する（既存の全体文字起こしは置き換える）
