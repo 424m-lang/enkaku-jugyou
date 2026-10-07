@@ -118,17 +118,38 @@ export async function generateAnonymousName(lessonId: string): Promise<string> {
  * 授業を削除したときは forgetAnonymousNames() で捨てる。
  */
 const usedNames = new Map<string, Set<string>>();
+/**
+ * 作りかけの一覧。**授業の始めは全員がほぼ同時に入ってくるので、ここを共有する。**
+ *
+ * 最初のDB読み込みが返るまでに次の生徒が来ると、その人も自分用の一覧を作り始める。
+ * 別々の一覧に名前を足していくことになるため、**同じ仮名が何人にも配られる**
+ * （先生の画面に「青いネコ」が3人並ぶ）。読み込み中の約束も授業ごとに共有して、
+ * 全員が同じ一覧を見るようにする
+ */
+const usedNameLoads = new Map<string, Promise<Set<string>>>();
 
 async function usedNamesOf(lessonId: string): Promise<Set<string>> {
   const cached = usedNames.get(lessonId);
   if (cached) return cached;
-  const rows = await db
-    .select({ displayName: schema.participants.displayName })
-    .from(schema.participants)
-    .where(eq(schema.participants.lessonId, lessonId));
-  const set = new Set(rows.map((r) => r.displayName));
-  usedNames.set(lessonId, set);
-  return set;
+
+  const inFlight = usedNameLoads.get(lessonId);
+  if (inFlight) return inFlight;
+
+  const loading = (async () => {
+    const rows = await db
+      .select({ displayName: schema.participants.displayName })
+      .from(schema.participants)
+      .where(eq(schema.participants.lessonId, lessonId));
+    const set = new Set(rows.map((r) => r.displayName));
+    usedNames.set(lessonId, set);
+    return set;
+  })();
+  usedNameLoads.set(lessonId, loading);
+  try {
+    return await loading;
+  } finally {
+    if (usedNameLoads.get(lessonId) === loading) usedNameLoads.delete(lessonId);
+  }
 }
 
 /** 生徒が自分で名前を入れた場合も、その名前は仮名として配らない */
@@ -137,9 +158,10 @@ export async function noteAnonymousName(lessonId: string, name: string): Promise
   used.add(name);
 }
 
-/** 授業を削除したときに捨てる */
+/** 授業を削除したときに捨てる（読み込み中の分も一緒に外す） */
 export function forgetAnonymousNames(lessonId: string): void {
   usedNames.delete(lessonId);
+  usedNameLoads.delete(lessonId);
 }
 
 // ---- 管理者の画面での生徒名 ----
